@@ -388,6 +388,8 @@ public partial class TranslationWindow : Window
         }
         if (FindChevron(combo) is not { } chevron) return;
         var rotation = chevron.RenderTransform as RotateTransform ?? new RotateTransform();
+        // The template's chevron shares a frozen transform: turn a copy of it, like the original text's chevron.
+        if (rotation.IsFrozen) rotation = rotation.Clone();
         chevron.RenderTransform = rotation;
         chevron.RenderTransformOrigin = new Point(0.5, 0.5);
         double target = combo.IsDropDownOpen ? 180 : 0;

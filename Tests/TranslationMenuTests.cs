@@ -170,7 +170,8 @@ public sealed class TranslationMenuTests
             Assert.Equal(8, bar.Width);
             Assert.Equal(FontWeights.Bold, combo.FontWeight);
             Assert.Contains("SF Pro Display", combo.FontFamily.Source);
-            Assert.Equal(System.Windows.Media.Color.FromRgb(15, 15, 18), Assert.IsType<SolidColorBrush>(surface.Background).Color);
+            // The shared dropdown surface (SettingsComboBoxStyles.xaml) since the settings menu was reworked.
+            Assert.Equal(System.Windows.Media.Color.FromRgb(18, 18, 22), Assert.IsType<SolidColorBrush>(surface.Background).Color);
             Assert.Equal(255, Assert.IsType<SolidColorBrush>(surface.Background).Color.A);
             Assert.True(scroll.ScrollableHeight > 0);
             Assert.InRange(surface.ActualHeight, 100, 320);
