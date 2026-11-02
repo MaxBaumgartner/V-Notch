@@ -35,9 +35,10 @@ internal sealed record PiReminder(string Key, string Title, string Message, Date
 /// <summary>
 /// The user's own dashboard on a Raspberry Pi (Express, reached over Tailscale): Home Assistant switches,
 /// school timetable and deadlines, to-dos and the reminders it sends. Only ever talks to the configured
-/// address; nothing leaves for the internet from here.
+/// address; nothing leaves for the internet from here. A planner dashboard, which answers on other routes, is
+/// read the same way (see PiDashboardClient.Planner.cs).
 /// </summary>
-internal sealed class PiDashboardClient : IDisposable
+internal sealed partial class PiDashboardClient : IDisposable
 {
     private const string LogTag = "PI-DASHBOARD";
     private readonly HttpClient _http = new(new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(6) };
@@ -54,6 +55,7 @@ internal sealed class PiDashboardClient : IDisposable
 
     public async Task<List<PiEntity>?> GetHomeAsync()
     {
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerOverviewAsync().ConfigureAwait(false);
         if (await GetAsync("/api/homeassistant") is not JsonObject home || home["entities"] is not JsonArray entities) return null;
         var list = new List<PiEntity>(entities.Count);
         foreach (var node in entities)
@@ -69,6 +71,7 @@ internal sealed class PiDashboardClient : IDisposable
 
     public async Task<PiSchool?> GetSchoolAsync()
     {
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerSchoolAsync().ConfigureAwait(false);
         if (await GetAsync("/api/school") is not JsonObject school) return null;
         var lessons = new List<PiLesson>();
         if (school["timetable"] is JsonArray timetable)
@@ -105,6 +108,7 @@ internal sealed class PiDashboardClient : IDisposable
 
     public async Task<List<PiTodo>?> GetTodosAsync()
     {
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerTodosAsync().ConfigureAwait(false);
         if (await GetAsync("/api/todos") is not JsonArray todos) return null;
         var list = new List<PiTodo>(todos.Count);
         foreach (var node in todos)
@@ -116,14 +120,24 @@ internal sealed class PiDashboardClient : IDisposable
         return list;
     }
 
-    public Task<bool> AddTodoAsync(string text) => PostAsync("/api/todos", new JsonObject { ["text"] = text });
+    public async Task<bool> AddTodoAsync(string text)
+    {
+        if (await IsPlannerAsync().ConfigureAwait(false))
+            return await SendOkAsync(HttpMethod.Post, "/api/events", PlannerDashboard.NewTodo(text, DateTime.Now)).ConfigureAwait(false);
+        return await PostAsync("/api/todos", new JsonObject { ["text"] = text }).ConfigureAwait(false);
+    }
 
-    public Task<bool> SetTodoDoneAsync(string id, bool done) =>
-        PostAsync($"/api/todos/{Uri.EscapeDataString(id)}", new JsonObject { ["done"] = done });
+    public async Task<bool> SetTodoDoneAsync(string id, bool done)
+    {
+        if (await IsPlannerAsync().ConfigureAwait(false))
+            return await SendOkAsync(HttpMethod.Patch, $"/api/events/{Uri.EscapeDataString(id)}/done", new JsonObject { ["done"] = done }).ConfigureAwait(false);
+        return await PostAsync($"/api/todos/{Uri.EscapeDataString(id)}", new JsonObject { ["done"] = done }).ConfigureAwait(false);
+    }
 
     /// <summary>What the dashboard last pushed to the phone, newest last.</summary>
     public async Task<List<PiReminder>?> GetRemindersAsync()
     {
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerRemindersAsync().ConfigureAwait(false);
         if (await GetAsync("/api/reminders") is not JsonObject status || status["sent"] is not JsonArray sent) return null;
         var list = new List<PiReminder>(sent.Count);
         foreach (var node in sent)

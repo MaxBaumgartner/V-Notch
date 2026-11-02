@@ -106,6 +106,7 @@ public partial class MainWindow
         }
 
         RefreshUpdateCheckIfSettingsChanged(oldSettings, newSettings);
+        RefreshPiSchoolIfSettingsChanged(oldSettings, newSettings);
     }
 
     private static bool HasNotchGeometryChanged(NotchSettings oldSettings, NotchSettings newSettings) =>

@@ -13,6 +13,7 @@ using VNotch.Controls;
 using VNotch.Models;
 using VNotch.Services;
 using VNotch.Services.ClaudeCode;
+using VNotch.Services.ControlCenter;
 
 namespace VNotch;
 
@@ -57,7 +58,8 @@ public partial class MainWindow
         if (_cleanedUp) return;
         bool music = MediaDisplayController.ShouldBeCompactMode(info);
         var live = _claudeLiveSessions;
-        var (main, bubble) = LiveActivities.Arrange(music, _claudeLiveSession?.Status, IsCountdownLive, moreClaude: live.Count > 1);
+        var (main, bubble) = LiveActivities.Arrange(music, _claudeLiveSession?.Status, IsCountdownLive, moreClaude: live.Count > 1,
+            lesson: IsLessonLive);
         _mainActivity = main;
         _bubbleClaudeSessions = bubble != LiveActivity.Claude ? new()
             : main == LiveActivity.Claude ? live.Skip(1).ToList() : live.ToList();
@@ -159,7 +161,7 @@ public partial class MainWindow
     private static double FaceSize(LiveActivity activity, bool open) => activity switch
     {
         LiveActivity.Music => open ? 30 : 24,
-        LiveActivity.Countdown => open ? 26 : 21,
+        LiveActivity.Countdown or LiveActivity.Lesson => open ? 26 : 21,
         _ => open ? 19 : 16
     };
 
@@ -175,6 +177,7 @@ public partial class MainWindow
         BubbleClaudeFace.Visibility = activity == LiveActivity.Claude ? Visibility.Visible : Visibility.Collapsed;
         BubbleMusicFace.Visibility = activity == LiveActivity.Music ? Visibility.Visible : Visibility.Collapsed;
         BubbleTimerFace.Visibility = activity == LiveActivity.Countdown ? Visibility.Visible : Visibility.Collapsed;
+        BubbleLessonFace.Visibility = activity == LiveActivity.Lesson ? Visibility.Visible : Visibility.Collapsed;
         foreach (var property in new[] { WidthProperty, HeightProperty, MarginProperty })
             BubbleIcon.BeginAnimation(property, null);
         double size = FaceSize(activity, _bubbleOpen);
@@ -208,6 +211,11 @@ public partial class MainWindow
                 title = Loc.Get("nav.timer");
                 trailing = FormatCountdown(countdown.Remaining);
                 UpdateTimerArc(countdown.Duration.TotalSeconds > 0 ? countdown.Remaining.TotalSeconds / countdown.Duration.TotalSeconds : 0);
+                break;
+            case LiveActivity.Lesson when _lessonNow.Phase != LessonPhase.Off:
+                (title, subtitle) = LessonWords(_lessonNow);
+                trailing = Loc.Get("lesson.minutes", _lessonNow.MinutesLeft);
+                BubbleLessonArc.Data = TimerArcGeometry(_lessonNow.Remaining);
                 break;
         }
         BubbleTitle.Text = title;
@@ -804,6 +812,9 @@ public partial class MainWindow
                 break;
             case LiveActivity.Countdown:
                 _transitionCoordinator.RequestView(NotchView.Timer, "ActivityBubble");
+                break;
+            case LiveActivity.Lesson:
+                _transitionCoordinator.RequestView(NotchView.Pi, "ActivityBubble");
                 break;
         }
     }

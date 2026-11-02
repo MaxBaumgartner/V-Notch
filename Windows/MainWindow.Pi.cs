@@ -37,11 +37,13 @@ public partial class MainWindow
         _piReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = PiReminderPoll };
         _piReminderTimer.Tick += async (_, _) => await PollPiRemindersAsync();
         _piReminderTimer.Start();
+        InitializeLessonTimer();
     }
 
     private void DisposePi()
     {
         _piReminderTimer?.Stop();
+        DisposeLessonTimer();
         PiCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
         PiCenter.Dispose();
         _piClient?.Dispose();
@@ -55,7 +57,8 @@ public partial class MainWindow
 
     /// <summary>
     /// What the dashboard pushes to the phone (a new assignment, "leave at 06:21") also shows as a pill
-    /// here. What was already sent before the notch started stays quiet.
+    /// here. What was already sent before the notch started stays quiet. Several new at once take turns, one
+    /// pill a minute, newest first.
     /// </summary>
     private async Task PollPiRemindersAsync()
     {
@@ -65,11 +68,13 @@ public partial class MainWindow
         PiReminder? latest = null;
         foreach (var reminder in sent)
         {
-            if (!_seenPiReminders.Add(reminder.Key) || !_piRemindersPrimed) continue;
+            if (!_piRemindersPrimed) _seenPiReminders.Add(reminder.Key);
+            if (_seenPiReminders.Contains(reminder.Key)) continue;
             if (latest == null || reminder.At > latest.At) latest = reminder;
         }
         _piRemindersPrimed = true;
         if (latest == null) return;
+        _seenPiReminders.Add(latest.Key);
         // First line only: the phone shows the rest.
         string message = latest.Message;
         int newline = message.IndexOf('\n');

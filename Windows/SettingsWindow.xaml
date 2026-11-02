@@ -1762,6 +1762,63 @@
                                                 </TextBox>
                                             </StackPanel>
                                         </Border>
+
+                                        <!-- The resting notch and the school lesson in the orb. -->
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
+                                            <StackPanel>
+                                                <CheckBox x:Name="SlimIdleNotchCheck" Content="Slim resting notch"/>
+                                                <TextBlock x:Name="SlimIdleNotchHint"
+                                                           Text="With nothing live the closed notch rests slim and shows the time and the weather."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,0"/>
+                                                <CheckBox x:Name="LessonTimerCheck" Content="Lesson timer" Margin="0,12,0,0"/>
+                                                <TextBlock x:Name="LessonTimerHint"
+                                                           Text="During school a ring beside the notch counts down the lesson or the break, from the Pi's timetable."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <!-- Where the Pi tab, Moodle, Untis and Discord are found. -->
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
+                                            <StackPanel>
+                                                <StackPanel.Resources>
+                                                    <Style x:Key="PiSchoolTextBox" TargetType="TextBox">
+                                                        <Setter Property="Height" Value="40"/>
+                                                        <Setter Property="Padding" Value="12,10"/>
+                                                        <Setter Property="FontSize" Value="12"/>
+                                                        <Setter Property="FontFamily" Value="{StaticResource SettingsFont}"/>
+                                                        <Setter Property="Background" Value="#0F0F0F"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource SettingsTextBrush}"/>
+                                                        <Setter Property="BorderBrush" Value="#2A2A2A"/>
+                                                        <Setter Property="BorderThickness" Value="1"/>
+                                                        <Setter Property="CaretBrush" Value="#C8C8C8"/>
+                                                        <Setter Property="VerticalContentAlignment" Value="Center"/>
+                                                        <Style.Resources>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="CornerRadius" Value="10"/>
+                                                            </Style>
+                                                        </Style.Resources>
+                                                    </Style>
+                                                </StackPanel.Resources>
+                                                <TextBlock x:Name="PiDashboardUrlLabel" Text="Pi dashboard" Style="{StaticResource SettingTitleText}"/>
+                                                <TextBlock x:Name="PiDashboardUrlHint"
+                                                           Text="Address of your Raspberry Pi dashboard for the Pi tab, school pills and the lesson timer, e.g. http://localhost:5000. Empty hides it."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,6"/>
+                                                <TextBox x:Name="PiDashboardUrlTextBox" Style="{StaticResource PiSchoolTextBox}"/>
+                                                <TextBlock x:Name="SchoolMoodleUrlLabel" Text="Moodle" Style="{StaticResource SettingTitleText}" Margin="0,12,0,6"/>
+                                                <TextBox x:Name="SchoolMoodleUrlTextBox" Style="{StaticResource PiSchoolTextBox}"/>
+                                                <TextBlock x:Name="SchoolUntisUrlLabel" Text="Untis" Style="{StaticResource SettingTitleText}" Margin="0,12,0,6"/>
+                                                <TextBox x:Name="SchoolUntisUrlTextBox" Style="{StaticResource PiSchoolTextBox}"/>
+                                                <TextBlock x:Name="DiscordClientIdLabel" Text="Discord client ID" Style="{StaticResource SettingTitleText}" Margin="0,12,0,0"/>
+                                                <TextBlock x:Name="DiscordClientIdHint"
+                                                           Text="Your own Discord application, so the muted-mic warning can unmute you in Discord. Empty leaves Discord out."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,6"/>
+                                                <TextBox x:Name="DiscordClientIdTextBox" Style="{StaticResource PiSchoolTextBox}"/>
+                                            </StackPanel>
+                                        </Border>
                                     </StackPanel>
                                 </Border>
 

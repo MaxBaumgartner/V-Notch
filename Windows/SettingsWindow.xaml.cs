@@ -357,6 +357,7 @@ public partial class SettingsWindow : Window
         EnableWeatherCheck.IsChecked = _settings.EnableWeather;
         ManualCityTextBox.Text = _settings.ManualCity;
         UpdateWeatherDependentControls(_settings.EnableWeather);
+        LoadPiSchoolSettings(_settings);
 
         _settings.ProcessPriority = ProcessPriorityPolicy.Normalize(_settings.ProcessPriority);
         ProcessPriorityCombo.SelectedItem = ProcessPriorityCombo.Items.OfType<System.Windows.Controls.ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == _settings.ProcessPriority) ?? ProcessPriorityCombo.Items[0];
@@ -1132,6 +1133,7 @@ public partial class SettingsWindow : Window
         EnableWeatherHint.Text = Loc.Get("settings.enableWeather.hint");
         ManualCityLabel.Text = Loc.Get("settings.manualCity");
         ManualCityHint.Text = Loc.Get("settings.manualCity.hint");
+        LocalizePiSchoolSettings();
 
         GpuRefractionCheck.Content = Loc.Get("settings.gpuRefraction");
         GpuRefractionHint.Text = Loc.Get("settings.gpuRefraction.hint");

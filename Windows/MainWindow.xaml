@@ -541,6 +541,15 @@
                                       StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                             </Canvas>
                         </Viewbox>
+                        <!-- The school lesson: green, so it is not taken for the timer. -->
+                        <Viewbox x:Name="BubbleLessonFace" Visibility="Collapsed">
+                            <Canvas Width="100" Height="100">
+                                <Ellipse Width="84" Height="84" Canvas.Left="8" Canvas.Top="8"
+                                         Stroke="#4030D158" StrokeThickness="14"/>
+                                <Path x:Name="BubbleLessonArc" Stroke="#30D158" StrokeThickness="14"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            </Canvas>
+                        </Viewbox>
                     </Grid>
                     <!-- Only in the open pill: what the activity is, and its time. -->
                     <Grid x:Name="BubbleDetail"

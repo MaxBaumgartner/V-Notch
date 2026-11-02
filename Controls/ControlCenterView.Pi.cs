@@ -358,7 +358,7 @@ public partial class ControlCenterView
             if (exam.Date.Date < DateTime.Today || exams == PiMaxExams) continue;
             exams++;
             var row = NewRow("\uE787", exam.Title);
-            AddStatus(row, $"{exam.Kind} · {exam.Date.ToString("ddd d.M.", CultureInfo.CurrentUICulture)} {exam.Start}", Muted);
+            AddStatus(row, $"{exam.Kind} · {exam.Date.ToString("ddd d.M.", Loc.GetCulture())} {exam.Start}", Muted);
             OpenOnClick(row, () => SchoolLinks.Untis(_untisUrl()), SignInToSchoolAsync);
             _piSchoolSection.Children.Add(row);
         }
@@ -451,7 +451,7 @@ public partial class ControlCenterView
 
     private static string DayLabel(string isoDate) =>
         DateTime.TryParseExact(isoDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
-            ? day.ToString("ddd d.M.", CultureInfo.CurrentUICulture)
+            ? day.ToString("ddd d.M.", Loc.GetCulture())
             : isoDate;
 
     private static string DueText(DateTimeOffset due, TimeSpan left)

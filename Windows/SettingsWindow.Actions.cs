@@ -114,6 +114,7 @@ public partial class SettingsWindow
             EnableDiagnosticLoggingCheck.IsChecked = defaults.EnableDiagnosticLogging;
             EnableSpotlightHistoryCheck.IsChecked = defaults.EnableSpotlightHistory;
             LoadAdditionalPrivacy(defaults);
+            LoadPiSchoolSettings(defaults);
             UpdateLocalOnlyDependentControls(defaults.EnableLocalOnlyMode);
             int defLangIndex = 0;
             for (int i = 0; i < LanguageCombo.Items.Count; i++)
@@ -620,6 +621,7 @@ public partial class SettingsWindow
 
         snapshot.EnableWeather = EnableWeatherCheck.IsChecked ?? false;
         snapshot.ManualCity = ManualCityTextBox.Text?.Trim() ?? string.Empty;
+        ReadPiSchoolSettings(snapshot);
 
         snapshot.EnableLocalOnlyMode = LocalOnlyModeCheck.IsChecked ?? false;
         snapshot.AutoCheckUpdates = AutoCheckUpdatesCheck.IsChecked ?? true;

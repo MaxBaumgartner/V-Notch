@@ -231,6 +231,8 @@ public partial class NotchSettings
     public bool PlayClaudeSounds { get; set; } = true;
     // With nothing live the closed notch rests slim and shows the time and the weather.
     public bool SlimIdleNotch { get; set; } = true;
+    // During school the orb beside the notch counts down the lesson (or the break), from the Pi's timetable.
+    public bool ShowLessonTimer { get; set; } = true;
     public string ClockPageStyle { get; set; } = "analog";
 
     public string ProcessPriority { get; set; } = "Normal";
