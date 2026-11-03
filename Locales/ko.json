@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "본인 Discord 앱의 ID(Public Client, 리디렉션 http://127.0.0.1/callback)입니다. 마이크 음소거 경고가 Discord 음소거 상태를 보고 바꿀 수 있습니다. 비워 두면 Discord를 사용하지 않습니다.",
   "lesson.leave": "출발",
   "lesson.firstLesson": "1교시",
-  "lesson.rain": "{0}° · 비 {1}%"
+  "lesson.rain": "{0}° · 비 {1}%",
+  "control.laptop": "노트북",
+  "control.laptop.mode": "성능 모드",
+  "control.laptop.eco": "에코",
+  "control.laptop.balanced": "균형",
+  "control.laptop.performance": "성능",
+  "control.laptop.sensors": "온도 및 팬",
+  "control.laptop.fans": "CPU {0} · GPU {1} rpm",
+  "control.laptop.maxFan": "팬 최대",
+  "control.laptop.keyboard": "키보드 조명",
+  "control.laptop.noHelper": "OMEN 도우미가 실행되고 있지 않습니다"
 }

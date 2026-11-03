@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID van je eigen Discord-app (Public Client, redirect http://127.0.0.1/callback), zodat de waarschuwing voor een gedempte microfoon je demping in Discord kan zien en wijzigen. Leeg laat Discord weg.",
   "lesson.leave": "Vertrekken",
   "lesson.firstLesson": "Eerste les",
-  "lesson.rain": "{0}° · {1} % regen"
+  "lesson.rain": "{0}° · {1} % regen",
+  "control.laptop": "Laptop",
+  "control.laptop.mode": "Prestatiemodus",
+  "control.laptop.eco": "Eco",
+  "control.laptop.balanced": "Gebalanceerd",
+  "control.laptop.performance": "Prestaties",
+  "control.laptop.sensors": "Temperatuur en ventilatoren",
+  "control.laptop.fans": "CPU {0} · GPU {1} tpm",
+  "control.laptop.maxFan": "Ventilatoren op max",
+  "control.laptop.keyboard": "Toetsenbordverlichting",
+  "control.laptop.noHelper": "OMEN-helper draait niet"
 }

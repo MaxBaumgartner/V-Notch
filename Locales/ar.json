@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "معرّف تطبيق Discord الخاص بك (Public Client، إعادة توجيه http://127.0.0.1/callback) ليتمكن تنبيه الميكروفون المكتوم من رؤية حالة الكتم في Discord وتغييرها. اتركه فارغًا لتجاهل Discord.",
   "lesson.leave": "المغادرة",
   "lesson.firstLesson": "الحصة الأولى",
-  "lesson.rain": "{0}° · {1} % مطر"
+  "lesson.rain": "{0}° · {1} % مطر",
+  "control.laptop": "الحاسوب المحمول",
+  "control.laptop.mode": "وضع الأداء",
+  "control.laptop.eco": "اقتصادي",
+  "control.laptop.balanced": "متوازن",
+  "control.laptop.performance": "أداء",
+  "control.laptop.sensors": "الحرارة والمراوح",
+  "control.laptop.fans": "CPU {0} · GPU {1} دورة/د",
+  "control.laptop.maxFan": "المراوح بأقصى سرعة",
+  "control.laptop.keyboard": "إضاءة لوحة المفاتيح",
+  "control.laptop.noHelper": "مساعد OMEN لا يعمل"
 }

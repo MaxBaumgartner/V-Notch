@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "你自己的 Discord 应用 ID（Public Client，重定向 http://127.0.0.1/callback），这样麦克风静音提醒可以查看并更改你在 Discord 中的静音状态。留空则不使用 Discord。",
   "lesson.leave": "出发",
   "lesson.firstLesson": "第一节课",
-  "lesson.rain": "{0}° · 降雨 {1}%"
+  "lesson.rain": "{0}° · 降雨 {1}%",
+  "control.laptop": "笔记本",
+  "control.laptop.mode": "性能模式",
+  "control.laptop.eco": "节能",
+  "control.laptop.balanced": "均衡",
+  "control.laptop.performance": "性能",
+  "control.laptop.sensors": "温度与风扇",
+  "control.laptop.fans": "CPU {0} · GPU {1} 转/分",
+  "control.laptop.maxFan": "风扇全速",
+  "control.laptop.keyboard": "键盘灯",
+  "control.laptop.noHelper": "OMEN 助手未运行"
 }

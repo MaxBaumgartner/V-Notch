@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID twojej aplikacji Discord (Public Client, przekierowanie http://127.0.0.1/callback), aby ostrzeżenie o wyciszonym mikrofonie mogło widzieć i zmieniać wyciszenie w Discordzie. Puste pomija Discorda.",
   "lesson.leave": "Wyjście",
   "lesson.firstLesson": "Pierwsza lekcja",
-  "lesson.rain": "{0}° · {1} % deszczu"
+  "lesson.rain": "{0}° · {1} % deszczu",
+  "control.laptop": "Laptop",
+  "control.laptop.mode": "Tryb wydajności",
+  "control.laptop.eco": "Eko",
+  "control.laptop.balanced": "Zrównoważony",
+  "control.laptop.performance": "Wydajność",
+  "control.laptop.sensors": "Temperatura i wentylatory",
+  "control.laptop.fans": "CPU {0} · GPU {1} obr./min",
+  "control.laptop.maxFan": "Wentylatory na maks.",
+  "control.laptop.keyboard": "Podświetlenie klawiatury",
+  "control.laptop.noHelper": "Pomocnik OMEN nie działa"
 }

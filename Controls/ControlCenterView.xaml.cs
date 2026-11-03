@@ -121,6 +121,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         InitializeComponent();
         ControlRoot.Children.Add(_statsSection);
+        ControlRoot.Children.Add(_laptopSection);
         ControlRoot.Children.Add(_networkSection);
         ControlRoot.Children.Add(_bluetoothSection);
         ControlRoot.Children.Add(_audioSection);
@@ -248,7 +249,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void OnLanguageChanged() => Dispatcher.BeginInvoke(() =>
     {
-        _networkKey = _bluetoothKey = _audioKey = _notificationKey = _wallpaperKey = _claudeKey = "";
+        _networkKey = _bluetoothKey = _audioKey = _notificationKey = _wallpaperKey = _claudeKey = _laptopKey = "";
         _statsTiles = null;
         _piKey = "";
         if (_snapshot != null) ApplySnapshot(_snapshot);
@@ -372,6 +373,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         public string? MicName;
         public SystemStats? Stats;
         public List<ProcessLoad>? Top;
+        public LaptopStatus? Laptop;
     }
 
     private Snapshot ReadSnapshot(bool? wifiOn, bool? bluetoothOn, bool rescanWifi, bool withStats, TopMode top)
@@ -397,6 +399,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             if (input.IsDefault) s.MicName = input.FriendlyName;
         }
+        if (withStats) s.Laptop = LaptopControl.Read();
         return s;
     }
 
@@ -406,6 +409,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (_statsTiles == null) BuildStatsSection();
         if (s.Stats is { } stats) ApplyStats(stats);
         UpdateTopList(s.Top);
+        if (s.Stats != null) BuildLaptopSectionIfChanged(s.Laptop);
 
         string networkKey = NetworkKey(s);
         if (networkKey != _networkKey)
@@ -2320,6 +2324,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             case "network": _networkKey = ""; break;
             case "bluetooth": _bluetoothKey = ""; break;
             case "wallpaper": _wallpaperKey = ""; break;
+            case "laptop": _laptopKey = ""; break;
             case "audio": _audioKey = ""; break;
             case "notifications": _notificationKey = ""; break;
             case "pi.home":

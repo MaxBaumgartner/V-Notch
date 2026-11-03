@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID do seu próprio app do Discord (Public Client, redirecionamento http://127.0.0.1/callback) para que o aviso de microfone mudo veja e altere seu mudo no Discord. Vazio deixa o Discord de fora.",
   "lesson.leave": "Sair",
   "lesson.firstLesson": "Primeira aula",
-  "lesson.rain": "{0}° · {1} % chuva"
+  "lesson.rain": "{0}° · {1} % chuva",
+  "control.laptop": "Notebook",
+  "control.laptop.mode": "Modo de desempenho",
+  "control.laptop.eco": "Eco",
+  "control.laptop.balanced": "Equilibrado",
+  "control.laptop.performance": "Desempenho",
+  "control.laptop.sensors": "Temperatura e ventoinhas",
+  "control.laptop.fans": "CPU {0} · GPU {1} rpm",
+  "control.laptop.maxFan": "Ventoinhas no máximo",
+  "control.laptop.keyboard": "Luz do teclado",
+  "control.laptop.noHelper": "O auxiliar OMEN não está em execução"
 }

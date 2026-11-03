@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID de tu propia aplicación de Discord (Public Client, redirección http://127.0.0.1/callback) para que el aviso de micrófono silenciado pueda ver y cambiar tu silencio en Discord. Vacío deja Discord fuera.",
   "lesson.leave": "Salir",
   "lesson.firstLesson": "Primera clase",
-  "lesson.rain": "{0}° · {1} % lluvia"
+  "lesson.rain": "{0}° · {1} % lluvia",
+  "control.laptop": "Portátil",
+  "control.laptop.mode": "Modo de rendimiento",
+  "control.laptop.eco": "Eco",
+  "control.laptop.balanced": "Equilibrado",
+  "control.laptop.performance": "Rendimiento",
+  "control.laptop.sensors": "Temperatura y ventiladores",
+  "control.laptop.fans": "CPU {0} · GPU {1} rpm",
+  "control.laptop.maxFan": "Ventiladores al máximo",
+  "control.laptop.keyboard": "Luz del teclado",
+  "control.laptop.noHelper": "El asistente OMEN no se está ejecutando"
 }

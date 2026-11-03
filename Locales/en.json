@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID of your own Discord app (Public Client, redirect http://127.0.0.1/callback), so the muted-mic warning can see and change your Discord mute. Empty leaves Discord out.",
   "lesson.leave": "Leave",
   "lesson.firstLesson": "First lesson",
-  "lesson.rain": "{0}° · {1} % rain"
+  "lesson.rain": "{0}° · {1} % rain",
+  "control.laptop": "Laptop",
+  "control.laptop.mode": "Performance mode",
+  "control.laptop.eco": "Eco",
+  "control.laptop.balanced": "Balanced",
+  "control.laptop.performance": "Performance",
+  "control.laptop.sensors": "Temperature & fans",
+  "control.laptop.fans": "CPU {0} · GPU {1} rpm",
+  "control.laptop.maxFan": "Max fans",
+  "control.laptop.keyboard": "Keyboard light",
+  "control.laptop.noHelper": "OMEN helper is not running"
 }

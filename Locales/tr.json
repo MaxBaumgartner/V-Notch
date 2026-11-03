@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "Kendi Discord uygulamanızın kimliği (Public Client, yönlendirme http://127.0.0.1/callback); böylece sessiz mikrofon uyarısı Discord'daki sessiz durumunuzu görebilir ve değiştirebilir. Boş bırakılırsa Discord kullanılmaz.",
   "lesson.leave": "Çıkış",
   "lesson.firstLesson": "İlk ders",
-  "lesson.rain": "{0}° · %{1} yağmur"
+  "lesson.rain": "{0}° · %{1} yağmur",
+  "control.laptop": "Dizüstü",
+  "control.laptop.mode": "Performans modu",
+  "control.laptop.eco": "Eko",
+  "control.laptop.balanced": "Dengeli",
+  "control.laptop.performance": "Performans",
+  "control.laptop.sensors": "Sıcaklık ve fanlar",
+  "control.laptop.fans": "CPU {0} · GPU {1} dev/dk",
+  "control.laptop.maxFan": "Fanlar tam hızda",
+  "control.laptop.keyboard": "Klavye ışığı",
+  "control.laptop.noHelper": "OMEN yardımcısı çalışmıyor"
 }

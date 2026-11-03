@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID вашего приложения Discord (Public Client, перенаправление http://127.0.0.1/callback), чтобы предупреждение о выключенном микрофоне могло видеть и менять ваш режим без звука в Discord. Пусто — без Discord.",
   "lesson.leave": "Выход",
   "lesson.firstLesson": "Первый урок",
-  "lesson.rain": "{0}° · дождь {1} %"
+  "lesson.rain": "{0}° · дождь {1} %",
+  "control.laptop": "Ноутбук",
+  "control.laptop.mode": "Режим производительности",
+  "control.laptop.eco": "Эко",
+  "control.laptop.balanced": "Сбалансированный",
+  "control.laptop.performance": "Производительность",
+  "control.laptop.sensors": "Температура и вентиляторы",
+  "control.laptop.fans": "CPU {0} · GPU {1} об/мин",
+  "control.laptop.maxFan": "Вентиляторы на максимум",
+  "control.laptop.keyboard": "Подсветка клавиатуры",
+  "control.laptop.noHelper": "Помощник OMEN не запущен"
 }

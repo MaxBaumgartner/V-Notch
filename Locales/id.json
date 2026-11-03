@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID aplikasi Discord Anda sendiri (Public Client, redirect http://127.0.0.1/callback) agar peringatan mikrofon bisu dapat melihat dan mengubah status bisu Anda di Discord. Kosong berarti tanpa Discord.",
   "lesson.leave": "Berangkat",
   "lesson.firstLesson": "Pelajaran pertama",
-  "lesson.rain": "{0}° · hujan {1} %"
+  "lesson.rain": "{0}° · hujan {1} %",
+  "control.laptop": "Laptop",
+  "control.laptop.mode": "Mode performa",
+  "control.laptop.eco": "Eko",
+  "control.laptop.balanced": "Seimbang",
+  "control.laptop.performance": "Performa",
+  "control.laptop.sensors": "Suhu & kipas",
+  "control.laptop.fans": "CPU {0} · GPU {1} rpm",
+  "control.laptop.maxFan": "Kipas maksimum",
+  "control.laptop.keyboard": "Lampu keyboard",
+  "control.laptop.noHelper": "Pembantu OMEN tidak berjalan"
 }

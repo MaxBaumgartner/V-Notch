@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID ứng dụng Discord của riêng bạn (Public Client, chuyển hướng http://127.0.0.1/callback) để cảnh báo micro tắt tiếng có thể xem và đổi trạng thái tắt tiếng trên Discord. Để trống để bỏ qua Discord.",
   "lesson.leave": "Xuất phát",
   "lesson.firstLesson": "Tiết đầu tiên",
-  "lesson.rain": "{0}° · {1} % mưa"
+  "lesson.rain": "{0}° · {1} % mưa",
+  "control.laptop": "Laptop",
+  "control.laptop.mode": "Chế độ hiệu năng",
+  "control.laptop.eco": "Tiết kiệm",
+  "control.laptop.balanced": "Cân bằng",
+  "control.laptop.performance": "Hiệu năng",
+  "control.laptop.sensors": "Nhiệt độ & quạt",
+  "control.laptop.fans": "CPU {0} · GPU {1} vòng/phút",
+  "control.laptop.maxFan": "Quạt tối đa",
+  "control.laptop.keyboard": "Đèn bàn phím",
+  "control.laptop.noHelper": "Trình trợ giúp OMEN không chạy"
 }

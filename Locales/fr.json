@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID de votre propre application Discord (Public Client, redirection http://127.0.0.1/callback) pour que l'alerte micro coupé puisse voir et changer votre sourdine Discord. Vide laisse Discord de côté.",
   "lesson.leave": "Partir",
   "lesson.firstLesson": "Premier cours",
-  "lesson.rain": "{0}° · {1} % de pluie"
+  "lesson.rain": "{0}° · {1} % de pluie",
+  "control.laptop": "Portable",
+  "control.laptop.mode": "Mode de performance",
+  "control.laptop.eco": "Éco",
+  "control.laptop.balanced": "Équilibré",
+  "control.laptop.performance": "Performance",
+  "control.laptop.sensors": "Température et ventilateurs",
+  "control.laptop.fans": "CPU {0} · GPU {1} tr/min",
+  "control.laptop.maxFan": "Ventilateurs au maximum",
+  "control.laptop.keyboard": "Éclairage du clavier",
+  "control.laptop.noHelper": "L'assistant OMEN ne fonctionne pas"
 }

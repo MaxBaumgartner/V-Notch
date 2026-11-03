@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID della tua app Discord (Public Client, redirect http://127.0.0.1/callback), così l'avviso del microfono disattivato può vedere e cambiare il tuo stato muto su Discord. Vuoto esclude Discord.",
   "lesson.leave": "Partenza",
   "lesson.firstLesson": "Prima lezione",
-  "lesson.rain": "{0}° · {1} % pioggia"
+  "lesson.rain": "{0}° · {1} % pioggia",
+  "control.laptop": "Portatile",
+  "control.laptop.mode": "Modalità prestazioni",
+  "control.laptop.eco": "Eco",
+  "control.laptop.balanced": "Bilanciata",
+  "control.laptop.performance": "Prestazioni",
+  "control.laptop.sensors": "Temperatura e ventole",
+  "control.laptop.fans": "CPU {0} · GPU {1} giri/min",
+  "control.laptop.maxFan": "Ventole al massimo",
+  "control.laptop.keyboard": "Luce tastiera",
+  "control.laptop.noHelper": "L'helper OMEN non è in esecuzione"
 }

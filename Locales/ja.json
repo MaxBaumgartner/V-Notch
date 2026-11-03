@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ご自身の Discord アプリの ID(Public Client、リダイレクト http://127.0.0.1/callback)。マイクのミュート警告が Discord のミュート状態を確認・変更できるようになります。空欄なら Discord は使いません。",
   "lesson.leave": "出発",
   "lesson.firstLesson": "1時間目",
-  "lesson.rain": "{0}° · 降水 {1} %"
+  "lesson.rain": "{0}° · 降水 {1} %",
+  "control.laptop": "ノートPC",
+  "control.laptop.mode": "パフォーマンスモード",
+  "control.laptop.eco": "エコ",
+  "control.laptop.balanced": "バランス",
+  "control.laptop.performance": "パフォーマンス",
+  "control.laptop.sensors": "温度とファン",
+  "control.laptop.fans": "CPU {0} · GPU {1} rpm",
+  "control.laptop.maxFan": "ファン最大",
+  "control.laptop.keyboard": "キーボードライト",
+  "control.laptop.noHelper": "OMEN ヘルパーが動作していません"
 }

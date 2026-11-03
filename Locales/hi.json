@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "आपके अपने Discord ऐप की ID (Public Client, रीडायरेक्ट http://127.0.0.1/callback), ताकि म्यूट माइक चेतावनी Discord में आपका म्यूट देख और बदल सके। खाली छोड़ने पर Discord शामिल नहीं होता।",
   "lesson.leave": "निकलना",
   "lesson.firstLesson": "पहला पीरियड",
-  "lesson.rain": "{0}° · {1} % बारिश"
+  "lesson.rain": "{0}° · {1} % बारिश",
+  "control.laptop": "लैपटॉप",
+  "control.laptop.mode": "परफ़ॉर्मेंस मोड",
+  "control.laptop.eco": "इको",
+  "control.laptop.balanced": "संतुलित",
+  "control.laptop.performance": "परफ़ॉर्मेंस",
+  "control.laptop.sensors": "तापमान और पंखे",
+  "control.laptop.fans": "CPU {0} · GPU {1} आरपीएम",
+  "control.laptop.maxFan": "पंखे अधिकतम",
+  "control.laptop.keyboard": "कीबोर्ड लाइट",
+  "control.laptop.noHelper": "OMEN सहायक नहीं चल रहा है"
 }

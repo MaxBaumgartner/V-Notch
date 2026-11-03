@@ -1226,5 +1226,15 @@
   "settings.discordClientId.hint": "ID deiner eigenen Discord-App (Public Client, Redirect http://127.0.0.1/callback), damit die Warnung bei stummem Mikro deine Discord-Stummschaltung sehen und ändern kann. Leer lässt Discord weg.",
   "lesson.leave": "Losgehen",
   "lesson.firstLesson": "Erste Stunde",
-  "lesson.rain": "{0}° · {1} % Regen"
+  "lesson.rain": "{0}° · {1} % Regen",
+  "control.laptop": "Laptop",
+  "control.laptop.mode": "Leistungsmodus",
+  "control.laptop.eco": "Eco",
+  "control.laptop.balanced": "Ausgewogen",
+  "control.laptop.performance": "Leistung",
+  "control.laptop.sensors": "Temperatur & Lüfter",
+  "control.laptop.fans": "CPU {0} · GPU {1} U/min",
+  "control.laptop.maxFan": "Lüfter auf Max",
+  "control.laptop.keyboard": "Tastaturlicht",
+  "control.laptop.noHelper": "OMEN-Helfer läuft nicht"
 }
