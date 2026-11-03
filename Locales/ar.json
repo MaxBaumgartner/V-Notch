@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "لا توجد صور قابلة للقراءة",
   "pi.task.poseMissing": "pi-pose غير مُعد على هذا الحاسوب",
   "pi.task.pickTitle": "صور للتسليم",
-  "pi.task.dropHint": "اختر الصور أو اسحبها إلى هذا السطر"
+  "pi.task.dropHint": "اختر الصور أو اسحبها إلى هذا السطر",
+  "pi.task.locked": "التسليم مقفل",
+  "pi.task.alreadySubmitted": "تم التسليم بالفعل: استبدله من لوحة Pi",
+  "pi.task.statement": "يتطلب إقرارًا: سلّمه من لوحة Pi"
 }

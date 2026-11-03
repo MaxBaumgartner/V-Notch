@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "कोई पढ़ने योग्य फ़ोटो नहीं",
   "pi.task.poseMissing": "इस पीसी पर pi-pose सेट नहीं है",
   "pi.task.pickTitle": "जमा करने के लिए फ़ोटो",
-  "pi.task.dropHint": "फ़ोटो चुनें या इस पंक्ति पर छोड़ें"
+  "pi.task.dropHint": "फ़ोटो चुनें या इस पंक्ति पर छोड़ें",
+  "pi.task.locked": "जमा करना लॉक है",
+  "pi.task.alreadySubmitted": "पहले ही जमा हो चुका है: बदलने के लिए Pi डैशबोर्ड इस्तेमाल करें",
+  "pi.task.statement": "घोषणा ज़रूरी है: Pi डैशबोर्ड से जमा करें"
 }

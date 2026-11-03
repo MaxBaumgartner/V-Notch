@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Geen leesbare foto’s",
   "pi.task.poseMissing": "pi-pose is op deze pc niet ingesteld",
   "pi.task.pickTitle": "Foto’s om in te leveren",
-  "pi.task.dropHint": "Kies foto’s of sleep ze naar deze regel"
+  "pi.task.dropHint": "Kies foto’s of sleep ze naar deze regel",
+  "pi.task.locked": "De inlevering is vergrendeld",
+  "pi.task.alreadySubmitted": "Al ingeleverd: vervang het via het Pi-dashboard",
+  "pi.task.statement": "Verklaring nodig: lever in via het Pi-dashboard"
 }

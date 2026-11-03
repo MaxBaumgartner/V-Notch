@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Brak czytelnych zdjęć",
   "pi.task.poseMissing": "pi-pose nie jest skonfigurowany na tym PC",
   "pi.task.pickTitle": "Zdjęcia do oddania",
-  "pi.task.dropHint": "Wybierz zdjęcia lub upuść je na ten wiersz"
+  "pi.task.dropHint": "Wybierz zdjęcia lub upuść je na ten wiersz",
+  "pi.task.locked": "Oddawanie jest zablokowane",
+  "pi.task.alreadySubmitted": "Już oddane: zamień w panelu Pi",
+  "pi.task.statement": "Wymaga oświadczenia: oddaj w panelu Pi"
 }

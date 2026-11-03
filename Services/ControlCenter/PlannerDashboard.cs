@@ -50,25 +50,35 @@ internal static class PlannerDashboard
         }
         var lessons = byDay.TryGetValue(day, out var list) ? list : new List<PiLesson>();
 
-        var deadlines = new List<PiDeadline>();
         var exams = new List<PiExam>();
         foreach (var ev in Events(events))
         {
-            if (Occurrence(ev, now.Date, IsExam(ev.Kind) ? ExamWindow : HomeworkWindow) is not { } date) continue;
-            if (IsExam(ev.Kind))
-            {
-                exams.Add(new PiExam(date, ev.Start, ExamLabel(ev.Kind), ev.Title));
-            }
-            else if (ev.Kind == HomeworkKind && ev.Title.StartsWith(MoodlePrefix, StringComparison.Ordinal))
-            {
-                var due = new DateTimeOffset(date.Add(TimeSpan.FromMinutes(Minutes(ev.End))));
-                deadlines.Add(new PiDeadline(ev.Title[MoodlePrefix.Length..], ev.Sub, due, ev.Done));
-            }
+            if (!IsExam(ev.Kind) || Occurrence(ev, now.Date, ExamWindow) is not { } date) continue;
+            exams.Add(new PiExam(date, ev.Start, ExamLabel(ev.Kind), ev.Title));
         }
         exams.Sort((a, b) => (a.Date, a.Start).CompareTo((b.Date, b.Start)));
-        deadlines.Sort((a, b) => a.Due.CompareTo(b.Due));
+        var deadlines = MoodleDeadlines(events, now).ConvertAll(d => d.Deadline);
         return new PiSchool(day, day == today, lessons, deadlines, exams, null);
     }
+
+    /// <summary>
+    /// The Moodle deadlines of the next two weeks, soonest first, with the planner event each came from: the hand-in
+    /// routes take that id. Their Moodle course-module id is not in the planner; the client looks it up.
+    /// </summary>
+    internal static List<(string EventId, PiDeadline Deadline)> MoodleDeadlines(JsonArray? events, DateTime now)
+    {
+        var deadlines = new List<(string EventId, PiDeadline Deadline)>();
+        foreach (var ev in Events(events))
+        {
+            if (ev.Kind != HomeworkKind || !ev.Title.StartsWith(MoodlePrefix, StringComparison.Ordinal)) continue;
+            if (Occurrence(ev, now.Date, HomeworkWindow) is not { } date) continue;
+            var due = new DateTimeOffset(date.Add(TimeSpan.FromMinutes(Minutes(ev.End))));
+            deadlines.Add((ev.Id, new PiDeadline(ev.Title[MoodlePrefix.Length..], ev.Sub, due, ev.Done)));
+        }
+        deadlines.Sort((a, b) => a.Deadline.Due.CompareTo(b.Deadline.Due));
+        return deadlines;
+    }
+
 
     /// <summary>The lessons of every day, sorted by time; a lesson is named by its subject's full name.</summary>
     internal static Dictionary<string, List<PiLesson>> LessonsByDay(JsonArray? timetable)
@@ -86,6 +96,49 @@ internal static class PlannerDashboard
         }
         foreach (var list in byDay.Values) list.Sort((a, b) => a.StartMinutes.CompareTo(b.StartMinutes));
         return byDay;
+    }
+
+    #endregion
+
+    #region Hand-ins
+
+    /// <summary>The course-module id from an assignment's Moodle address ("…/mod/assign/view.php?id=123456"); 0 without one.</summary>
+    internal static int CmidFromUrl(string url)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(url ?? "", @"[?&]id=(\d+)");
+        return match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int cmid) ? cmid : 0;
+    }
+
+    /// <summary>
+    /// The planner's assignment info as the Pi tab's hand-in buttons read it: photos go in as one PDF where files
+    /// may be handed in and PDFs are allowed, everything else is only a link. A hand-in that is locked, already
+    /// has files (they would be replaced) or needs a declaration stays with the dashboard, where it is confirmed.
+    /// </summary>
+    internal static PiAssignment Assignment(int cmid, JsonObject info)
+    {
+        string name = Str(info, "name");
+        bool files = Bool(info, "fileSubmissions") && PdfAllowed(Str(info, "fileTypes"));
+        string? blocked =
+            Bool(info, "locked") ? Loc.Get("pi.task.locked")
+            : Str(info, "status") == "submitted" || info["existingFiles"] is JsonArray { Count: > 0 } ? Loc.Get("pi.task.alreadySubmitted")
+            : Bool(info, "needsSubmitButton") && Bool(info, "needsStatement") ? Loc.Get("pi.task.statement")
+            : null;
+        return new PiAssignment(cmid, name, files ? "photo" : "link", "", [], Str(info, "status"), blocked, DefaultPdfName(name));
+    }
+
+    /// <summary>The same check as the dashboard: no list means anything goes.</summary>
+    private static bool PdfAllowed(string fileTypes) =>
+        fileTypes.Trim().Length == 0 ||
+        System.Text.RegularExpressions.Regex.IsMatch(fileTypes, @"(^|[\s,;])(\.pdf|document|application/pdf|\*)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>"Abgabe: Übung 7 bis 4.11.2026" → "Übung 7", as the dashboard names the PDF.</summary>
+    internal static string DefaultPdfName(string title)
+    {
+        string name = System.Text.RegularExpressions.Regex.Replace(title ?? "", @"^Abgabe:\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        name = System.Text.RegularExpressions.Regex.Replace(name, @"\s+bis\s+\d{1,2}\.\d{1,2}\.\d{2,4}\s*$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        name = System.Text.RegularExpressions.Regex.Replace(name, "[\\\\/:*?\"<>|]", "").Trim();
+        if (name.Length > 60) name = name[..60];
+        return name.Length > 0 ? name : "Abgabe";
     }
 
     #endregion

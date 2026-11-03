@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Keine lesbaren Fotos",
   "pi.task.poseMissing": "pi-pose ist auf diesem PC nicht eingerichtet",
   "pi.task.pickTitle": "Fotos für die Abgabe",
-  "pi.task.dropHint": "Fotos auswählen oder auf diese Zeile ziehen"
+  "pi.task.dropHint": "Fotos auswählen oder auf diese Zeile ziehen",
+  "pi.task.locked": "Die Abgabe ist gesperrt",
+  "pi.task.alreadySubmitted": "Schon abgegeben: zum Ersetzen das Pi-Dashboard nutzen",
+  "pi.task.statement": "Braucht eine Erklärung: im Pi-Dashboard abgeben"
 }

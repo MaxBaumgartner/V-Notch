@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Okunabilir fotoğraf yok",
   "pi.task.poseMissing": "pi-pose bu bilgisayarda kurulu değil",
   "pi.task.pickTitle": "Teslim edilecek fotoğraflar",
-  "pi.task.dropHint": "Fotoğraf seçin veya bu satıra bırakın"
+  "pi.task.dropHint": "Fotoğraf seçin veya bu satıra bırakın",
+  "pi.task.locked": "Teslim kilitli",
+  "pi.task.alreadySubmitted": "Zaten teslim edildi: değiştirmek için Pi panelini kullanın",
+  "pi.task.statement": "Beyan gerekiyor: Pi panelinden teslim edin"
 }

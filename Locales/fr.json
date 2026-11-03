@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Aucune photo lisible",
   "pi.task.poseMissing": "pi-pose n’est pas installé sur ce PC",
   "pi.task.pickTitle": "Photos à rendre",
-  "pi.task.dropHint": "Choisissez des photos ou déposez-les sur cette ligne"
+  "pi.task.dropHint": "Choisissez des photos ou déposez-les sur cette ligne",
+  "pi.task.locked": "Le rendu est verrouillé",
+  "pi.task.alreadySubmitted": "Déjà rendu : remplacez-le dans le tableau de bord du Pi",
+  "pi.task.statement": "Déclaration requise : rendez-le dans le tableau de bord du Pi"
 }

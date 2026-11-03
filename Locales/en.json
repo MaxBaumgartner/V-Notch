@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "No readable photos",
   "pi.task.poseMissing": "pi-pose is not set up on this PC",
   "pi.task.pickTitle": "Photos to hand in",
-  "pi.task.dropHint": "Pick photos, or drop them on this row"
+  "pi.task.dropHint": "Pick photos, or drop them on this row",
+  "pi.task.locked": "The hand-in is locked",
+  "pi.task.alreadySubmitted": "Already handed in: replace it on the Pi dashboard",
+  "pi.task.statement": "Needs a declaration: hand it in on the Pi dashboard"
 }

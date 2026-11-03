@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "没有可读取的照片",
   "pi.task.poseMissing": "此电脑未设置 pi-pose",
   "pi.task.pickTitle": "要提交的照片",
-  "pi.task.dropHint": "选择照片或拖到这一行"
+  "pi.task.dropHint": "选择照片或拖到这一行",
+  "pi.task.locked": "提交已锁定",
+  "pi.task.alreadySubmitted": "已提交：请在 Pi 仪表板中替换",
+  "pi.task.statement": "需要声明：请在 Pi 仪表板中提交"
 }

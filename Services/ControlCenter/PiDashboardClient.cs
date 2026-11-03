@@ -168,8 +168,11 @@ internal sealed partial class PiDashboardClient : IDisposable
     /// stay there). Anything unexpected, or the Pi out of reach, leaves the page link as it was.
     /// </summary>
     /// <summary>An assignment as the Pi's hand-in panel sees it (mode, the files of the task, whether it can be handed in).</summary>
-    public async Task<PiAssignment?> GetAssignmentAsync(int cmid) =>
-        cmid > 0 && await GetAsync($"/api/abgabe/{cmid}").ConfigureAwait(false) is JsonObject o ? ParseAssignment(o) : null;
+    public async Task<PiAssignment?> GetAssignmentAsync(int cmid)
+    {
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerAssignmentAsync(cmid).ConfigureAwait(false);
+        return cmid > 0 && await GetAsync($"/api/abgabe/{cmid}").ConfigureAwait(false) is JsonObject o ? ParseAssignment(o) : null;
+    }
 
     internal static PiAssignment? ParseAssignment(JsonObject o)
     {
@@ -208,6 +211,7 @@ internal sealed partial class PiDashboardClient : IDisposable
     public async Task<PiSubmitResult> SubmitPhotosAsync(int cmid, string filename, IReadOnlyList<string> jpegPages)
     {
         if (!IsConfigured || cmid <= 0 || jpegPages.Count == 0) return new(false, null, null);
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerSubmitPhotosAsync(cmid, filename, jpegPages).ConfigureAwait(false);
         var pages = new JsonArray();
         foreach (string page in jpegPages) pages.Add(page);
         try

@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Không có ảnh đọc được",
   "pi.task.poseMissing": "Máy này chưa cài pi-pose",
   "pi.task.pickTitle": "Ảnh để nộp",
-  "pi.task.dropHint": "Chọn ảnh hoặc thả vào dòng này"
+  "pi.task.dropHint": "Chọn ảnh hoặc thả vào dòng này",
+  "pi.task.locked": "Bài nộp đã bị khóa",
+  "pi.task.alreadySubmitted": "Đã nộp: thay thế trong bảng điều khiển Pi",
+  "pi.task.statement": "Cần lời cam kết: hãy nộp trong bảng điều khiển Pi"
 }

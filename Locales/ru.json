@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Нет читаемых фото",
   "pi.task.poseMissing": "pi-pose не настроен на этом ПК",
   "pi.task.pickTitle": "Фото для сдачи",
-  "pi.task.dropHint": "Выберите фото или перетащите их на эту строку"
+  "pi.task.dropHint": "Выберите фото или перетащите их на эту строку",
+  "pi.task.locked": "Сдача заблокирована",
+  "pi.task.alreadySubmitted": "Уже сдано: заменить можно в панели Pi",
+  "pi.task.statement": "Нужно заявление: сдайте через панель Pi"
 }

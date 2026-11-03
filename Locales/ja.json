@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "読み取れる写真がありません",
   "pi.task.poseMissing": "この PC に pi-pose が設定されていません",
   "pi.task.pickTitle": "提出する写真",
-  "pi.task.dropHint": "写真を選ぶか、この行にドロップ"
+  "pi.task.dropHint": "写真を選ぶか、この行にドロップ",
+  "pi.task.locked": "提出はロックされています",
+  "pi.task.alreadySubmitted": "提出済み：差し替えは Pi ダッシュボードで",
+  "pi.task.statement": "宣誓が必要：Pi ダッシュボードから提出してください"
 }

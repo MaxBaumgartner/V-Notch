@@ -1272,5 +1272,8 @@
   "pi.task.noPhotos": "Nenhuma foto legível",
   "pi.task.poseMissing": "O pi-pose não está configurado neste PC",
   "pi.task.pickTitle": "Fotos para entregar",
-  "pi.task.dropHint": "Escolha fotos ou solte-as nesta linha"
+  "pi.task.dropHint": "Escolha fotos ou solte-as nesta linha",
+  "pi.task.locked": "A entrega está bloqueada",
+  "pi.task.alreadySubmitted": "Já entregue: substitua no painel do Pi",
+  "pi.task.statement": "Precisa de uma declaração: entregue pelo painel do Pi"
 }
