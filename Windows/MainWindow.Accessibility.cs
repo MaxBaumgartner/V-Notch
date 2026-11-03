@@ -33,11 +33,12 @@ public partial class MainWindow
         {
             (SettingsButton, "tooltip.settings"), (BatterySection, "settings.batteryDevice.system"),
             (HomeIconButton, "nav.media"), (ClipboardIconButton, "nav.clipboard"), (CameraIconButton, "nav.camera"),
-            (TimerIconButton, "nav.controls"), (ClaudeIconButton, "nav.claude"), (PiIconButton, "nav.pi"), (WeatherIconButton, "nav.weather"), (AudioIconButton, "nav.audio"),
+            (TimerIconButton, "nav.controls"), (ClaudeIconButton, "nav.claude"), (PiIconButton, "nav.pi"), (WeatherIconButton, "nav.weather"), (LegionIconButton, "nav.legion"), (AudioIconButton, "nav.audio"),
             (CameraSection, "settings.camera"), (UpdateNotificationButton, "tooltip.downloadUpdate"),
             (MediaPlayback.PrevButton, "media.previous"), (InlinePrevButton, "media.previous"),
             (MediaPlayback.NextButton, "media.next"), (InlineNextButton, "media.next"),
             (VolumeBarContainer, "media.volume"), (VolumeMuteButton, "media.mute"),
+            (MediaVolumeBar, "media.volume"), (MediaVolumeMuteButton, "media.mute"),
             (CountdownWidget.CountdownResetBtn, "timer.reset"), (CountdownWidget.CountdownStartBtn, "timer.start"),
             (CountdownWidget.CountdownPlusBtn, "timer.increase"), (CountdownWidget.CountdownMinusBtn, "timer.decrease"),
             (CountdownRestartBtn, "timer.restart"), (CountdownDismissBtn, "timer.dismiss")

@@ -34,9 +34,9 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera")]
-    [InlineData("AudioMixer,Media", "AudioMixer,Media,Claude,Pi,Weather")]
-    [InlineData("Media,Claude,Timer", "Media,Claude,Pi,Weather,Timer")]
+    [InlineData("Media,Secondary,Timer,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera")]
+    [InlineData("AudioMixer,Media", "AudioMixer,Media,Claude,Pi,Weather,Legion")]
+    [InlineData("Media,Claude,Timer", "Media,Claude,Pi,Weather,Legion,Timer")]
     public void Migrate_Version14_AddsTheClaudeTabNextToTheControls(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 14, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
@@ -47,9 +47,9 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,Claude,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera")]
-    [InlineData("Media,AudioMixer", "Media,AudioMixer,Pi,Weather")]
-    [InlineData("Pi,Media,Claude", "Pi,Weather,Media,Claude")]
+    [InlineData("Media,Secondary,Timer,Claude,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera")]
+    [InlineData("Media,AudioMixer", "Media,AudioMixer,Pi,Weather,Legion")]
+    [InlineData("Pi,Media,Claude", "Pi,Weather,Legion,Media,Claude")]
     public void Migrate_Version15_AddsThePiTabNextToClaude(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 15, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
@@ -60,12 +60,25 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,Claude,Pi,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera")]
-    [InlineData("Media,AudioMixer", "Media,AudioMixer,Weather")]
-    [InlineData("Weather,Media,Pi", "Weather,Media,Pi")]
+    [InlineData("Media,Secondary,Timer,Claude,Pi,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera")]
+    [InlineData("Media,AudioMixer", "Media,AudioMixer,Weather,Legion")]
+    [InlineData("Weather,Media,Pi", "Weather,Legion,Media,Pi")]
     public void Migrate_Version16_AddsTheWeatherTabNextToPi(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 16, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
+        var (settings, migrated) = SettingsMigrator.Migrate(json);
+        Assert.True(migrated);
+        Assert.Equal(expected, settings.NavTabOrder);
+        Assert.Equal(expected, settings.VisibleNavTabs);
+    }
+
+    [Theory]
+    [InlineData("Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera")]
+    [InlineData("Media,AudioMixer", "Media,AudioMixer,Legion")]
+    [InlineData("Legion,Media,Weather", "Legion,Media,Weather")]
+    public void Migrate_Version17_AddsTheLegionTabNextToWeather(string saved, string expected)
+    {
+        string json = $$"""{ "SettingsVersion": 17, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
         Assert.Equal(expected, settings.NavTabOrder);

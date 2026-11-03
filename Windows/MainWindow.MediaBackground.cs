@@ -110,6 +110,8 @@ public partial class MainWindow
 
         var liftedSub = LiftDarkColor(subColor);
         var vibrantTargetColor = Color.FromRgb(liftedSub.R, liftedSub.G, liftedSub.B);
+        // The control center's audio parts (output picker) wear the cover's colour too.
+        VNotch.Controls.ControlCenterView.SetMediaAccent(vibrantTargetColor);
         double dominantLuminance = (0.2126 * dominantColor.R + 0.7152 * dominantColor.G + 0.0722 * dominantColor.B) / 255.0;
 
         var uiColorAnim = new ColorAnimation
@@ -233,6 +235,7 @@ public partial class MainWindow
         VolumeBarGradientStart.BeginAnimation(GradientStop.ColorProperty, volStartAnim);
         System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(volEndAnim, VNotch.Services.AnimationConfig.TargetFps);
         VolumeBarGradientEnd.BeginAnimation(GradientStop.ColorProperty, volEndAnim);
+        TintMediaVolumeFill(volStartAnim, volEndAnim);
         SetVolumeHudMediaTint(vibrantTargetColor, true);
 
 
@@ -370,6 +373,7 @@ public partial class MainWindow
         };
         System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(defaultVolEndAnim, VNotch.Services.AnimationConfig.TargetFps);
         VolumeBarGradientEnd.BeginAnimation(GradientStop.ColorProperty, defaultVolEndAnim);
+        TintMediaVolumeFill(defaultColorAnim, defaultVolEndAnim);
         SetVolumeHudMediaTint(Colors.White, false);
 
 

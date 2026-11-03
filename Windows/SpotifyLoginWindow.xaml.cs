@@ -29,6 +29,9 @@ public partial class SpotifyLoginWindow : Window
 
     public string SpotifySpDc { get; private set; } = "";
 
+    /// <summary>The privacy switch that must allow the login (Canvas from settings, Jam from the notch).</summary>
+    internal NetworkFeature PrivacyFeature { get; init; } = NetworkFeature.Canvas;
+
     public SpotifyLoginWindow()
     {
         InitializeComponent();
@@ -110,8 +113,8 @@ public partial class SpotifyLoginWindow : Window
     private async void SpotifyLoginWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= SpotifyLoginWindow_Loaded;
-        if (!NetworkPrivacy.Current.IsAllowed(NetworkFeature.Canvas)) { Close(); return; }
-        _privacyCancellation = NetworkPrivacy.Current.Acquire(NetworkFeature.Canvas).Register(() =>
+        if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature)) { Close(); return; }
+        _privacyCancellation = NetworkPrivacy.Current.Acquire(PrivacyFeature).Register(() =>
             Dispatcher.BeginInvoke(() => { SpotifyWebView.Dispose(); Close(); }));
         PlayEntranceAnimation();
         try
@@ -127,11 +130,11 @@ public partial class SpotifyLoginWindow : Window
                 await CoreWebView2Environment.CreateAsync(userDataFolder: _userDataFolder);
             await SpotifyWebView.EnsureCoreWebView2Async(environment);
 
-            if (!NetworkPrivacy.Current.IsAllowed(NetworkFeature.Canvas)) { Close(); return; }
+            if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature)) { Close(); return; }
             SpotifyWebView.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             SpotifyWebView.CoreWebView2.WebResourceRequested += (_, args) =>
             {
-                if (!NetworkPrivacy.Current.IsAllowed(NetworkFeature.Canvas))
+                if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature))
                     args.Response = environment.CreateWebResourceResponse(null, 403, "Disabled by privacy settings", "");
             };
 

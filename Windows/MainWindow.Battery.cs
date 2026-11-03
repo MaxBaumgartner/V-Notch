@@ -72,7 +72,8 @@ public partial class MainWindow
         }
         else if (battery.IsPowerConnected)
         {
-            fillBrush = _brushCharging;
+            // Monochrome on mains power (a desktop always reports this); the bolt says it.
+            fillBrush = _brushWhite;
             percentBrush = VNotch.Services.UiPalette.PrimaryBrush;
             showLightning = true;
         }

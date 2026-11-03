@@ -6,7 +6,7 @@ using VNotch.Models;
 
 namespace VNotch.Services;
 
-internal enum NetworkFeature { Updates, Artwork, Lyrics, Subtitles, Canvas, Weather, Ai, ExternalLinks, TranslationModels, CurrencyRates }
+internal enum NetworkFeature { Updates, Artwork, Lyrics, Subtitles, Canvas, Weather, Ai, ExternalLinks, TranslationModels, CurrencyRates, SpotifyRemote }
 
 // One policy for production HTTP clients and out-of-process network features.
 // Deny until startup has loaded the user's persisted settings.
@@ -34,6 +34,9 @@ internal sealed partial class NetworkPrivacy
         Enum.GetValues<NetworkFeature>().ToDictionary(f => f, _ => new CancellationTokenSource());
 
     internal static bool Allows(NotchSettings s, NetworkFeature feature) =>
+        // Jam and the Spotify volume only run after the user signed in to Spotify, so only
+        // local-only mode blocks them (the native policy predates this feature and does not know its id).
+        feature == NetworkFeature.SpotifyRemote ? !s.EnableLocalOnlyMode :
         vn_netprivacy_allows(
             s.EnableLocalOnlyMode ? (byte)1 : (byte)0,
             (int)feature,

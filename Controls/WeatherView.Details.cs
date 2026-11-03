@@ -127,6 +127,7 @@ public sealed partial class WeatherView
 
             var date = day.Date;
             HoverTint(row, () => date == _selectedDay);
+            PressSquish(row);
             row.MouseEnter += (_, _) => Bump(icon, 1.22);
             row.MouseLeave += (_, _) => Bump(icon, 1);
             row.MouseLeftButtonUp += (_, e) =>
@@ -197,6 +198,34 @@ public sealed partial class WeatherView
     }
 
     /// <summary>Springs an element to a scale from wherever its entrance left it.</summary>
+    private static readonly IEasingFunction PressRelease = CreatePressRelease();
+
+    private static IEasingFunction CreatePressRelease()
+    {
+        var ease = new ElasticEase { Oscillations = 1, Springiness = 7, EasingMode = EasingMode.EaseOut };
+        ease.Freeze();
+        return ease;
+    }
+
+    /// <summary>Like the other tabs' cards: sinks a little while pressed (wider than tall) and springs back.</summary>
+    private static void PressSquish(FrameworkElement element, double restScale = 1)
+    {
+        element.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            if (AnimationConfig.ReduceMotion) return;
+            Bump(element, restScale); // makes sure there is a live scale to squeeze
+            var scale = (ScaleTransform)element.RenderTransform;
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, restScale * 0.97, 100, WeatherMotion.Out));
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, restScale * 0.9, 100, WeatherMotion.Out));
+        };
+        element.PreviewMouseLeftButtonUp += (_, _) =>
+        {
+            if (AnimationConfig.ReduceMotion || element.RenderTransform is not ScaleTransform scale) return;
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, restScale, 520, PressRelease));
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, restScale, 520, PressRelease));
+        };
+    }
+
     private static void Bump(FrameworkElement element, double scale)
     {
         if (element.RenderTransform is not ScaleTransform transform || transform.IsFrozen)

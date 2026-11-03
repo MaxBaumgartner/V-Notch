@@ -71,6 +71,7 @@ public sealed partial class WeatherView
                 SelectDay(null);
             };
             HoverTint(back);
+            PressSquish(back);
             side = back;
             WeatherMotion.Pop(back, 0, 0.6, 320);
         }

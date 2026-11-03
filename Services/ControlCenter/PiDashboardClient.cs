@@ -23,6 +23,14 @@ internal sealed record PiLesson(string Start, string End, string Subject, string
 /// <summary>A Moodle assignment; <paramref name="Cmid"/> is its course-module id (its page's "?id=").</summary>
 internal sealed record PiDeadline(string Name, string Course, DateTimeOffset Due, bool Submitted, int Cmid = 0);
 
+/// <summary>What the Pi's hand-in panel knows about an assignment: "pose" (a code project at the PC), "photo" (maths: photos as one PDF) or "link".</summary>
+internal sealed record PiAssignment(int Cmid, string Name, string Mode, string Nr, IReadOnlyList<PiAttachment> Attachments,
+    string Status, string? Blocked, string Filename);
+
+internal sealed record PiAttachment(string Name, long Size);
+
+internal sealed record PiSubmitResult(bool Ok, string? SubmittedName, string? Error);
+
 internal sealed record PiExam(DateTime Date, string Start, string Kind, string Title);
 
 internal sealed record PiSchool(string Date, bool IsToday, IReadOnlyList<PiLesson> Lessons, IReadOnlyList<PiDeadline> Deadlines,
@@ -42,6 +50,9 @@ internal sealed partial class PiDashboardClient : IDisposable
 {
     private const string LogTag = "PI-DASHBOARD";
     private readonly HttpClient _http = new(new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(6) };
+    // Files of an assignment and photo hand-ins go through Moodle on the Pi: they need longer.
+    private readonly HttpClient _transfer = new(new NativeWinHttpHandler()) { Timeout = TimeSpan.FromMinutes(3) };
+    private const long MaxAttachmentBytes = 200L * 1024 * 1024;
     private readonly Func<string> _baseUrl;
 
     public PiDashboardClient(Func<string> baseUrl)
@@ -51,7 +62,11 @@ internal sealed partial class PiDashboardClient : IDisposable
 
     public bool IsConfigured => Uri.TryCreate(_baseUrl().Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        _http.Dispose();
+        _transfer.Dispose();
+    }
 
     public async Task<List<PiEntity>?> GetHomeAsync()
     {
@@ -152,6 +167,68 @@ internal sealed partial class PiDashboardClient : IDisposable
     /// The Moodle page, signed in: the Pi swaps it for Moodle's one-time sign-in link to it (its password and token
     /// stay there). Anything unexpected, or the Pi out of reach, leaves the page link as it was.
     /// </summary>
+    /// <summary>An assignment as the Pi's hand-in panel sees it (mode, the files of the task, whether it can be handed in).</summary>
+    public async Task<PiAssignment?> GetAssignmentAsync(int cmid) =>
+        cmid > 0 && await GetAsync($"/api/abgabe/{cmid}").ConfigureAwait(false) is JsonObject o ? ParseAssignment(o) : null;
+
+    internal static PiAssignment? ParseAssignment(JsonObject o)
+    {
+        int cmid = Int(o, "cmid");
+        if (cmid <= 0) return null;
+        var files = new List<PiAttachment>();
+        if (o["attachments"] is JsonArray list)
+            foreach (var node in list)
+                if (node is JsonObject f && Str(f, "name") is { Length: > 0 } name)
+                    files.Add(new PiAttachment(name, f["size"] is JsonValue v && v.TryGetValue(out long size) ? size : 0));
+        string blocked = Str(o, "blocked");
+        return new PiAssignment(cmid, Str(o, "name"), Str(o, "mode"), Str(o, "nr"), files, Str(o, "status"),
+            blocked.Length > 0 ? blocked : null, Str(o, "filename"));
+    }
+
+    /// <summary>File <paramref name="index"/> of the task, fetched by the Pi (it keeps the Moodle token).</summary>
+    public async Task<byte[]?> DownloadAttachmentAsync(int cmid, int index, CancellationToken token = default)
+    {
+        if (!IsConfigured || cmid <= 0 || index < 0) return null;
+        try
+        {
+            using var response = await _transfer.GetAsync(Url($"/api/abgabe/{cmid}/datei/{index}"), HttpCompletionOption.ResponseHeadersRead, token)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > MaxAttachmentBytes) return null;
+            byte[] bytes = await response.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
+            return bytes.Length <= MaxAttachmentBytes ? bytes : null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            RuntimeLog.Warn(LogTag, $"Download {cmid}/{index} failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Hands photos (JPEG pages, base64) in as one PDF, like the dashboard's maths panel.</summary>
+    public async Task<PiSubmitResult> SubmitPhotosAsync(int cmid, string filename, IReadOnlyList<string> jpegPages)
+    {
+        if (!IsConfigured || cmid <= 0 || jpegPages.Count == 0) return new(false, null, null);
+        var pages = new JsonArray();
+        foreach (string page in jpegPages) pages.Add(page);
+        try
+        {
+            using var content = new StringContent(new JsonObject { ["filename"] = filename, ["pages"] = pages }.ToJsonString(),
+                Encoding.UTF8, "application/json");
+            using var response = await _transfer.PostAsync(Url($"/api/abgabe/{cmid}"), content).ConfigureAwait(false);
+            string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            // The Pi explains refusals (too many pages, Moodle closed) in the body, with an error status.
+            var reply = JsonNode.Parse(body) as JsonObject;
+            string error = reply == null ? "" : Str(reply, "error");
+            bool ok = response.IsSuccessStatusCode && reply != null && Bool(reply, "ok");
+            return new(ok, reply == null ? null : Str(reply, "submittedName"), error.Length > 0 ? error : null);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+        {
+            RuntimeLog.Warn(LogTag, $"Hand-in {cmid} failed: {ex.Message}");
+            return new(false, null, null);
+        }
+    }
+
     public async Task<string> SignedInMoodleLinkAsync(string url, string moodleBase)
     {
         string root = (moodleBase ?? "").Trim().TrimEnd('/');

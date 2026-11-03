@@ -175,7 +175,7 @@ public sealed partial class SpotifyCanvasService : IDisposable
     private static string BuildCacheKey(string track, string artist, TimeSpan duration) =>
         $"{NormalizeForMatch(track)}|{NormalizeForMatch(artist)}|{Math.Round(duration.TotalSeconds)}";
 
-    private static string? NormalizeSessionCookie(string? value)
+    internal static string? NormalizeSessionCookie(string? value)
     {
         if (value == null) return null;
         if (vn_spotify_canvas_service_normalize_cookie(value.AsSpan(), value.Length, out byte valid, out int start, out int len) == 0 && valid != 0)

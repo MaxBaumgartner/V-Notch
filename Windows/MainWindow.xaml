@@ -1315,6 +1315,34 @@
                                           Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
                                 </Viewbox>
                             </ctrl:ActionBorder>
+                            <ctrl:ActionBorder x:Name="LegionIconButton" AutomationProperties.Name="Legion"
+                                    Tag="Legion"
+                                    Width="22" Height="22"
+                                    Background="Transparent"
+                                    Cursor="Hand"
+                                    Margin="0,0,4,0"
+                                    Opacity="0.45"
+                                    RenderTransformOrigin="0.5,0.5"
+                                    PreviewMouseLeftButtonDown="NavIcon_PreviewMouseLeftButtonDown"
+                                    PreviewMouseMove="NavIcon_PreviewMouseMove"
+                                    PreviewMouseLeftButtonUp="NavIcon_PreviewMouseLeftButtonUp"
+                                    LostMouseCapture="NavIcon_LostMouseCapture"
+                                    Click="LegionIconButton_Click">
+                                <Border.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                        <TranslateTransform X="0" Y="0"/>
+                                    </TransformGroup>
+                                </Border.RenderTransform>
+                                <Border.Effect>
+                                    <DropShadowEffect Color="Black" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/>
+                                </Border.Effect>
+                                <Viewbox Width="15" Height="15" Stretch="Uniform"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Path Data="{x:Static ctrl:LegionGlyph.Data}"
+                                          Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
+                                </Viewbox>
+                            </ctrl:ActionBorder>
                             <ctrl:ActionBorder x:Name="AudioIconButton" AutomationProperties.Name="Audio Mixer"
                                     Tag="AudioMixer"
                                     Width="22" Height="22"
@@ -2235,6 +2263,7 @@
                                     Background="{StaticResource CardGradient}"
                                     CornerRadius="16"
                                     Padding="12,12,4,2"
+                                    MouseWheel="MediaWidget_MouseWheel"
                                     RenderOptions.ClearTypeHint="Enabled">
                             <Grid>
                                 <Grid.RowDefinitions>
@@ -2247,6 +2276,7 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
@@ -2525,6 +2555,92 @@
                                         </ctrl:ActionBorder>
                                     </StackPanel>
                                     </StackPanel>
+
+                                    <!-- Volume of the app that plays the current media (e.g. Spotify), not the system volume. -->
+                                    <Grid x:Name="MediaVolumeColumn"
+                                          Grid.Column="3"
+                                          Width="18"
+                                          Margin="4,0,2,0"
+                                          VerticalAlignment="Stretch">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <!-- Starts a Spotify Jam and copies its invite link; only while Spotify is the source. -->
+                                        <ctrl:ActionBorder x:Name="SpotifyJamButton"
+                                                           Grid.Row="0"
+                                                           Background="Transparent"
+                                                           Cursor="Hand"
+                                                           Height="20"
+                                                           Visibility="Collapsed"
+                                                           RenderTransformOrigin="0.5,0.5"
+                                                           Click="SpotifyJamButton_Click"
+                                                           MouseEnter="SpotifyJamButton_MouseEnter"
+                                                           MouseLeave="SpotifyJamButton_MouseLeave">
+                                            <Border.RenderTransform>
+                                                <ScaleTransform x:Name="SpotifyJamButtonScale" ScaleX="1" ScaleY="1"/>
+                                            </Border.RenderTransform>
+                                            <TextBlock x:Name="SpotifyJamIcon"
+                                                       Text="&#xE716;"
+                                                       FontFamily="{StaticResource IconFont}"
+                                                       FontSize="11"
+                                                       Foreground="{x:Static svc:UiPalette.IconBrush}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </ctrl:ActionBorder>
+                                        <ctrl:AccessibleVolumePanel x:Name="MediaVolumeBar"
+                                                                    Grid.Row="1"
+                                                                    Background="Transparent"
+                                                                    Cursor="Hand"
+                                                                    ValueRequested="MediaVolumeBar_ValueRequested"
+                                                                    MouseLeftButtonDown="MediaVolumeBar_MouseDown"
+                                                                    MouseMove="MediaVolumeBar_MouseMove"
+                                                                    MouseLeftButtonUp="MediaVolumeBar_MouseUp"
+                                                                    LostMouseCapture="MediaVolumeBar_LostMouseCapture"
+                                                                    MouseEnter="MediaVolumeBar_MouseEnter"
+                                                                    MouseLeave="MediaVolumeBar_MouseLeave">
+                                            <Grid x:Name="MediaVolumeTrack"
+                                                  Width="4"
+                                                  Margin="0,5,0,3"
+                                                  HorizontalAlignment="Center"
+                                                  RenderTransformOrigin="0.5,0.5"
+                                                  SizeChanged="MediaVolumeTrack_SizeChanged">
+                                                <Grid.RenderTransform>
+                                                    <ScaleTransform x:Name="MediaVolumeTrackScale" ScaleX="1" ScaleY="1"/>
+                                                </Grid.RenderTransform>
+                                                <Grid.Clip>
+                                                    <RectangleGeometry x:Name="MediaVolumeTrackClip" RadiusX="2" RadiusY="2"/>
+                                                </Grid.Clip>
+                                                <Border Background="#262626"/>
+                                                <Border x:Name="MediaVolumeFill" RenderTransformOrigin="0.5,1">
+                                                    <Border.Background>
+                                                        <LinearGradientBrush StartPoint="0,1" EndPoint="0,0">
+                                                            <GradientStop x:Name="MediaVolumeGradientStart" Color="White" Offset="0"/>
+                                                            <GradientStop x:Name="MediaVolumeGradientEnd" Color="{x:Static svc:UiPalette.SecondaryColor}" Offset="1"/>
+                                                        </LinearGradientBrush>
+                                                    </Border.Background>
+                                                    <Border.RenderTransform>
+                                                        <ScaleTransform x:Name="MediaVolumeFillScale" ScaleX="1" ScaleY="0"/>
+                                                    </Border.RenderTransform>
+                                                </Border>
+                                            </Grid>
+                                        </ctrl:AccessibleVolumePanel>
+                                        <ctrl:ActionBorder x:Name="MediaVolumeMuteButton"
+                                                           Grid.Row="2"
+                                                           Background="Transparent"
+                                                           Cursor="Hand"
+                                                           Height="22"
+                                                           Click="MediaVolumeMuteButton_Click">
+                                            <TextBlock x:Name="MediaVolumeIcon"
+                                                       Text="&#xE995;"
+                                                       FontFamily="{StaticResource IconFont}"
+                                                       FontSize="11"
+                                                       Foreground="{x:Static svc:UiPalette.IconBrush}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                        </ctrl:ActionBorder>
+                                    </Grid>
                                 </Grid>
 
                             </Grid>
@@ -3094,6 +3210,17 @@
                           MouseLeftButtonDown="SecondaryContent_Click"
                           RenderOptions.ClearTypeHint="Enabled">
                         <ctrl:WeatherView x:Name="WeatherPanel"/>
+                    </Grid>
+
+                    <Grid x:Name="LegionContent"
+                          Opacity="0"
+                          Visibility="Collapsed"
+                          Margin="20,34,20,14"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Top"
+                          MouseLeftButtonDown="SecondaryContent_Click"
+                          RenderOptions.ClearTypeHint="Enabled">
+                        <ctrl:ControlCenterView x:Name="LegionCenter" Page="Legion"/>
                     </Grid>
 
                     <Grid x:Name="TimerContent"

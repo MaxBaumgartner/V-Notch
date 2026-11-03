@@ -10,5 +10,6 @@ public enum NotchView
     Camera,
     Claude,
     Pi,
-    Weather
+    Weather,
+    Legion
 }

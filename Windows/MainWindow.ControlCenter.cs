@@ -65,6 +65,7 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(DispatcherPriority.Background, InitializeAppNotifications);
         InitializePi();
         InitializeWeather();
+        InitializeLegion();
         InitializeMicMuted();
     }
 
@@ -76,6 +77,7 @@ public partial class MainWindow
         DisposeAppNotifications();
         DisposePi();
         DisposeWeather();
+        DisposeLegion();
         DisposeMicMuted();
         ControlCenter.OutputDeviceSelected -= AudioContent.SelectDefaultOutputDevice;
         ClaudeCenter.AttentionRequested -= OpenClaudeTabForAttention;

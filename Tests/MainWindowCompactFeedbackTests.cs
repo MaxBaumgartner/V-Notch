@@ -87,7 +87,8 @@ public sealed class MainWindowCompactFeedbackTests
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.ChargingBolt.Opacity - 1) < 1e-6, "plugged-in battery bolt", ct);
         Assert.False(Field<bool>(window, "_chargingPulseWanted"));
         var fillColor = ((SolidColorBrush)window.BatteryFill.Background).Color;
-        Assert.Equal(((byte)0x30, (byte)0xD1, (byte)0x58), (fillColor.R, fillColor.G, fillColor.B));
+        var white = UiPalette.PrimaryColor;
+        Assert.Equal((white.R, white.G, white.B), (fillColor.R, fillColor.G, fillColor.B));
         Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = percentage });
         await WpfFrameWaiter.UntilAsync(() => window.ChargingBolt.Opacity == 0, "unplugged battery bolt", ct);
     });

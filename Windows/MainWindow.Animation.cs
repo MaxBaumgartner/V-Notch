@@ -15,7 +15,7 @@ public partial class MainWindow
 {
 
     #region Notch Expand/Collapse
-    private enum LastExpandedView { Primary, Secondary, Timer, Audio, Camera, Claude, Pi, Weather }
+    private enum LastExpandedView { Primary, Secondary, Timer, Audio, Camera, Claude, Pi, Weather, Legion }
     private LastExpandedView _lastExpandedViewBeforeCollapse = LastExpandedView.Primary;
 
     private const double ExpandedContentHorizontalInset = 16;
@@ -818,6 +818,7 @@ public partial class MainWindow
         _isClaudeView = effectiveTarget == VNotch.Models.NotchView.Claude;
         _isPiView = effectiveTarget == VNotch.Models.NotchView.Pi;
         _isWeatherView = effectiveTarget == VNotch.Models.NotchView.Weather;
+        _isLegionView = effectiveTarget == VNotch.Models.NotchView.Legion;
 
         if (effectiveTarget == VNotch.Models.NotchView.Timer)
         {
@@ -883,6 +884,14 @@ public partial class MainWindow
             _isAudioView = false;
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(WeatherContent);
             ResizeHostWindowHeight(WeatherViewHeight);
+        }
+        else if (effectiveTarget == VNotch.Models.NotchView.Legion)
+        {
+            _isTimerView = false;
+            _isSecondaryView = false;
+            _isAudioView = false;
+            VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(LegionContent);
+            ResizeHostWindowHeight(LegionViewHeight);
         }
         else
         {
@@ -1145,6 +1154,18 @@ public partial class MainWindow
                 ResizeHostWindowHeight(targetHeight);
             UpdateNavIconsActiveState();
         }
+        else if (effectiveTarget == VNotch.Models.NotchView.Legion)
+        {
+            VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(LegionContent);
+            targetWidth = LegionViewWidth;
+            targetHeight = LegionViewHeight;
+            // Laid out at its final size; the shell's clip reveals it while expanding.
+            LegionContent.Width = targetWidth - LegionContent.Margin.Left - LegionContent.Margin.Right;
+            LegionContent.Height = targetHeight - LegionContent.Margin.Top - LegionContent.Margin.Bottom;
+            if (targetHeight > currentHeight)
+                ResizeHostWindowHeight(targetHeight);
+            UpdateNavIconsActiveState();
+        }
         else if (effectiveTarget == VNotch.Models.NotchView.AudioMixer)
         {
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(AudioContent);
@@ -1291,6 +1312,8 @@ public partial class MainWindow
             ClaudeCenter.RevealRows(TimeSpan.FromMilliseconds(35));
         else if (effectiveTarget == VNotch.Models.NotchView.Pi)
             PiCenter.RevealRows(TimeSpan.FromMilliseconds(35));
+        else if (effectiveTarget == VNotch.Models.NotchView.Legion)
+            LegionCenter.RevealRows(TimeSpan.FromMilliseconds(35));
 
         if (effectiveTarget == VNotch.Models.NotchView.Media)
         {
@@ -1656,6 +1679,7 @@ public partial class MainWindow
         if (_isClaudeView) return LastExpandedView.Claude;
         if (_isPiView) return LastExpandedView.Pi;
         if (_isWeatherView) return LastExpandedView.Weather;
+        if (_isLegionView) return LastExpandedView.Legion;
         if (_isAudioView) return LastExpandedView.Audio;
         if (_isTimerView) return LastExpandedView.Timer;
         if (_isSecondaryView) return LastExpandedView.Secondary;
@@ -1679,6 +1703,7 @@ public partial class MainWindow
                 LastExpandedView.Claude => VNotch.Models.NotchView.Claude,
                 LastExpandedView.Pi => VNotch.Models.NotchView.Pi,
                 LastExpandedView.Weather => VNotch.Models.NotchView.Weather,
+                LastExpandedView.Legion => VNotch.Models.NotchView.Legion,
                 _ => VNotch.Models.NotchView.Media
             };
         }
@@ -2000,6 +2025,7 @@ public partial class MainWindow
         VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(ClaudeContent);
         VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(PiContent);
         VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(WeatherContent);
+        VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(LegionContent);
 
         ResetMediaContentReveal();
         ResetClockViewUnfoldIn();
@@ -2020,6 +2046,7 @@ public partial class MainWindow
         _isClaudeView = false;
         _isPiView = false;
         _isWeatherView = false;
+        _isLegionView = false;
     }
 
     private void PrepareStateBeforeCollapse()
@@ -2125,6 +2152,7 @@ public partial class MainWindow
                 VNotch.Models.NotchView.Claude => LastExpandedView.Claude,
                 VNotch.Models.NotchView.Pi => LastExpandedView.Pi,
                 VNotch.Models.NotchView.Weather => LastExpandedView.Weather,
+                VNotch.Models.NotchView.Legion => LastExpandedView.Legion,
                 _ => LastExpandedView.Primary
             };
         }
@@ -2232,6 +2260,7 @@ public partial class MainWindow
                 LastExpandedView.Claude => VNotch.Models.NotchView.Claude,
                 LastExpandedView.Pi => VNotch.Models.NotchView.Pi,
                 LastExpandedView.Weather => VNotch.Models.NotchView.Weather,
+                LastExpandedView.Legion => VNotch.Models.NotchView.Legion,
                 _ => VNotch.Models.NotchView.Media
             },
             TargetView: VNotch.Models.NotchView.Compact,
@@ -2288,6 +2317,7 @@ public partial class MainWindow
         AnimateAuxiliaryViewCollapse(ClaudeContent, generation);
         AnimateAuxiliaryViewCollapse(PiContent, generation);
         AnimateAuxiliaryViewCollapse(WeatherContent, generation);
+        AnimateAuxiliaryViewCollapse(LegionContent, generation);
         AnimateAuxiliaryViewCollapse(TimerContent, generation);
         AnimateAuxiliaryViewCollapse(AudioContent, generation);
 

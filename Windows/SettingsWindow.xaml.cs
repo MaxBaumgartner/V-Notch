@@ -44,7 +44,7 @@ public partial class SettingsWindow : Window
     }
 
     private const string LogCategory = "SETTINGS";
-    private const string DefaultNavTabs = "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera";
+    private const string DefaultNavTabs = "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera";
     private const string SubtitlePriorityDataFormat = "SubtitlePriorityItem";
     private const string NavTabMedia = "Media";
     private const string WidgetClock = "clock";
@@ -220,7 +220,7 @@ public partial class SettingsWindow : Window
                     return true;
 
                 if (fe.Tag is string tag &&
-                    (tag is "NavTabRow" or NavTabMedia or "Secondary" or "Timer" or "Claude" or "Pi" or "Weather" or "AudioMixer" ||
+                    (tag is "NavTabRow" or NavTabMedia or "Secondary" or "Timer" or "Claude" or "Pi" or "Weather" or "Legion" or "AudioMixer" ||
                      Array.IndexOf(_navOrder, tag) >= 0))
                 {
                     return true;

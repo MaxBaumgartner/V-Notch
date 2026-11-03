@@ -134,6 +134,7 @@ public partial class ControlCenterView
         if (_piHome != null) foreach (var e in _piHome) sb.Append(e.Id).Append(e.Display).Append(';');
         sb.Append('|').Append(_piSchoolAtUtc.Ticks).Append('|').Append(DateTime.Now.ToString("HHmm", CultureInfo.InvariantCulture)).Append('|');
         if (_piTodos != null) foreach (var t in _piTodos) sb.Append(t.Id).Append(t.Done).Append(';');
+        sb.Append('|').Append(PiTaskKey());
         return sb.ToString();
     }
 
@@ -191,11 +192,10 @@ public partial class ControlCenterView
     private const string LightGlyph = "\uE82F";
     private static readonly Brush LightOnBg = Frozen("#33FFD60A");
     private static readonly Brush LightOnGlyph = Frozen("#FFD60A");
-    private static readonly Brush PowerOnBg = Frozen("#2E3FD15B");
 
     private static Grid TileGrid(int columns, int count)
     {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 2) };
+        var grid = new Grid { Margin = new Thickness(0, 0, 0, 2), Tag = TileGridTag };
         for (int i = 0; i < columns * 2 - 1; i++)
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = i % 2 == 0 ? new GridLength(1, GridUnitType.Star) : new GridLength(8) });
         for (int r = 0; r < (count + columns - 1) / columns; r++)
@@ -237,50 +237,39 @@ public partial class ControlCenterView
         var card = Card();
         card.Padding = new Thickness(12, 10, 12, 10);
         card.Cursor = Cursors.Hand;
-        card.RenderTransformOrigin = new Point(0.5, 0.5);
-        card.RenderTransform = new ScaleTransform(1, 1);
         card.Child = stack;
         System.Windows.Automation.AutomationProperties.SetName(card, entity.Label);
 
+        // Lamps glow yellow, plugs and other switches mint; the colour fades in and out with the state.
         bool on = entity.IsOn;
         string? power = PowerOf(entity);
-        void Paint()
+        var tint = light ? LightOnGlyph : Mint;
+        var litBg = light ? LightOnBg : Wash(Mint, 0.18);
+        var glyphInk = new SolidColorBrush(((SolidColorBrush)(on ? tint : Muted)).Color);
+        glyph.Foreground = glyphInk;
+        Pressable(card, () => on ? litBg : CardBg, CardHover);
+        void Paint(bool animate)
         {
-            card.Background = on ? (light ? LightOnBg : PowerOnBg) : CardBg;
-            glyph.Foreground = on ? (light ? LightOnGlyph : Green) : Muted;
+            var fill = (SolidColorBrush)card.Background;
+            var target = ((SolidColorBrush)(on ? litBg : CardBg)).Color;
+            if (animate) WeatherMotion.Tint(fill, target, 260);
+            else fill.Color = target;
+            WeatherMotion.Tint(glyphInk, ((SolidColorBrush)(on ? tint : Muted)).Color, animate ? 260 : 0);
             string word = Loc.Get(on ? "control.on" : "control.off");
             state.Text = on && power != null ? $"{word} · {power}" : word;
         }
-        Paint();
+        Paint(animate: false);
 
         string id = entity.Id;
-        card.MouseEnter += (_, _) =>
-        {
-            if (!on) card.Background = CardHover;
-        };
-        card.MouseLeave += (_, _) => Paint();
         card.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
             on = !on;
-            Paint();
-            Spring(card);
+            Paint(animate: true);
+            Bounce(glyph, on ? 1.45 : 0.8);
             TogglePi(id);
         };
         return card;
-    }
-
-    /// <summary>A short press and release, so a tap on a tile is felt.</summary>
-    private static void Spring(FrameworkElement element)
-    {
-        if (AnimationConfig.ReduceMotion || element.RenderTransform is not ScaleTransform scale) return;
-        var press = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(420) };
-        press.KeyFrames.Add(new EasingDoubleKeyFrame(0.93, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(90))));
-        press.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(420)),
-            new ElasticEase { Oscillations = 1, Springiness = 6, EasingMode = EasingMode.EaseOut }));
-        Timeline.SetDesiredFrameRate(press, AnimationConfig.TargetFps);
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, press);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, press);
     }
 
     private async void TogglePi(string entityId)
@@ -345,8 +334,9 @@ public partial class ControlCenterView
             var left = deadline.Due - now;
             var row = NewRow("\uE916", deadline.Name);
             Brush urgency = left < TimeSpan.FromDays(1) ? DueToday : left < TimeSpan.FromDays(3) ? DueSoon : Muted;
-            AddStatus(row, DueText(deadline.Due, left), urgency);
-            AddAction(row, InfoChip("\uE7BE", ShortCourse(deadline.Course)));
+            AddStatus(row, $"{ShortCourse(deadline.Course)} · {DueText(deadline.Due, left)}", urgency);
+            // Open the project, fetch the task's files, hand maths photos in: like the dashboard's panel.
+            if (deadline.Cmid > 0) AddAction(row, PiTaskActions(deadline, row));
             // Straight to the assignment's page, where it is handed in.
             int cmid = deadline.Cmid;
             if (cmid > 0) OpenOnClick(row, () => SchoolLinks.Assignment(_moodleUrl(), cmid), SignInToSchoolAsync);
@@ -481,6 +471,7 @@ public partial class ControlCenterView
         if (!IsExpanded("pi.todos")) return;
 
         _piTodoSection.Children.Add(TodoComposer());
+        _accent = Pink;
         int shown = 0;
         foreach (var todo in _piTodos)
         {
@@ -488,7 +479,18 @@ public partial class ControlCenterView
             shown++;
             var row = NewRow("\uE739", todo.Text);
             string id = todo.Id;
-            AddStatus(row, "", Muted, Toggle(false, done => SetTodoDone(id, done)));
+            AddStatus(row, "", Muted, Toggle(false, done =>
+            {
+                // Ticked off: once the switch has landed the row slides away to the right.
+                if (done && !AnimationConfig.ReduceMotion)
+                {
+                    var away = new TranslateTransform();
+                    row.RenderTransform = away;
+                    row.BeginAnimation(OpacityProperty, WeatherMotion.To(1, 0.15, 360, WeatherMotion.Out, 260));
+                    away.BeginAnimation(TranslateTransform.XProperty, WeatherMotion.To(0, 28, 420, WeatherMotion.OutQuint, 260));
+                }
+                SetTodoDone(id, done);
+            }));
             _piTodoSection.Children.Add(row);
         }
         if (shown == 0) _piTodoSection.Children.Add(NewRow("\uE73E", Loc.Get("pi.todosEmpty"), muted: true));

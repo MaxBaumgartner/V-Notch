@@ -751,10 +751,11 @@ public partial class MainWindow
             if (_volumeBaselinePending) return;
             _volumeBaselinePending = true;
             int version = ++_volumeBaselineVersion;
+            var target = CurrentAppVolumeTarget();
 
             _mediaVolumeWrites.Post("volume", () =>
             {
-                bool ok = _mediaService.TryGetCurrentSessionVolume(out float vol, out bool _);
+                bool ok = TryReadAppVolume(target, out float vol, out bool _);
                 Dispatcher.BeginInvoke(() =>
                 {
                     if (version != _volumeBaselineVersion) return;
@@ -806,9 +807,10 @@ public partial class MainWindow
     private void QueueSessionVolumeWrite(float volume, float fallbackVolume)
     {
         int version = _volumeInteractionVersion;
+        var target = CurrentAppVolumeTarget();
         _mediaVolumeWrites.Post("volume", () =>
         {
-            if (_mediaService.TrySetCurrentSessionVolume(volume)) return;
+            if (TryWriteAppVolume(target, volume)) return;
             Dispatcher.BeginInvoke(() =>
             {
                 if (version != _volumeInteractionVersion) return;

@@ -214,8 +214,8 @@ public partial class NotchSettings
     public string Language { get; set; } = "en";
 
     public string ExpandedWidget { get; set; } = "clock";
-    public string NavTabOrder { get; set; } = "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera";
-    public string VisibleNavTabs { get; set; } = "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera";
+    public string NavTabOrder { get; set; } = "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera";
+    public string VisibleNavTabs { get; set; } = "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera";
     // Windows notifications mirrored as a pill in the closed notch; apps listed here ("|"-separated app ids) stay out.
     public bool ShowAppNotifications { get; set; } = true;
     public string MutedNotificationApps { get; set; } = "";

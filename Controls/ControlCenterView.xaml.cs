@@ -23,7 +23,9 @@ public enum ControlCenterPage
     /// <summary>Claude Code sessions, approvals, questions and plan limits.</summary>
     Claude,
     /// <summary>The user's Raspberry Pi dashboard: Home Assistant, school, to-dos.</summary>
-    Pi
+    Pi,
+    /// <summary>A Lenovo Legion's power modes, key locks and temperatures.</summary>
+    Legion
 }
 
 /// <summary>
@@ -40,7 +42,6 @@ public partial class ControlCenterView : UserControl, IDisposable
     private static readonly TimeSpan UsageViewMinAge = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan UsageHookMinAge = TimeSpan.FromMinutes(5);
 
-    private static readonly Brush Green = Frozen("#3FD15B");
     private static readonly Brush Track = Frozen("#4D4D4D");
     private static readonly Brush Muted = Frozen("#8C8C8C");
     private static readonly Brush ComboBg = Frozen("#33000000");
@@ -223,6 +224,10 @@ public partial class ControlCenterView : UserControl, IDisposable
             {
                 OnPiVisibleChanged(true);
             }
+            else if (Page == ControlCenterPage.Legion)
+            {
+                OnLegionVisibleChanged(true);
+            }
             else
             {
                 _refreshTimer.Start();
@@ -244,6 +249,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             CloseMenu();
             if (_composingSessionId != null) StopComposing();
             if (Page == ControlCenterPage.Pi) OnPiVisibleChanged(false);
+            if (Page == ControlCenterPage.Legion) OnLegionVisibleChanged(false);
         }
     }
 
@@ -251,10 +257,11 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         _networkKey = _bluetoothKey = _audioKey = _notificationKey = _wallpaperKey = _claudeKey = _laptopKey = "";
         _statsTiles = null;
-        _piKey = "";
+        _piKey = _legionKey = "";
         if (_snapshot != null) ApplySnapshot(_snapshot);
         BuildClaudeSection();
         BuildPiPage();
+        BuildLegionPage();
     });
 
     private void OnClaudeChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Background, BuildClaudeSection);
@@ -299,6 +306,11 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (Page == ControlCenterPage.Pi)
         {
             RefreshPi();
+            return;
+        }
+        if (Page == ControlCenterPage.Legion)
+        {
+            RefreshLegion();
             return;
         }
         if (_refreshing) return;
@@ -471,6 +483,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         public TextBlock? Detail;
         public ScaleTransform? Fill;
         public Border? FillBar;
+        public Brush Tint = Blue;
+        public RollingNumber? Roll;
     }
 
     private sealed class StatTiles
@@ -494,16 +508,16 @@ public partial class ControlCenterView : UserControl, IDisposable
             return;
         }
 
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 2) };
+        var grid = new Grid { Margin = new Thickness(0, 0, 0, 2), Tag = TileGridTag };
         for (int i = 0; i < 9; i++)
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = i % 2 == 0 ? new GridLength(1, GridUnitType.Star) : new GridLength(8) });
         _statsTiles = new StatTiles
         {
-            Cpu = AddStatTile(grid, 0, "CPU", withBar: true, () => ToggleTop(TopMode.Cpu)),
-            Gpu = AddStatTile(grid, 2, "GPU", withBar: true, () => Launch("taskmgr.exe")),
-            Ram = AddStatTile(grid, 4, "RAM", withBar: true, () => ToggleTop(TopMode.Memory)),
-            Ping = AddStatTile(grid, 6, "Ping", withBar: false, null),
-            Net = AddStatTile(grid, 8, Loc.Get("control.network"), withBar: false, () => Launch("ms-settings:network-status"))
+            Cpu = AddStatTile(grid, 0, "CPU", withBar: true, () => ToggleTop(TopMode.Cpu), Blue),
+            Gpu = AddStatTile(grid, 2, "GPU", withBar: true, () => Launch("taskmgr.exe"), Purple),
+            Ram = AddStatTile(grid, 4, "RAM", withBar: true, () => ToggleTop(TopMode.Memory), Orange),
+            Ping = AddStatTile(grid, 6, "Ping", withBar: false, null, Mint),
+            Net = AddStatTile(grid, 8, Loc.Get("control.network"), withBar: false, () => Launch("ms-settings:network-status"), Teal)
         };
         _statsSection.Children.Add(grid);
         _topList.Children.Clear();
@@ -512,18 +526,18 @@ public partial class ControlCenterView : UserControl, IDisposable
         static StatTile Dummy() => new() { Value = new TextBlock() };
     }
 
-    private StatTile AddStatTile(Grid grid, int column, string label, bool withBar, Action? onClick)
+    private StatTile AddStatTile(Grid grid, int column, string label, bool withBar, Action? onClick, Brush tint)
     {
         var stack = new StackPanel();
-        stack.Children.Add(MakeLabel(label, 11, Muted));
+        stack.Children.Add(MakeLabel(label, 11, tint));
         var value = MakeLabel("–", 15, VNotch.Services.UiPalette.PrimaryBrush);
         value.Margin = new Thickness(0, 3, 0, 0);
         stack.Children.Add(value);
-        var tile = new StatTile { Value = value };
+        var tile = new StatTile { Value = value, Tint = tint, Roll = new RollingNumber(v => value.Text = $"{Math.Round(v)} %") };
         if (withBar)
         {
             var fill = new ScaleTransform(0, 1);
-            var bar = new Border { Background = Green, CornerRadius = new CornerRadius(1.5), RenderTransform = fill, RenderTransformOrigin = new Point(0, 0.5) };
+            var bar = new Border { Background = new SolidColorBrush(((SolidColorBrush)tint).Color), CornerRadius = new CornerRadius(1.5), RenderTransform = fill, RenderTransformOrigin = new Point(0, 0.5) };
             stack.Children.Add(new Grid
             {
                 Height = 3,
@@ -547,8 +561,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             // CPU, GPU and RAM lead to Task Manager, the network tile to its settings.
             card.Cursor = Cursors.Hand;
-            card.MouseEnter += (_, _) => card.Background = CardHover;
-            card.MouseLeave += (_, _) => card.Background = CardBg;
+            Pressable(card, () => CardBg, CardHover);
             card.MouseLeftButtonDown += (_, e) =>
             {
                 e.Handled = true;
@@ -572,7 +585,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         tiles.Ping.Value.Foreground = stats.PingMs switch
         {
             null => Muted,
-            < 50 => Green,
+            < 50 => Mint,
             < 100 => StatWarm,
             _ => WorkingOrange
         };
@@ -584,10 +597,13 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private static void SetLoad(StatTile tile, double? percent)
     {
-        tile.Value.Text = percent is { } p ? $"{Math.Round(p)} %" : "–";
+        if (percent is { } p && tile.Roll != null) tile.Roll.To(p);
+        else tile.Value.Text = "–";
         if (tile.Fill == null || tile.FillBar == null) return;
         double target = Math.Clamp((percent ?? 0) / 100, 0, 1);
-        tile.FillBar.Background = percent >= 90 ? WorkingOrange : percent >= 70 ? StatWarm : Green;
+        var hot = percent >= 90 ? Red : percent >= 75 ? StatWarm : tile.Tint;
+        if (tile.FillBar.Background is SolidColorBrush { IsFrozen: false } barFill && hot is SolidColorBrush hotFill)
+            WeatherMotion.Tint(barFill, hotFill.Color, 300);
         if (AnimationConfig.ReduceMotion)
         {
             tile.Fill.ScaleX = target;
@@ -748,6 +764,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildNetworkSection(Snapshot s)
     {
+        _accent = Blue;
         CloseMenu();
         _networkSection.Children.Clear();
         _networkSection.Children.Add(BuildSectionHeader("network", Loc.Get("control.network"), Loc.Get("control.status"), null, topMargin: 14));
@@ -762,7 +779,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         string wiredStatus = wired == null ? Loc.Get("control.noAdapter")
             : wired.IsUp ? Loc.Get("control.connected") : Loc.Get("control.notConnected");
         var wiredRow = NewRow("\uE839", Loc.Get("control.wired"));
-        AddStatus(wiredRow, wiredStatus, wired?.IsUp == true ? Green : Muted);
+        AddStatus(wiredRow, wiredStatus, wired?.IsUp == true ? Blue : Muted);
         if (wired != null) AddAction(wiredRow, InfoChip("\uE839", wired.Description));
         _networkSection.Children.Add(wiredRow);
 
@@ -829,7 +846,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             break;
         }
         items.Add(new MenuItemSpec(Loc.Get("control.moreNetworks"), false, "\uE712", NetworkControl.OpenNetworkFlyout));
-        ShowMenu(anchor, items);
+        ShowMenu(anchor, items, Blue);
     }
 
     private void ConnectWifi(WifiNetwork network)
@@ -882,6 +899,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildNotificationSection(NotificationPrefs prefs)
     {
+        _accent = Indigo;
         _notificationSection.Children.Clear();
         _notificationSection.Children.Add(BuildSectionHeader("notifications", Loc.Get("control.notifications"), Loc.Get("control.status"), null, topMargin: 14));
         if (!IsExpanded("notifications")) return;
@@ -947,6 +965,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildAudioSection(Snapshot s)
     {
+        _accent = Orange; // the microphone switch: orange like the system's mic dot
         CloseMenu();
         _audioSection.Children.Clear();
         _audioSection.Children.Add(BuildSectionHeader("audio", Loc.Get("control.audio"), Loc.Get("control.status"), null, topMargin: 14));
@@ -1020,7 +1039,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             var target = device;
             items.Add(new MenuItemSpec(device.FriendlyName, device.IsDefault, "\uE7F5", () => SelectOutput(target, current)));
         }
-        ShowMenu(anchor, items);
+        ShowMenu(anchor, items, MediaAccent);
     }
 
     private void SelectOutput(AudioDeviceInfo target, AudioDeviceInfo? current)
@@ -1037,6 +1056,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildBluetoothSection(Snapshot s)
     {
+        _accent = Blue;
         _bluetoothSection.Children.Clear();
         _bluetoothSection.Children.Add(BuildSectionHeader("bluetooth", "Bluetooth", Loc.Get("control.status"), null, topMargin: 14));
         if (!IsExpanded("bluetooth")) return;
@@ -1076,7 +1096,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             var row = NewRow(d.Glyph, d.Name);
             string status = d.IsConnected ? Loc.Get("control.connected") : Loc.Get("control.notConnected");
             if (d.Battery >= 0) status += $" · {d.Battery} %";
-            AddStatus(row, status, d.IsConnected ? Green : Muted);
+            AddStatus(row, status, d.IsConnected ? Blue : Muted);
             if (d.CanConnect)
             {
                 AddAction(row, TextButton(d.IsConnected ? Loc.Get("control.disconnect") : Loc.Get("control.connect"),
@@ -1100,6 +1120,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildWallpaperSection(Snapshot s)
     {
+        _accent = Teal;
         _wallpaperSection.Children.Clear();
         _wallpaperSection.Children.Add(BuildSectionHeader("wallpaper", "Wallpaper Engine", Loc.Get("control.actions"), null, topMargin: 14));
         if (!IsExpanded("wallpaper")) return;
@@ -1113,7 +1134,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             WallpaperEngineState.NotRunning => Loc.Get("control.wallpaper.notRunning"),
             _ => Loc.Get("control.wallpaper.notInstalled")
         };
-        AddStatus(row, status, s.Wallpaper == WallpaperEngineState.Running ? Green : Muted);
+        AddStatus(row, status, s.Wallpaper == WallpaperEngineState.Running ? Teal : Muted);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 6, 0) };
         switch (s.Wallpaper)
@@ -1158,6 +1179,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildClaudeSection()
     {
+        _accent = WorkingOrange;
         if (_disposed || _claude == null) return;
         // A rebuild would take the text box from under the typing; catch up once the message is sent.
         if (_composerBox?.IsKeyboardFocusWithin == true)
@@ -1582,11 +1604,11 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         var send = IconButton("\uE724", Loc.Get("control.claude.reply"), () => SendMessage(sessionId, box.Text));
         send.Width = send.Height = 26;
-        send.Background = Green;
-        send.BorderBrush = Green;
+        send.Background = WorkingOrange;
+        send.BorderBrush = WorkingOrange;
         ((TextBlock)send.Child).Foreground = OnGreenText;
-        send.MouseEnter += (_, _) => send.Background = Green;
-        send.MouseLeave += (_, _) => send.Background = Green;
+        send.MouseEnter += (_, _) => send.Opacity = 0.85;
+        send.MouseLeave += (_, _) => send.Opacity = 1;
 
         var field = new Grid();
         field.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -1691,7 +1713,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         ClaudeSessionStatus.Waiting => WaitingYellow,
         ClaudeSessionStatus.Working => WorkingOrange,
-        ClaudeSessionStatus.Done => Green,
+        ClaudeSessionStatus.Done => VNotch.Services.UiPalette.PrimaryBrush,
         _ => Muted
     };
 
@@ -2211,7 +2233,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         bar.Children.Add(trackBorder);
         bar.Children.Add(new Border
         {
-            Background = usedPercent >= 90 ? WorkingOrange : Green,
+            Background = usedPercent >= 90 ? Red : WorkingOrange,
             CornerRadius = new CornerRadius(2)
         });
         return bar;
@@ -2284,12 +2306,26 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             e.Handled = true;
             _expanded[section] = !expanded;
-            var spin = new DoubleAnimation(expanded ? -90 : 0, new Duration(TimeSpan.FromMilliseconds(180)))
+            var spin = new DoubleAnimation(expanded ? -90 : 0, new Duration(TimeSpan.FromMilliseconds(220)))
             {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                EasingFunction = KnobSpring
             };
             Timeline.SetDesiredFrameRate(spin, AnimationConfig.TargetFps);
-            spin.Completed += (_, _) => RebuildSection(section);
+            var panel = grid.Parent as Panel;
+            if (expanded && panel != null && !AnimationConfig.ReduceMotion)
+                for (int i = panel.Children.Count - 1, n = 0; i > 0; i--, n++)
+                {
+                    var row = panel.Children[i];
+                    var lift = new TranslateTransform();
+                    row.RenderTransform = lift;
+                    row.BeginAnimation(OpacityProperty, WeatherMotion.To(row.Opacity, 0, 150, WeatherMotion.Out, n * 12));
+                    lift.BeginAnimation(TranslateTransform.YProperty, WeatherMotion.To(0, -8, 170, WeatherMotion.Out, n * 12));
+                }
+            spin.Completed += (_, _) =>
+            {
+                RebuildSection(section);
+                if (!expanded && panel != null && IsVisible) RevealChildren(panel, TimeSpan.Zero, 0, skip: 1);
+            };
             rotate.BeginAnimation(RotateTransform.AngleProperty, spin);
         };
         Grid.SetColumn(titlePanel, 0);
@@ -2330,6 +2366,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             case "pi.home":
             case "pi.school":
             case "pi.todos": _piKey = ""; BuildPiPage(); return;
+            case "legion.mode":
+            case "control.system": ToggleLegionSection(section); return;
             case "system": _statsTiles = null; break;
             case "claude": _claudeKey = ""; BuildClaudeSection(); return;
         }
@@ -2413,47 +2451,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         MaxWidth = maxWidth
     };
 
-    /// <summary>A pill switch in the mixer's colours: green track when on, the slider track grey when off.</summary>
-    private static FrameworkElement Toggle(bool isOn, Action<bool> onChanged)
-    {
-        var knobShift = new TranslateTransform(isOn ? 14 : 0, 0);
-        var knob = new Border
-        {
-            Width = 16,
-            Height = 16,
-            CornerRadius = new CornerRadius(8),
-            Background = KnobBrush,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(2, 0, 0, 0),
-            RenderTransform = knobShift
-        };
-        var track = new Border
-        {
-            Width = 34,
-            Height = 20,
-            CornerRadius = new CornerRadius(10),
-            Background = isOn ? Green : Track,
-            Cursor = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = knob
-        };
-        bool state = isOn;
-        track.MouseLeftButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-            state = !state;
-            track.Background = state ? Green : Track;
-            var slide = new DoubleAnimation(state ? 14 : 0, new Duration(TimeSpan.FromMilliseconds(160)))
-            {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            Timeline.SetDesiredFrameRate(slide, AnimationConfig.TargetFps);
-            knobShift.BeginAnimation(TranslateTransform.XProperty, slide);
-            onChanged(state);
-        };
-        return track;
-    }
-
     private Border Combo(string glyph, string text, bool interactive, Action<Border>? onClick)
     {
         var border = new Border
@@ -2526,15 +2523,16 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private Border TextButton(string text, bool accent, Action onClick)
     {
-        var label = MakeLabel(text, 12, accent ? OnGreenText : VNotch.Services.UiPalette.PrimaryBrush);
+        var tint = _accent;
+        var label = MakeLabel(text, 12, accent ? InkOn(tint) : VNotch.Services.UiPalette.PrimaryBrush);
         label.HorizontalAlignment = HorizontalAlignment.Center;
         var button = new Border
         {
             Height = 28,
             MinWidth = 64,
             CornerRadius = new CornerRadius(6),
-            Background = accent ? Green : ComboBg,
-            BorderBrush = accent ? Green : ComboBorder,
+            Background = accent ? tint : ComboBg,
+            BorderBrush = accent ? tint : ComboBorder,
             BorderThickness = new Thickness(1),
             Padding = new Thickness(12, 0, 12, 0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -2555,6 +2553,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             e.Handled = true;
             onClick();
         };
+        Squish(button);
         return button;
     }
 
@@ -2600,8 +2599,9 @@ public partial class ControlCenterView : UserControl, IDisposable
         ControlOverlay.Visibility = Visibility.Collapsed;
     }
 
-    private void ShowMenu(Border anchor, List<MenuItemSpec> items)
+    private void ShowMenu(Border anchor, List<MenuItemSpec> items, Brush? accent = null)
     {
+        var tick = accent ?? _accent;
         CloseMenu();
         var list = new StackPanel();
         var container = new Border
@@ -2655,7 +2655,7 @@ public partial class ControlCenterView : UserControl, IDisposable
                     Text = trailing,
                     FontFamily = SegoeSymbolFont,
                     FontSize = 12,
-                    Foreground = spec.Selected ? Green : Muted,
+                    Foreground = spec.Selected ? tick : Muted,
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(8, 0, 0, 0)
                 };
@@ -2693,16 +2693,19 @@ public partial class ControlCenterView : UserControl, IDisposable
         ControlOverlay.MouseLeftButtonDown -= ControlOverlay_OutsideClick;
         ControlOverlay.MouseLeftButtonDown += ControlOverlay_OutsideClick;
 
-        var slide = new TranslateTransform(0, -8);
-        container.RenderTransform = slide;
-        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        var dur = new Duration(TimeSpan.FromMilliseconds(160));
-        var fade = new DoubleAnimation(0, 1, dur) { EasingFunction = ease };
-        var drop = new DoubleAnimation(-8, 0, dur) { EasingFunction = ease };
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(drop, AnimationConfig.TargetFps);
-        container.BeginAnimation(OpacityProperty, fade);
-        slide.BeginAnimation(TranslateTransform.YProperty, drop);
+        if (AnimationConfig.ReduceMotion) return;
+        // Unfolds from the button it belongs to: scales up from its top edge with a small overshoot,
+        // and the entries drop in one after another.
+        var grow = new ScaleTransform(0.9, 0.7);
+        var slide = new TranslateTransform(0, -6);
+        container.RenderTransformOrigin = new Point(0.5, 0);
+        container.RenderTransform = new TransformGroup { Children = { grow, slide } };
+        container.BeginAnimation(OpacityProperty, WeatherMotion.To(0, 1, 150, WeatherMotion.Out));
+        grow.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(0.9, 1, 420, WeatherMotion.OutBack));
+        grow.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(0.7, 1, 420, WeatherMotion.OutBack));
+        slide.BeginAnimation(TranslateTransform.YProperty, WeatherMotion.To(-6, 0, 300, WeatherMotion.OutQuint));
+        for (int i = 0; i < list.Children.Count; i++)
+            WeatherMotion.Rise(list.Children[i], 40 + i * 28, dy: -6, ms: 320);
     }
 
     private void ControlOverlay_OutsideClick(object sender, MouseButtonEventArgs e)
@@ -2745,15 +2748,9 @@ public partial class ControlCenterView : UserControl, IDisposable
         else ControlScrollViewer.ScrollToTop();
         if (AnimationConfig.ReduceMotion) return;
         int index = 0;
-        foreach (var section in new[] { _statsSection, _networkSection, _bluetoothSection, _audioSection, _notificationSection, _wallpaperSection, _claudeSection })
-        {
-            foreach (UIElement child in section.Children)
-            {
-                if (child is not FrameworkElement row) continue;
-                RevealElement(row, baseDelay + TimeSpan.FromMilliseconds(Math.Min(index * 20, 160)));
-                index++;
-            }
-        }
+        foreach (UIElement child in ControlRoot.Children)
+            if (child is Panel section && section.Visibility == Visibility.Visible)
+                index = RevealChildren(section, baseDelay, index);
     }
 
     private static void RevealElement(FrameworkElement row, TimeSpan delay)

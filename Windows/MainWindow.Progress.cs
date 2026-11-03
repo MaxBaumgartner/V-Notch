@@ -32,6 +32,7 @@ public partial class MainWindow
 
     private void VolumeSyncTimer_Tick(object? sender, EventArgs e)
     {
+        PollMediaVolumeIfDue();
         if (_isExpanded && _isMusicExpanded && !_isDraggingVolume && DateTime.UtcNow >= _volumeScrollSyncAfterUtc &&
             _mediaService.TryGetCurrentSessionVolume(out float volume, out bool isMuted))
         {
@@ -150,7 +151,7 @@ public partial class MainWindow
         bool isExpanded = _isExpanded || _isMusicExpanded;
 
         bool shouldRunLyrics = _isExpanded && !_isMusicExpanded;
-        bool shouldRunVolumeSync = _isExpanded && _isMusicExpanded;
+        bool shouldRunVolumeSync = ShouldRunVolumeSyncTimer;
 
         MediaPlayback.UpdateProgressTimerState();
         SetTimerEnabled(_lyricsTimer, shouldRunLyrics);

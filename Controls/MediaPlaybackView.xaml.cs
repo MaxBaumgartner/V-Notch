@@ -256,6 +256,8 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
         double timeSideMargin = useCompactLayout ? 4 : 6;
         double progressRightInset = 0;
         double targetWidth = Math.Max(0, fallbackWidth - 29);
+        // The app-volume column sits right of this block; never run the bar under it.
+        if (ActualWidth > 0) targetWidth = Math.Min(targetWidth, Math.Max(0, ActualWidth - 2));
 
         Grid.SetColumnSpan(this, useCompactLayout ? 2 : 1);
 

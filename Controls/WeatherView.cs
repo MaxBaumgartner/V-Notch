@@ -307,6 +307,7 @@ public sealed partial class WeatherView : UserControl, IDisposable
             ToolTip = forecast.Source
         };
         HoverTint(button);
+        PressSquish(button);
         button.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
