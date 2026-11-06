@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "Rendre {0}",
   "pi.task.pickFile": "Fichier à rendre",
   "pi.task.dropFileHint": "Choisissez un fichier ou déposez-le sur cette ligne",
-  "pi.task.tooBig": "Fichier de plus de 5 Mo"
+  "pi.task.tooBig": "Fichier de plus de 5 Mo",
+  "spotlight.uninstall": "Désinstaller"
 }

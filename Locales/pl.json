@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "Oddaj {0}",
   "pi.task.pickFile": "Plik do oddania",
   "pi.task.dropFileHint": "Wybierz plik lub upuść go na ten wiersz",
-  "pi.task.tooBig": "Plik większy niż 5 MB"
+  "pi.task.tooBig": "Plik większy niż 5 MB",
+  "spotlight.uninstall": "Odinstaluj"
 }

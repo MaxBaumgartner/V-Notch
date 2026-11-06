@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "{0} を提出",
   "pi.task.pickFile": "提出するファイル",
   "pi.task.dropFileHint": "ファイルを選ぶか、この行にドロップ",
-  "pi.task.tooBig": "ファイルが 5 MB を超えています"
+  "pi.task.tooBig": "ファイルが 5 MB を超えています",
+  "spotlight.uninstall": "アンインストール"
 }

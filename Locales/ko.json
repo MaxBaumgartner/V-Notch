@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "{0} 제출",
   "pi.task.pickFile": "제출할 파일",
   "pi.task.dropFileHint": "파일을 선택하거나 이 행에 놓으세요",
-  "pi.task.tooBig": "파일이 5MB보다 큽니다"
+  "pi.task.tooBig": "파일이 5MB보다 큽니다",
+  "spotlight.uninstall": "제거"
 }

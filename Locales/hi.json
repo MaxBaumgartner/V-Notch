@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "{0} जमा करें",
   "pi.task.pickFile": "जमा करने के लिए फ़ाइल",
   "pi.task.dropFileHint": "फ़ाइल चुनें या इस पंक्ति पर छोड़ें",
-  "pi.task.tooBig": "फ़ाइल 5 MB से बड़ी है"
+  "pi.task.tooBig": "फ़ाइल 5 MB से बड़ी है",
+  "spotlight.uninstall": "अनइंस्टॉल करें"
 }

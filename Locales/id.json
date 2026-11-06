@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "Serahkan {0}",
   "pi.task.pickFile": "File untuk diserahkan",
   "pi.task.dropFileHint": "Pilih file, atau jatuhkan di baris ini",
-  "pi.task.tooBig": "File lebih dari 5 MB"
+  "pi.task.tooBig": "File lebih dari 5 MB",
+  "spotlight.uninstall": "Hapus instalan"
 }

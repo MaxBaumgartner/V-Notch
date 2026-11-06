@@ -163,6 +163,16 @@ internal sealed partial class SpotlightLauncher
             _ => false
         };
 
+    /// <summary>Windows' list of installed apps: the Start menu's "Uninstall" leads there as well.</summary>
+    internal const string UninstallPage = "ms-settings:appsfeatures";
+
+    /// <summary>An app the user installed (a shortcut, an exe or a Store app), not a folder or one of Windows' own tools.</summary>
+    internal static bool CanUninstall(SpotlightSearchItem item) =>
+        item.Kind == SpotlightResultKind.Application
+        && IsValidTarget(item)
+        && !Directory.Exists(item.Target)
+        && SpotlightSystemCatalog.Find(item.Target) == null;
+
     internal static bool CanLaunchElevated(SpotlightSearchItem item) =>
         item.Kind is SpotlightResultKind.Application or SpotlightResultKind.File
         && IsValidTarget(item)

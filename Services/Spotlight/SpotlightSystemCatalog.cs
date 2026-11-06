@@ -59,7 +59,7 @@ internal static partial class SpotlightSystemCatalog
         Setting("wifi", "network-wifi", "Wi-Fi;wifi;wireless;mang khong day"),
         Setting("network", "network-status", "Network;internet;mang"),
         Setting("vpn", "network-vpn", "VPN"),
-        Setting("apps", "appsfeatures", "Installed apps;uninstall apps;ung dung da cai;go ung dung"),
+        Setting("apps", "appsfeatures", "Installed apps;uninstall apps;uninstall;remove program;programs and features;deinstallieren;programme deinstallieren;apps deinstallieren;programme und features;ung dung da cai;go ung dung"),
         Setting("defaultApps", "defaultapps", "Default apps;ung dung mac dinh"),
         Setting("startup", "startupapps", "Startup apps;ung dung khoi dong"),
         Setting("storage", "storagesense", "Storage;disk space;dung luong;luu tru"),

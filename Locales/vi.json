@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "Nộp {0}",
   "pi.task.pickFile": "Tệp để nộp",
   "pi.task.dropFileHint": "Chọn tệp hoặc thả vào hàng này",
-  "pi.task.tooBig": "Tệp lớn hơn 5 MB"
+  "pi.task.tooBig": "Tệp lớn hơn 5 MB",
+  "spotlight.uninstall": "Gỡ cài đặt"
 }

@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "{0} teslim et",
   "pi.task.pickFile": "Teslim edilecek dosya",
   "pi.task.dropFileHint": "Bir dosya seçin veya bu satıra bırakın",
-  "pi.task.tooBig": "Dosya 5 MB’tan büyük"
+  "pi.task.tooBig": "Dosya 5 MB’tan büyük",
+  "spotlight.uninstall": "Kaldır"
 }

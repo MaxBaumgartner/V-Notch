@@ -29,6 +29,8 @@ internal sealed class SpotlightHomePanel : StackPanel
     private readonly WrapPanel _tray = new() { Margin = new Thickness(2, 0, 0, 0) };
 
     internal event Action<SpotlightSearchItem>? AppActivated;
+    /// <summary>A right-click on an app: Spotlight shows the same menu as for a result (open, as admin, uninstall …).</summary>
+    internal event Action<SpotlightSearchItem, FrameworkElement>? AppMenuRequested;
     internal event Action<string>? TrayActivated;
 
     internal bool HasContent => _apps.Children.Count > 0 || _tray.Children.Count > 0;
@@ -120,6 +122,11 @@ internal sealed class SpotlightHomePanel : StackPanel
         };
         AutomationName(surface, app.DisplayTitle);
         WireClick(surface, HoverBrush, Brushes.Transparent, () => AppActivated?.Invoke(app));
+        surface.MouseRightButtonUp += (_, e) =>
+        {
+            AppMenuRequested?.Invoke(app, surface);
+            e.Handled = true;
+        };
         // Icons hydrate after the tile exists; follow late arrivals.
         app.PropertyChanged += (_, e) =>
         {

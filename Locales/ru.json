@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "Сдать {0}",
   "pi.task.pickFile": "Файл для сдачи",
   "pi.task.dropFileHint": "Выберите файл или перетащите его на эту строку",
-  "pi.task.tooBig": "Файл больше 5 МБ"
+  "pi.task.tooBig": "Файл больше 5 МБ",
+  "spotlight.uninstall": "Удалить"
 }

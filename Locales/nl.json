@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "{0} inleveren",
   "pi.task.pickFile": "Bestand om in te leveren",
   "pi.task.dropFileHint": "Kies een bestand of sleep het op deze rij",
-  "pi.task.tooBig": "Bestand groter dan 5 MB"
+  "pi.task.tooBig": "Bestand groter dan 5 MB",
+  "spotlight.uninstall": "Verwijderen"
 }

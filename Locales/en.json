@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "Hand in {0}",
   "pi.task.pickFile": "File to hand in",
   "pi.task.dropFileHint": "Pick a file, or drop it on this row",
-  "pi.task.tooBig": "File larger than 5 MB"
+  "pi.task.tooBig": "File larger than 5 MB",
+  "spotlight.uninstall": "Uninstall"
 }

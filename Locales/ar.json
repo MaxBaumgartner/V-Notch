@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "سلّم {0}",
   "pi.task.pickFile": "ملف للتسليم",
   "pi.task.dropFileHint": "اختر ملفًا أو أفلته على هذا الصف",
-  "pi.task.tooBig": "الملف أكبر من 5 ميغابايت"
+  "pi.task.tooBig": "الملف أكبر من 5 ميغابايت",
+  "spotlight.uninstall": "إلغاء التثبيت"
 }

@@ -1288,5 +1288,6 @@
   "pi.task.submitFile": "提交 {0}",
   "pi.task.pickFile": "要提交的文件",
   "pi.task.dropFileHint": "选择文件，或拖到这一行",
-  "pi.task.tooBig": "文件大于 5 MB"
+  "pi.task.tooBig": "文件大于 5 MB",
+  "spotlight.uninstall": "卸载"
 }

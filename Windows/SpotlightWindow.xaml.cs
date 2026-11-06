@@ -140,6 +140,7 @@ public partial class SpotlightWindow : Window
         // The entrance morph publishes results while the shell is still at
         ResultsList.SizeChanged += (_, _) => ScheduleGlideUpdate();
         HomePanel.AppActivated += LaunchItem;
+        HomePanel.AppMenuRequested += ShowItemMenu;
         HomePanel.TrayActivated += OpenTrayMenu;
 
         // Never measure the ListBox from inside ObservableCollection's
@@ -877,11 +878,17 @@ public partial class SpotlightWindow : Window
     {
         if (sender is not ListBoxItem { DataContext: SpotlightSearchItem item } container) return;
         _viewModel.SelectedResult = item;
+        ShowItemMenu(item, container);
+        e.Handled = true;
+    }
 
+    /// <summary>The right-click menu of a result or of an app on the empty Spotlight's grid.</summary>
+    private void ShowItemMenu(SpotlightSearchItem item, FrameworkElement placementTarget)
+    {
         var menu = new ContextMenu
         {
             Style = (Style)FindResource("SpotlightContextMenuStyle"),
-            PlacementTarget = container
+            PlacementTarget = placementTarget
         };
 
         if (item.Kind == SpotlightResultKind.Calculation)
@@ -893,19 +900,24 @@ public partial class SpotlightWindow : Window
         }
         else
         {
-            AddMenuItem(menu, item.Kind == SpotlightResultKind.SystemAction ? item.Title : Loc.Get("spotlight.open"), LaunchSelected);
+            AddMenuItem(menu, item.Kind == SpotlightResultKind.SystemAction ? item.Title : Loc.Get("spotlight.open"), () => LaunchItem(item));
             if (SpotlightLauncher.CanLaunchElevated(item))
-                AddMenuItem(menu, Loc.Get("spotlight.runAsAdmin"), LaunchSelectedElevated);
+                AddMenuItem(menu, Loc.Get("spotlight.runAsAdmin"), () => LaunchElevated(item));
             if (SpotlightLauncher.CanReveal(item))
-                AddMenuItem(menu, Loc.Get("spotlight.reveal"), RevealSelected);
+                AddMenuItem(menu, Loc.Get("spotlight.reveal"), () => Reveal(item));
             if (SpotlightLauncher.GetCopyableText(item) != null)
-                AddMenuItem(menu, Loc.Get("spotlight.copyPath"), CopySelected);
+                AddMenuItem(menu, Loc.Get("spotlight.copyPath"), () => Copy(item));
+            // Like the Start menu: to Windows' installed apps, where the app is removed (with Windows' own questions).
+            if (SpotlightLauncher.CanUninstall(item))
+                AddMenuItem(menu, Loc.Get("spotlight.uninstall"), OpenUninstallSettings);
         }
 
         AddPersonalizationActions(menu, item);
         menu.IsOpen = true;
-        e.Handled = true;
     }
+
+    private void OpenUninstallSettings() =>
+        LaunchItem(SpotlightSystemCatalog.Find(SpotlightLauncher.UninstallPage)?.CreateItem());
 
     private void AddMenuItem(ContextMenu menu, string header, Action action)
     {
@@ -1019,9 +1031,10 @@ public partial class SpotlightWindow : Window
         }
     }
 
-    private async void LaunchSelectedElevated()
+    private void LaunchSelectedElevated() => LaunchElevated(_viewModel.SelectedResult);
+
+    private async void LaunchElevated(SpotlightSearchItem? selected)
     {
-        SpotlightSearchItem? selected = _viewModel.SelectedResult;
         if (selected == null)
         {
             if (!string.IsNullOrWhiteSpace(SearchBox.Text)) PlayShake();
@@ -1031,7 +1044,7 @@ public partial class SpotlightWindow : Window
         if (!SpotlightLauncher.CanLaunchElevated(selected))
         {
             // Store apps cannot take the runas verb; a plain launch beats a dead key.
-            LaunchSelected();
+            LaunchItem(selected);
             return;
         }
 
@@ -1066,9 +1079,10 @@ public partial class SpotlightWindow : Window
         }
     }
 
-    private async void RevealSelected()
+    private void RevealSelected() => Reveal(_viewModel.SelectedResult);
+
+    private async void Reveal(SpotlightSearchItem? selected)
     {
-        SpotlightSearchItem? selected = _viewModel.SelectedResult;
         if (selected == null)
         {
             if (!string.IsNullOrWhiteSpace(SearchBox.Text)) PlayShake();
@@ -1108,9 +1122,10 @@ public partial class SpotlightWindow : Window
         _launchInFlight = false;
     }
 
-    private void CopySelected()
+    private void CopySelected() => Copy(_viewModel.SelectedResult);
+
+    private void Copy(SpotlightSearchItem? selected)
     {
-        SpotlightSearchItem? selected = _viewModel.SelectedResult;
         string? text = selected == null ? null : SpotlightLauncher.GetCopyableText(selected);
         if (text == null) return;
         if (TryCopyToClipboard(text)) HideSpotlight();
