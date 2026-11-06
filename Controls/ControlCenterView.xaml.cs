@@ -1278,6 +1278,14 @@ public partial class ControlCenterView : UserControl, IDisposable
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        // Whether sessions show in the closed notch at all (see ControlCenterView.ClaudeNotch.cs).
+        if (ClaudeNotchButton() is { } eye)
+        {
+            Grid.SetColumn(eye, 1);
+            grid.Children.Add(eye);
+        }
 
         var title = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         title.Children.Add(new System.Windows.Shapes.Path
@@ -1306,7 +1314,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             sound.Width = sound.Height = 24;
             sound.Margin = new Thickness(0, 0, 12, 0);
             sound.Opacity = on ? 1 : 0.6;
-            Grid.SetColumn(sound, 1);
+            Grid.SetColumn(sound, 2);
             grid.Children.Add(sound);
         }
         if (_claudeInstalled)
@@ -1314,7 +1322,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             var remove = ColumnLabel(Loc.Get("control.claude.remove"));
             remove.FontSize = 11.5;
             MakeLink(remove, RemoveClaudeHooks);
-            Grid.SetColumn(remove, 2);
+            Grid.SetColumn(remove, 3);
             grid.Children.Add(remove);
         }
         return grid;

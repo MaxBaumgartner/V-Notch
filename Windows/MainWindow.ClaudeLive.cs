@@ -54,7 +54,8 @@ public partial class MainWindow
     private void UpdateClaudeLive()
     {
         if (_claudeTracker == null || _cleanedUp) return;
-        _claudeLiveSessions = LiveSessions(_claudeTracker.GetSessions());
+        // Switched off: the sessions stay in the Claude tab and nothing of them shows in the closed notch.
+        _claudeLiveSessions = _settings?.ShowClaudeInNotch == false ? new() : LiveSessions(_claudeTracker.GetSessions());
         var session = _claudeLiveSessions.FirstOrDefault();
         _claudeLiveSession = session;
 

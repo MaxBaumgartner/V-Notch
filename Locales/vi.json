@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Chọn ảnh hoặc thả vào dòng này",
   "pi.task.locked": "Bài nộp đã bị khóa",
   "pi.task.alreadySubmitted": "Đã nộp: thay thế trong bảng điều khiển Pi",
-  "pi.task.statement": "Cần lời cam kết: hãy nộp trong bảng điều khiển Pi"
+  "pi.task.statement": "Cần lời cam kết: hãy nộp trong bảng điều khiển Pi",
+  "control.claude.notchOn": "Đang hiện trong notch – nhấp để ẩn",
+  "control.claude.notchOff": "Đang ẩn trong notch – nhấp để hiện",
+  "settings.claudeInNotch": "Claude Code trong notch",
+  "settings.claudeInNotch.hint": "Các phiên đang chạy và đang chờ trong notch đóng, thông báo của chúng và tab Claude tự mở."
 }

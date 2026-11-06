@@ -233,6 +233,9 @@ public partial class NotchSettings
     public bool SlimIdleNotch { get; set; } = true;
     // During school the orb beside the notch counts down the lesson (or the break), from the Pi's timetable.
     public bool ShowLessonTimer { get; set; } = true;
+    // Claude Code in the closed notch and the orb, its pills and opening the Claude tab by itself. Off keeps the
+    // hooks: the Claude tab still lists the sessions.
+    public bool ShowClaudeInNotch { get; set; } = true;
     public string ClockPageStyle { get; set; } = "analog";
 
     public string ProcessPriority { get; set; } = "Normal";

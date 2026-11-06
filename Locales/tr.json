@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Fotoğraf seçin veya bu satıra bırakın",
   "pi.task.locked": "Teslim kilitli",
   "pi.task.alreadySubmitted": "Zaten teslim edildi: değiştirmek için Pi panelini kullanın",
-  "pi.task.statement": "Beyan gerekiyor: Pi panelinden teslim edin"
+  "pi.task.statement": "Beyan gerekiyor: Pi panelinden teslim edin",
+  "control.claude.notchOn": "Çentikte görünüyor – gizlemek için tıklayın",
+  "control.claude.notchOff": "Çentikte gizli – göstermek için tıklayın",
+  "settings.claudeInNotch": "Çentikte Claude Code",
+  "settings.claudeInNotch.hint": "Kapalı çentikte çalışan ve bekleyen oturumlar, bildirimleri ve Claude sekmesinin kendiliğinden açılması."
 }

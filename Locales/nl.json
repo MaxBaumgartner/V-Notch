@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Kies foto’s of sleep ze naar deze regel",
   "pi.task.locked": "De inlevering is vergrendeld",
   "pi.task.alreadySubmitted": "Al ingeleverd: vervang het via het Pi-dashboard",
-  "pi.task.statement": "Verklaring nodig: lever in via het Pi-dashboard"
+  "pi.task.statement": "Verklaring nodig: lever in via het Pi-dashboard",
+  "control.claude.notchOn": "Zichtbaar in de notch – klik om te verbergen",
+  "control.claude.notchOff": "Verborgen in de notch – klik om te tonen",
+  "settings.claudeInNotch": "Claude Code in de notch",
+  "settings.claudeInNotch.hint": "Werkende en wachtende sessies in de gesloten notch, hun meldingen en het vanzelf openen van het Claude-tabblad."
 }

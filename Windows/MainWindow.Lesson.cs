@@ -78,6 +78,11 @@ public partial class MainWindow
     private void RefreshPiSchoolIfSettingsChanged(NotchSettings oldSettings, NotchSettings newSettings)
     {
         if (oldSettings.SlimIdleNotch != newSettings.SlimIdleNotch) UpdateIdleShape();
+        if (oldSettings.ShowClaudeInNotch != newSettings.ShowClaudeInNotch)
+        {
+            UpdateClaudeLive();
+            ClaudeCenter.ClaudeNotchSwitchChanged();
+        }
         if (oldSettings.ShowLessonTimer == newSettings.ShowLessonTimer &&
             string.Equals(oldSettings.PiDashboardUrl, newSettings.PiDashboardUrl, StringComparison.Ordinal)) return;
         _lessonSchool = null;

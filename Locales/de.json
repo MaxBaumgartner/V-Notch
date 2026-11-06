@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Fotos auswählen oder auf diese Zeile ziehen",
   "pi.task.locked": "Die Abgabe ist gesperrt",
   "pi.task.alreadySubmitted": "Schon abgegeben: zum Ersetzen das Pi-Dashboard nutzen",
-  "pi.task.statement": "Braucht eine Erklärung: im Pi-Dashboard abgeben"
+  "pi.task.statement": "Braucht eine Erklärung: im Pi-Dashboard abgeben",
+  "control.claude.notchOn": "In der Notch sichtbar – klicken zum Ausblenden",
+  "control.claude.notchOff": "In der Notch ausgeblendet – klicken zum Einblenden",
+  "settings.claudeInNotch": "Claude Code in der Notch",
+  "settings.claudeInNotch.hint": "Arbeitende und wartende Sitzungen in der geschlossenen Notch, ihre Hinweise und das automatische Öffnen des Claude-Tabs."
 }

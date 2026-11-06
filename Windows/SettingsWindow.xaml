@@ -1776,6 +1776,11 @@
                                                            Text="During school a ring beside the notch counts down the lesson or the break, from the Pi's timetable."
                                                            Style="{StaticResource SettingHintText}"
                                                            Margin="0,4,0,0"/>
+                                                <CheckBox x:Name="ClaudeInNotchCheck" Content="Claude Code in the notch" Margin="0,12,0,0"/>
+                                                <TextBlock x:Name="ClaudeInNotchHint"
+                                                           Text="Working and waiting sessions in the closed notch, their pills, and the Claude tab opening by itself."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,0"/>
                                             </StackPanel>
                                         </Border>
 

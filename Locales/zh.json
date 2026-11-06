@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "选择照片或拖到这一行",
   "pi.task.locked": "提交已锁定",
   "pi.task.alreadySubmitted": "已提交：请在 Pi 仪表板中替换",
-  "pi.task.statement": "需要声明：请在 Pi 仪表板中提交"
+  "pi.task.statement": "需要声明：请在 Pi 仪表板中提交",
+  "control.claude.notchOn": "在刘海中显示 – 点击隐藏",
+  "control.claude.notchOff": "在刘海中隐藏 – 点击显示",
+  "settings.claudeInNotch": "刘海中的 Claude Code",
+  "settings.claudeInNotch.hint": "收起的刘海中显示工作中和等待中的会话、其提醒，以及自动打开 Claude 标签页。"
 }

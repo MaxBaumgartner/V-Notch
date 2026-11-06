@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Выберите фото или перетащите их на эту строку",
   "pi.task.locked": "Сдача заблокирована",
   "pi.task.alreadySubmitted": "Уже сдано: заменить можно в панели Pi",
-  "pi.task.statement": "Нужно заявление: сдайте через панель Pi"
+  "pi.task.statement": "Нужно заявление: сдайте через панель Pi",
+  "control.claude.notchOn": "Показано в вырезе – нажмите, чтобы скрыть",
+  "control.claude.notchOff": "Скрыто в вырезе – нажмите, чтобы показать",
+  "settings.claudeInNotch": "Claude Code в вырезе",
+  "settings.claudeInNotch.hint": "Работающие и ожидающие сессии в закрытом вырезе, их уведомления и автоматическое открытие вкладки Claude."
 }

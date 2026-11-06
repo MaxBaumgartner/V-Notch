@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Escolha fotos ou solte-as nesta linha",
   "pi.task.locked": "A entrega está bloqueada",
   "pi.task.alreadySubmitted": "Já entregue: substitua no painel do Pi",
-  "pi.task.statement": "Precisa de uma declaração: entregue pelo painel do Pi"
+  "pi.task.statement": "Precisa de uma declaração: entregue pelo painel do Pi",
+  "control.claude.notchOn": "Visível no notch – clique para ocultar",
+  "control.claude.notchOff": "Oculto no notch – clique para mostrar",
+  "settings.claudeInNotch": "Claude Code no notch",
+  "settings.claudeInNotch.hint": "Sessões trabalhando ou aguardando no notch fechado, seus avisos e a aba Claude abrindo sozinha."
 }

@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Pick photos, or drop them on this row",
   "pi.task.locked": "The hand-in is locked",
   "pi.task.alreadySubmitted": "Already handed in: replace it on the Pi dashboard",
-  "pi.task.statement": "Needs a declaration: hand it in on the Pi dashboard"
+  "pi.task.statement": "Needs a declaration: hand it in on the Pi dashboard",
+  "control.claude.notchOn": "Shown in the notch – click to hide",
+  "control.claude.notchOff": "Hidden in the notch – click to show",
+  "settings.claudeInNotch": "Claude Code in the notch",
+  "settings.claudeInNotch.hint": "Working and waiting sessions in the closed notch, their pills, and the Claude tab opening by itself."
 }

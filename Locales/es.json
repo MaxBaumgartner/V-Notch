@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Elige fotos o suéltalas en esta fila",
   "pi.task.locked": "La entrega está bloqueada",
   "pi.task.alreadySubmitted": "Ya entregado: reemplázalo en el panel de la Pi",
-  "pi.task.statement": "Requiere una declaración: entrégalo en el panel de la Pi"
+  "pi.task.statement": "Requiere una declaración: entrégalo en el panel de la Pi",
+  "control.claude.notchOn": "Visible en el notch: clic para ocultar",
+  "control.claude.notchOff": "Oculto en el notch: clic para mostrar",
+  "settings.claudeInNotch": "Claude Code en el notch",
+  "settings.claudeInNotch.hint": "Sesiones trabajando o esperando en el notch cerrado, sus avisos y la pestaña Claude abriéndose sola."
 }

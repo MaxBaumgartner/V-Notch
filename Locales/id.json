@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Pilih foto atau seret ke baris ini",
   "pi.task.locked": "Pengumpulan dikunci",
   "pi.task.alreadySubmitted": "Sudah dikumpulkan: ganti lewat dasbor Pi",
-  "pi.task.statement": "Perlu pernyataan: kumpulkan lewat dasbor Pi"
+  "pi.task.statement": "Perlu pernyataan: kumpulkan lewat dasbor Pi",
+  "control.claude.notchOn": "Tampil di notch – klik untuk menyembunyikan",
+  "control.claude.notchOff": "Tersembunyi di notch – klik untuk menampilkan",
+  "settings.claudeInNotch": "Claude Code di notch",
+  "settings.claudeInNotch.hint": "Sesi yang bekerja dan menunggu di notch tertutup, pemberitahuannya, dan tab Claude yang terbuka sendiri."
 }

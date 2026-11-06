@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "اختر الصور أو اسحبها إلى هذا السطر",
   "pi.task.locked": "التسليم مقفل",
   "pi.task.alreadySubmitted": "تم التسليم بالفعل: استبدله من لوحة Pi",
-  "pi.task.statement": "يتطلب إقرارًا: سلّمه من لوحة Pi"
+  "pi.task.statement": "يتطلب إقرارًا: سلّمه من لوحة Pi",
+  "control.claude.notchOn": "ظاهر في النتوء – انقر للإخفاء",
+  "control.claude.notchOff": "مخفي في النتوء – انقر للإظهار",
+  "settings.claudeInNotch": "Claude Code في النتوء",
+  "settings.claudeInNotch.hint": "الجلسات العاملة والمنتظرة في النتوء المغلق وتنبيهاتها وفتح تبويب Claude تلقائيًا."
 }

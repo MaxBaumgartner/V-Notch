@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "Wybierz zdjęcia lub upuść je na ten wiersz",
   "pi.task.locked": "Oddawanie jest zablokowane",
   "pi.task.alreadySubmitted": "Już oddane: zamień w panelu Pi",
-  "pi.task.statement": "Wymaga oświadczenia: oddaj w panelu Pi"
+  "pi.task.statement": "Wymaga oświadczenia: oddaj w panelu Pi",
+  "control.claude.notchOn": "Widoczne w notchu – kliknij, aby ukryć",
+  "control.claude.notchOff": "Ukryte w notchu – kliknij, aby pokazać",
+  "settings.claudeInNotch": "Claude Code w notchu",
+  "settings.claudeInNotch.hint": "Pracujące i czekające sesje w zamkniętym notchu, ich powiadomienia i samoczynne otwieranie karty Claude."
 }

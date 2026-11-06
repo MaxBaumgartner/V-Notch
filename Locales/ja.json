@@ -1275,5 +1275,9 @@
   "pi.task.dropHint": "写真を選ぶか、この行にドロップ",
   "pi.task.locked": "提出はロックされています",
   "pi.task.alreadySubmitted": "提出済み：差し替えは Pi ダッシュボードで",
-  "pi.task.statement": "宣誓が必要：Pi ダッシュボードから提出してください"
+  "pi.task.statement": "宣誓が必要：Pi ダッシュボードから提出してください",
+  "control.claude.notchOn": "ノッチに表示中 – クリックで非表示",
+  "control.claude.notchOff": "ノッチで非表示 – クリックで表示",
+  "settings.claudeInNotch": "ノッチに Claude Code",
+  "settings.claudeInNotch.hint": "閉じたノッチに作業中・待機中のセッション、その通知、Claude タブの自動表示。"
 }

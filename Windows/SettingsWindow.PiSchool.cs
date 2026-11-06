@@ -13,6 +13,7 @@ public partial class SettingsWindow
     {
         SlimIdleNotchCheck.IsChecked = settings.SlimIdleNotch;
         LessonTimerCheck.IsChecked = settings.ShowLessonTimer;
+        ClaudeInNotchCheck.IsChecked = settings.ShowClaudeInNotch;
         PiDashboardUrlTextBox.Text = settings.PiDashboardUrl;
         SchoolMoodleUrlTextBox.Text = settings.SchoolMoodleUrl;
         SchoolUntisUrlTextBox.Text = settings.SchoolUntisUrl;
@@ -23,6 +24,7 @@ public partial class SettingsWindow
     {
         snapshot.SlimIdleNotch = SlimIdleNotchCheck.IsChecked ?? true;
         snapshot.ShowLessonTimer = LessonTimerCheck.IsChecked ?? true;
+        snapshot.ShowClaudeInNotch = ClaudeInNotchCheck.IsChecked ?? true;
         snapshot.PiDashboardUrl = PiDashboardUrlTextBox.Text?.Trim() ?? string.Empty;
         snapshot.SchoolMoodleUrl = SchoolMoodleUrlTextBox.Text?.Trim() ?? string.Empty;
         snapshot.SchoolUntisUrl = SchoolUntisUrlTextBox.Text?.Trim() ?? string.Empty;
@@ -35,6 +37,8 @@ public partial class SettingsWindow
         SlimIdleNotchHint.Text = Loc.Get("settings.slimIdleNotch.hint");
         LessonTimerCheck.Content = Loc.Get("settings.lessonTimer");
         LessonTimerHint.Text = Loc.Get("settings.lessonTimer.hint");
+        ClaudeInNotchCheck.Content = Loc.Get("settings.claudeInNotch");
+        ClaudeInNotchHint.Text = Loc.Get("settings.claudeInNotch.hint");
         PiDashboardUrlLabel.Text = Loc.Get("settings.piDashboardUrl");
         PiDashboardUrlHint.Text = Loc.Get("settings.piDashboardUrl.hint");
         SchoolMoodleUrlLabel.Text = Loc.Get("settings.schoolMoodleUrl");

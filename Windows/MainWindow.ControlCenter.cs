@@ -57,6 +57,7 @@ public partial class MainWindow
         _claudeTracker.TurnFinished += OnClaudeTurnFinished;
         _claudeTracker.PermissionRequested += OnClaudePermissionRequestedSound;
         ClaudeCenter.AttachSoundSwitch(() => _settings?.PlayClaudeSounds ?? false, SetClaudeSounds);
+        ClaudeCenter.AttachNotchSwitch(() => _settings?.ShowClaudeInNotch ?? true, SetClaudeInNotch);
 
         _claudeSweepTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = ClaudeSweepInterval };
         _claudeSweepTimer.Tick += (_, _) => _claudeTracker?.Sweep();
@@ -116,7 +117,7 @@ public partial class MainWindow
     /// </summary>
     private void OpenClaudeTabForAttention()
     {
-        if (_cleanedUp || _isClaudeView) return;
+        if (_cleanedUp || _isClaudeView || _settings?.ShowClaudeInNotch == false) return;
         if (_isAnimating || _isGreetingActive || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention)
         {
             _claudeAttentionRetry ??= CreateClaudeAttentionRetry();
@@ -270,9 +271,19 @@ public partial class MainWindow
         _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
     }
 
+    /// <summary>Claude Code in the closed notch on or off; the sessions leave (or come back to) the notch at once.</summary>
+    private void SetClaudeInNotch(bool on)
+    {
+        _settings.ShowClaudeInNotch = on;
+        _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
+        if (!on) _claudeAttentionRetry?.Stop();
+        UpdateClaudeLive();
+    }
+
     private void OnClaudeTurnFinished(ClaudeSession session) => Dispatcher.BeginInvoke(() =>
     {
         PlayClaudeSound(ClaudeSound.Done);
+        if (_settings?.ShowClaudeInNotch == false) return;
         ShowNotchPill(session.Name, Loc.Get("control.claude.done"), appIcon: null, isClaude: true,
             tap: () => ClaudeSessionWindow.TryActivate(session.Id, session.Title));
     });
