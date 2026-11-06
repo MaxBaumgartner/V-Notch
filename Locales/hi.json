@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "{0} नहीं खोला जा सका, शायद यह हटाया या स्थानांतरित किया गया हो",
   "spotlight.navigate": "नेविगेट",
   "spotlight.noResults": "कोई परिणाम नहीं मिला",
+  "spotlight.home.apps": "ऐप्स",
+  "spotlight.home.background": "बैकग्राउंड में",
   "spotlight.noResults.hint": "किसी दूसरे ऐप या फ़ाइल नाम से खोजें।",
   "spotlight.open": "खोलें",
   "spotlight.pin": "ऐप पिन करें",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "नॉच में दिख रहा है – छिपाने के लिए क्लिक करें",
   "control.claude.notchOff": "नॉच में छिपा है – दिखाने के लिए क्लिक करें",
   "settings.claudeInNotch": "नॉच में Claude Code",
-  "settings.claudeInNotch.hint": "बंद नॉच में काम कर रहे और इंतज़ार कर रहे सेशन, उनकी सूचनाएँ और Claude टैब का अपने आप खुलना।"
+  "settings.claudeInNotch.hint": "बंद नॉच में काम कर रहे और इंतज़ार कर रहे सेशन, उनकी सूचनाएँ और Claude टैब का अपने आप खुलना।",
+  "pi.task.repo": "रिपॉज़िटरी {0} खोलें",
+  "pi.task.wmcMissing": "इस PC पर pi-wmc सेट नहीं है",
+  "pi.handedIn": "{0} · जमा किया {1}",
+  "pi.task.submitFile": "{0} जमा करें",
+  "pi.task.pickFile": "जमा करने के लिए फ़ाइल",
+  "pi.task.dropFileHint": "फ़ाइल चुनें या इस पंक्ति पर छोड़ें",
+  "pi.task.tooBig": "फ़ाइल 5 MB से बड़ी है"
 }

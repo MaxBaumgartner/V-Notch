@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Kan {0} niet openen. Het bestand is mogelijk verplaatst of verwijderd.",
   "spotlight.navigate": "Navigeren",
   "spotlight.noResults": "Geen resultaten gevonden",
+  "spotlight.home.apps": "Apps",
+  "spotlight.home.background": "Op de achtergrond",
   "spotlight.noResults.hint": "Probeer een andere app- of bestandsnaam.",
   "spotlight.open": "Openen",
   "spotlight.pin": "App vastzetten",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Zichtbaar in de notch – klik om te verbergen",
   "control.claude.notchOff": "Verborgen in de notch – klik om te tonen",
   "settings.claudeInNotch": "Claude Code in de notch",
-  "settings.claudeInNotch.hint": "Werkende en wachtende sessies in de gesloten notch, hun meldingen en het vanzelf openen van het Claude-tabblad."
+  "settings.claudeInNotch.hint": "Werkende en wachtende sessies in de gesloten notch, hun meldingen en het vanzelf openen van het Claude-tabblad.",
+  "pi.task.repo": "Repo {0} openen",
+  "pi.task.wmcMissing": "pi-wmc is niet ingesteld op deze pc",
+  "pi.handedIn": "{0} · ingeleverd {1}",
+  "pi.task.submitFile": "{0} inleveren",
+  "pi.task.pickFile": "Bestand om in te leveren",
+  "pi.task.dropFileHint": "Kies een bestand of sleep het op deze rij",
+  "pi.task.tooBig": "Bestand groter dan 5 MB"
 }

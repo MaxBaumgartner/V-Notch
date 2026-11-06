@@ -122,6 +122,14 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
     }
 
     public SpotlightPreferences Preferences => _usage.Preferences;
+
+    /// <summary>Apps for the empty Spotlight when it stands in for Start: Spotlight pins, taskbar pins, recent apps.</summary>
+    internal IReadOnlyList<SpotlightSearchItem> BuildHomeApps()
+    {
+        var recent = SpotlightHome.RecentlyLaunchedShortcuts(SpotlightHome.MaxApps).Concat(_usage.GetRecentItems(24));
+        var apps = SpotlightHome.BuildApps(_usage.Preferences.Search(""), SpotlightHome.TaskbarPins(), recent);
+        return apps.Select(SpotlightSearchService.LoadIcon).ToArray();
+    }
     public bool HistoryEnabled { get => _usage.Enabled; set => _usage.Enabled = value; }
 
     public void RecordLaunch(SpotlightSearchItem item, string query = "") => _usage.RecordLaunch(item, query);

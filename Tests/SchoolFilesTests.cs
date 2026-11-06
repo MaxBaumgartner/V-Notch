@@ -11,11 +11,25 @@ namespace VNotch.Tests;
 public sealed class SchoolFilesTests
 {
     [Fact]
-    public void FilesLandInAFolderPerSubject()
+    public void FilesLandInTheSchoolFolderNotDownloads()
     {
-        string folder = SchoolFiles.FolderFor("POSE 3AHIF Aitenbichler, Kern 26/27");
-        Assert.EndsWith(Path.Combine("Downloads", "Schule", "POSE"), folder);
-        Assert.EndsWith(Path.Combine("Schule", "Moodle"), SchoolFiles.FolderFor(""));
+        string root = Path.Combine(Path.GetTempPath(), "vnotch-schule-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            foreach (string d in new[] { "1AHIF", "2AHIF", "3AHIF", "digi4shool" }) Directory.CreateDirectory(Path.Combine(root, d));
+            Assert.Equal(Path.Combine(root, "3AHIF", "POSE", "06"), SchoolFiles.FolderFor("POSE 3AHIF Aitenbichler, Kern 26/27", "06", root));
+            Assert.Equal(Path.Combine(root, "3AHIF", "WMC", "HÜ4"), SchoolFiles.FolderFor("WMC 3AHIF Kern, Schraml 26/27", "04", root));
+            Assert.Equal(Path.Combine(root, "3AHIF", "LOAL"), SchoolFiles.FolderFor("LOAL 3ahif Karpowicz 26/27", "", root));
+            Assert.Equal(Path.Combine(root, "3AHIF", "AM"), SchoolFiles.FolderFor("AM_3AHIF_Lugmayr 2026/27", null, root));
+            // no class in the course name: the newest class folder
+            Assert.Equal(Path.Combine(root, "3AHIF", "Religion", "02"), SchoolFiles.FolderFor("Religion", "02", root));
+            Assert.Equal(Path.Combine(root, "3AHIF", "Moodle"), SchoolFiles.FolderFor("", null, root));
+            Assert.DoesNotContain("Downloads", SchoolFiles.FolderFor("DBI 3AHIF Aistleitner 2627"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Theory]
@@ -115,5 +129,39 @@ public sealed class SchoolFilesTests
         Assert.Equal(new PiAttachment("Notification.zip", 43371), Assert.Single(a.Attachments));
         Assert.NotNull(a.Blocked);
         Assert.Null(PiDashboardClient.ParseAssignment(JsonNode.Parse("""{"error":"x"}""")!.AsObject()));
+    }
+
+    [Fact]
+    public void WmcTasksAndHandedInOnesComeWithWhatTheRowNeeds()
+    {
+        var school = PiDashboardClient.ParseSchool(JsonNode.Parse("""
+            {"date":"2026-11-05","deadlines":[
+              {"name":"Übung DDL","course":"DBI 3AHIF","duedate":1793712600,"cmid":232546,"submitted":true,"submittedAt":1793640506},
+              {"name":"04 Tool Lending","course":"WMC 3AHIF","duedate":1793912340,"cmid":238415,"kind":"classroom",
+               "url":"https://edufs.edu.htl-leonding.ac.at/moodle/mod/url/view.php?id=238415"}]}
+            """)!.AsObject());
+        var (ddl, wmc) = (school.Deadlines[0], school.Deadlines[1]);
+        Assert.True(ddl.Submitted);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1793640506), ddl.SubmittedAt);
+        Assert.Equal(("classroom", "https://edufs.edu.htl-leonding.ac.at/moodle/mod/url/view.php?id=238415"), (wmc.Kind, wmc.Url));
+        Assert.Null(wmc.SubmittedAt);
+
+        var task = PiDashboardClient.ParseAssignment(JsonNode.Parse("""{"cmid":238415,"name":"04 Tool Lending","mode":"classroom","nr":"04","attachments":[],"status":null}""")!.AsObject())!;
+        Assert.Equal(("classroom", "04", ""), (task.Mode, task.Nr, task.Status));
+    }
+
+    [Fact]
+    public void AnNwTaskIsAnUploadAndOpensInTheDashboardPanel()
+    {
+        var nw = PiDashboardClient.ParseAssignment(JsonNode.Parse("""
+            {"cmid":973048058,"name":"Skript zum Ausgeben des kleinen Einmaleins","course":"NSCS 3AHIF","mode":"upload","nr":null,
+             "attachments":[],"status":"submitted","files":[{"name":"1x1.sh","time":1793638860}],"filename":"1x1.sh"}
+            """)!.AsObject())!;
+        Assert.Equal(("upload", "submitted", "1x1.sh"), (nw.Mode, nw.Status, nw.Filename));
+
+        using var client = new PiDashboardClient(() => "http://pi.example:4000/ ");
+        Assert.Equal("http://pi.example:4000/#abgabe-973048058", client.PanelLink(973048058));
+        using var unset = new PiDashboardClient(() => "");
+        Assert.Null(unset.PanelLink(973048058));
     }
 }

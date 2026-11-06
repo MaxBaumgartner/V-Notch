@@ -160,6 +160,9 @@ public partial class MainWindow
         anim.Completed += (_, _) =>
         {
             if (version != _compactWidthAnimationVersion) return;
+            // A pill's width belongs to the closed notch. Once the notch is open (a click right as the pill
+            // arrived), committing it would cancel the open notch's size and leave it pill-wide.
+            if (_isExpanded) return;
             if (token == 0 && !_compactPillArbiter.CanRestoreMedia(revision)) return;
 
             // Allow dismiss animations to finish post token release, but prevent

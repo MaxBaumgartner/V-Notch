@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -18,19 +19,48 @@ internal static class ClaudeTranscript
     public static string? ReadTitle(string transcriptPath)
     {
         if (!transcriptPath.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)) return null;
+        // Runs on every few hook events: a pooled buffer and a byte search keep the 256 KB tail off the large
+        // object heap, which otherwise fragments and keeps the notch's memory high after a long Claude session.
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(TailBytes);
         try
         {
             using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             long start = Math.Max(0, stream.Length - TailBytes);
-            var buffer = new byte[stream.Length - start];
+            int length = (int)(stream.Length - start);
             stream.Seek(start, SeekOrigin.Begin);
-            stream.ReadExactly(buffer);
-            return FindTitle(Encoding.UTF8.GetString(buffer));
+            stream.ReadExactly(buffer, 0, length);
+            return FindTitle(buffer.AsSpan(0, length));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return null;
         }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    /// <summary>The title from transcript bytes; only the few lines that carry a title are decoded.</summary>
+    internal static string? FindTitle(ReadOnlySpan<byte> tail) =>
+        LastValue(tail, "custom-title", "customTitle") ?? LastValue(tail, "ai-title", "aiTitle");
+
+    private static string? LastValue(ReadOnlySpan<byte> tail, string type, string field)
+    {
+        byte[] marker = Encoding.UTF8.GetBytes($"\"type\":\"{type}\"");
+        int end = tail.Length;
+        for (int tries = 0; tries < MaxLinesTried && end > 0; tries++)
+        {
+            int at = tail[..end].LastIndexOf(marker);
+            if (at < 0) return null;
+            int lineStart = tail[..at].LastIndexOf((byte)'\n') + 1;
+            int lineLength = tail[at..].IndexOf((byte)'\n');
+            var line = lineLength < 0 ? tail[lineStart..] : tail[lineStart..(at + lineLength)];
+            end = lineStart;
+            if (Parse(Encoding.UTF8.GetString(line)) is { } entry && Text(entry, "type") == type && Text(entry, field) is { Length: > 0 } value)
+                return value;
+        }
+        return null;
     }
 
     /// <summary>
@@ -103,27 +133,7 @@ internal static class ClaudeTranscript
     private static bool Flag(JsonObject entry, string key) =>
         entry[key] is JsonValue value && value.TryGetValue(out bool flag) && flag;
 
-    internal static string? FindTitle(string tail) =>
-        LastValue(tail, "custom-title", "customTitle") ?? LastValue(tail, "ai-title", "aiTitle");
-
-    private static string? LastValue(string tail, string type, string field)
-    {
-        string marker = $"\"type\":\"{type}\"";
-        int end = tail.Length;
-        for (int tries = 0; tries < MaxLinesTried; tries++)
-        {
-            int at = end <= 0 ? -1 : tail.LastIndexOf(marker, end - 1, StringComparison.Ordinal);
-            if (at < 0) return null;
-            int lineStart = tail.LastIndexOf('\n', at) + 1;
-            int lineEnd = tail.IndexOf('\n', at);
-            string line = lineEnd < 0 ? tail[lineStart..] : tail[lineStart..lineEnd];
-            end = lineStart;
-            // The marker can also turn up quoted inside another entry: only the entry itself counts.
-            if (Parse(line) is { } entry && Text(entry, "type") == type && Text(entry, field) is { Length: > 0 } value)
-                return value;
-        }
-        return null;
-    }
+    internal static string? FindTitle(string tail) => FindTitle(Encoding.UTF8.GetBytes(tail));
 
     private static JsonObject? Parse(string line)
     {

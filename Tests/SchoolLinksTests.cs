@@ -43,6 +43,19 @@ public sealed class SchoolLinksTests
     }
 
     [Fact]
+    public void WmcTask_OpensItsMoodleLinkNotAnAssignmentPage()
+    {
+        const string link = Moodle + "/mod/url/view.php?id=238415";
+        var wmc = new PiDeadline("04 Tool Lending", "WMC 3AHIF", Now.AddHours(3), false, 238415, "classroom", link);
+        var school = School(wmc);
+
+        Assert.Equal(link, SchoolLinks.For(wmc, Moodle));
+        Assert.Equal(link, SchoolLinks.ForReminder("neu:238415", school, Now, Moodle, Untis));
+        Assert.Equal(link, SchoolLinks.ForReminder("abend:2026-11-02", school, Now, Moodle, Untis));
+        Assert.Equal(Moodle + "/mod/assign/view.php?id=7", SchoolLinks.For(new PiDeadline("DBI", "DBI", Now, false, 7, Url: "javascript:x"), Moodle));
+    }
+
+    [Fact]
     public void DueReminderWithNothingDue_OpensUntis()
     {
         var school = School(new PiDeadline("Next week", "DBI", Now.AddDays(5), false, 5));

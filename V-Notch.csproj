@@ -58,6 +58,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Lets the GC compact the large object heap when it fragments: after a long Claude Code session the
+         notch otherwise keeps ~100 MB of committed but empty heap. -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
     <PackageReference Include="LanguageDetection.Ai" Version="1.1.0" />

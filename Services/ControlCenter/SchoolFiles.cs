@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Media;
@@ -7,8 +8,8 @@ using System.Windows.Media.Imaging;
 namespace VNotch.Services.ControlCenter;
 
 /// <summary>
-/// The PC side of the Pi's hand-in panel: an assignment's files land in Downloads\Schule\&lt;subject&gt; and open,
-/// a POSE exercise opens through the pi-pose:// link of the dashboard's own setup tool, and photos become the
+/// The PC side of the Pi's hand-in panel: an assignment's files land in the school folder (see <see cref="FolderFor"/>)
+/// and open, a POSE exercise or a WMC repo opens through a link of the dashboard's own setup tools, and photos become the
 /// JPEG pages the maths hand-in takes (long edge 2000 px, quality 80, like the dashboard in the browser).
 /// </summary>
 internal static class SchoolFiles
@@ -26,11 +27,50 @@ internal static class SchoolFiles
 
     internal static readonly string[] PhotoExtensions = [".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"];
 
-    /// <summary>"DBI 3AHIF Aistleitner 2627" → Downloads\Schule\DBI.</summary>
-    internal static string FolderFor(string course)
+    internal static string SchoolRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Schule");
+
+    /// <summary>
+    /// Where a task's files go: the user's own school folder, Desktop\Schule\&lt;class&gt;\&lt;subject&gt;[\&lt;exercise&gt;],
+    /// like the folders already there (POSE\06, DBI\01, WMC\HÜ3), never Downloads. "DBI 3AHIF Aistleitner 2627" with
+    /// exercise "01" → Schule\3AHIF\DBI\01. The class is the course word like "3AHIF" (else the newest class folder),
+    /// the subject the first word ("AM_3AHIF_…" → AM), the exercise the task's number, counted HÜ1, HÜ2 … for WMC.
+    /// Same rule as the Pi dashboard's tools/schule-ordner.mjs; keep both equal.
+    /// </summary>
+    internal static string FolderFor(string course, string? nr = null, string? root = null)
     {
-        string subject = SafeName((course ?? "").Trim().Split(' ', 2)[0], "Moodle");
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Schule", subject);
+        root ??= SchoolRoot;
+        string[] words = (course ?? "").Trim().Split([' ', '_', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        string subject = SafeName(words.Length > 0 ? words[0] : "", "Moodle");
+        string? klasse = words.Skip(1).FirstOrDefault(IsClass)?.ToUpperInvariant() ?? NewestClass(root);
+        string? exercise = ExerciseFolder(subject, nr);
+        string folder = klasse == null ? Path.Combine(root, subject) : Path.Combine(root, klasse, subject);
+        return exercise == null ? folder : Path.Combine(folder, exercise);
+    }
+
+    /// <summary>"3AHIF", "2bhitm": a digit, then two to six letters.</summary>
+    private static bool IsClass(string word) =>
+        word.Length is >= 3 and <= 7 && char.IsAsciiDigit(word[0]) && word.Skip(1).All(char.IsAsciiLetter);
+
+    internal static string? ExerciseFolder(string subject, string? nr)
+    {
+        if (string.IsNullOrEmpty(nr) || !nr.All(char.IsAsciiDigit) || nr.Length > 3) return null;
+        return string.Equals(subject, "WMC", StringComparison.OrdinalIgnoreCase) ? "HÜ" + int.Parse(nr, CultureInfo.InvariantCulture) : nr;
+    }
+
+    /// <summary>The newest class that has a folder (3AHIF before 2AHIF), for a course that names none.</summary>
+    private static string? NewestClass(string root)
+    {
+        try
+        {
+            return Directory.Exists(root)
+                ? Directory.GetDirectories(root).Select(Path.GetFileName).Where(d => d != null && IsClass(d))
+                    .OrderByDescending(d => d!.Length).ThenByDescending(d => d, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
+                : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>A file name from Moodle made safe for the disk: no folders, no reserved characters.</summary>
@@ -85,17 +125,25 @@ internal static class SchoolFiles
     /// A POSE exercise: the dashboard's tools/pose-setup.mjs (registered for pi-pose://) makes the folder,
     /// restores the repo from the task's zip and opens IntelliJ. False when the link is not registered.
     /// </summary>
-    internal static bool OpenPoseProject(int cmid)
+    internal static bool OpenPoseProject(int cmid) => OpenLink("pi-pose", cmid);
+
+    /// <summary>
+    /// A WMC task on Classroom 50: the dashboard's tools/wmc-setup.mjs (registered for pi-wmc://) accepts it with
+    /// gh student, clones the repo into WMC\HÜn and opens VS Code. False when the link is not registered.
+    /// </summary>
+    internal static bool OpenClassroomRepo(int cmid) => OpenLink("pi-wmc", cmid);
+
+    private static bool OpenLink(string scheme, int cmid)
     {
         if (cmid <= 0) return false;
         try
         {
-            Process.Start(new ProcessStartInfo($"pi-pose://open/{cmid}") { UseShellExecute = true })?.Dispose();
+            Process.Start(new ProcessStartInfo($"{scheme}://open/{cmid}") { UseShellExecute = true })?.Dispose();
             return true;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            RuntimeLog.Warn(LogTag, $"pi-pose link failed: {ex.Message}");
+            RuntimeLog.Warn(LogTag, $"{scheme} link failed: {ex.Message}");
             return false;
         }
     }

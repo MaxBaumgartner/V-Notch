@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "无法打开 {0}。文件可能已被移动或删除。",
   "spotlight.navigate": "导航",
   "spotlight.noResults": "未找到匹配结果",
+  "spotlight.home.apps": "应用",
+  "spotlight.home.background": "后台运行",
   "spotlight.noResults.hint": "尝试输入其他应用或文件名。",
   "spotlight.open": "打开",
   "spotlight.pin": "固定应用",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "在刘海中显示 – 点击隐藏",
   "control.claude.notchOff": "在刘海中隐藏 – 点击显示",
   "settings.claudeInNotch": "刘海中的 Claude Code",
-  "settings.claudeInNotch.hint": "收起的刘海中显示工作中和等待中的会话、其提醒，以及自动打开 Claude 标签页。"
+  "settings.claudeInNotch.hint": "收起的刘海中显示工作中和等待中的会话、其提醒，以及自动打开 Claude 标签页。",
+  "pi.task.repo": "打开仓库 {0}",
+  "pi.task.wmcMissing": "此电脑未设置 pi-wmc",
+  "pi.handedIn": "{0} · 已提交 {1}",
+  "pi.task.submitFile": "提交 {0}",
+  "pi.task.pickFile": "要提交的文件",
+  "pi.task.dropFileHint": "选择文件，或拖到这一行",
+  "pi.task.tooBig": "文件大于 5 MB"
 }

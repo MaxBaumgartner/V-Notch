@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Nie można otworzyć {0}. Plik mógł zostać przeniesiony lub usunięty.",
   "spotlight.navigate": "Nawiguj",
   "spotlight.noResults": "Brak wyników",
+  "spotlight.home.apps": "Aplikacje",
+  "spotlight.home.background": "W tle",
   "spotlight.noResults.hint": "Spróbuj wpisać inną nazwę aplikacji lub pliku.",
   "spotlight.open": "Otwórz",
   "spotlight.pin": "Przypnij aplikację",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Widoczne w notchu – kliknij, aby ukryć",
   "control.claude.notchOff": "Ukryte w notchu – kliknij, aby pokazać",
   "settings.claudeInNotch": "Claude Code w notchu",
-  "settings.claudeInNotch.hint": "Pracujące i czekające sesje w zamkniętym notchu, ich powiadomienia i samoczynne otwieranie karty Claude."
+  "settings.claudeInNotch.hint": "Pracujące i czekające sesje w zamkniętym notchu, ich powiadomienia i samoczynne otwieranie karty Claude.",
+  "pi.task.repo": "Otwórz repo {0}",
+  "pi.task.wmcMissing": "pi-wmc nie jest skonfigurowany na tym PC",
+  "pi.handedIn": "{0} · oddane {1}",
+  "pi.task.submitFile": "Oddaj {0}",
+  "pi.task.pickFile": "Plik do oddania",
+  "pi.task.dropFileHint": "Wybierz plik lub upuść go na ten wiersz",
+  "pi.task.tooBig": "Plik większy niż 5 MB"
 }

@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "تعذر فتح {0}. قد يكون الملف تم نقله أو حذفه.",
   "spotlight.navigate": "تنقل",
   "spotlight.noResults": "لم يتم العثور على نتائج",
+  "spotlight.home.apps": "التطبيقات",
+  "spotlight.home.background": "في الخلفية",
   "spotlight.noResults.hint": "جرب اسماً آخر لتطبيق أو ملف.",
   "spotlight.open": "فتح",
   "spotlight.pin": "تثبيت التطبيق",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "ظاهر في النتوء – انقر للإخفاء",
   "control.claude.notchOff": "مخفي في النتوء – انقر للإظهار",
   "settings.claudeInNotch": "Claude Code في النتوء",
-  "settings.claudeInNotch.hint": "الجلسات العاملة والمنتظرة في النتوء المغلق وتنبيهاتها وفتح تبويب Claude تلقائيًا."
+  "settings.claudeInNotch.hint": "الجلسات العاملة والمنتظرة في النتوء المغلق وتنبيهاتها وفتح تبويب Claude تلقائيًا.",
+  "pi.task.repo": "افتح المستودع {0}",
+  "pi.task.wmcMissing": "pi-wmc غير معدّ على هذا الكمبيوتر",
+  "pi.handedIn": "{0} · سُلّم {1}",
+  "pi.task.submitFile": "سلّم {0}",
+  "pi.task.pickFile": "ملف للتسليم",
+  "pi.task.dropFileHint": "اختر ملفًا أو أفلته على هذا الصف",
+  "pi.task.tooBig": "الملف أكبر من 5 ميغابايت"
 }

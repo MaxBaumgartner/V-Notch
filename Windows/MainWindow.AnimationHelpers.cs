@@ -155,9 +155,23 @@ public partial class MainWindow
         }
     }
 
+    private bool _compactMarqueeStopsWhenHidden;
+
     private void UpdateCompactMarquee()
     {
         if (_currentMediaInfo == null) return;
+        if (!_compactMarqueeStopsWhenHidden)
+        {
+            _compactMarqueeStopsWhenHidden = true;
+            // The marquee loops forever. Left running on hidden text it still repaints the whole notch window
+            // every frame (a third of a core here) until the next hover, so it stops whenever the title hides.
+            CompactHoverInfo.IsVisibleChanged += (_, _) =>
+            {
+                if (CompactHoverInfo.IsVisible) return;
+                CompactTitleMarqueeTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+                CompactTitleMarqueeTranslate.X = 0;
+            };
+        }
 
         CompactTitleMarquee.Text = _currentMediaInfo.CurrentTrack;
         CompactTitleMarqueeTranslate.BeginAnimation(TranslateTransform.XProperty, null);

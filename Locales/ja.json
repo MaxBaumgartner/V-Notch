@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "{0} を開けませんでした。移動または削除された可能性があります",
   "spotlight.navigate": "移動",
   "spotlight.noResults": "結果が見つかりません",
+  "spotlight.home.apps": "アプリ",
+  "spotlight.home.background": "バックグラウンド",
   "spotlight.noResults.hint": "別のアプリ名またはファイル名を試してください。",
   "spotlight.open": "開く",
   "spotlight.pin": "アプリをピン留め",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "ノッチに表示中 – クリックで非表示",
   "control.claude.notchOff": "ノッチで非表示 – クリックで表示",
   "settings.claudeInNotch": "ノッチに Claude Code",
-  "settings.claudeInNotch.hint": "閉じたノッチに作業中・待機中のセッション、その通知、Claude タブの自動表示。"
+  "settings.claudeInNotch.hint": "閉じたノッチに作業中・待機中のセッション、その通知、Claude タブの自動表示。",
+  "pi.task.repo": "リポジトリ {0} を開く",
+  "pi.task.wmcMissing": "この PC では pi-wmc が設定されていません",
+  "pi.handedIn": "{0} · 提出済み {1}",
+  "pi.task.submitFile": "{0} を提出",
+  "pi.task.pickFile": "提出するファイル",
+  "pi.task.dropFileHint": "ファイルを選ぶか、この行にドロップ",
+  "pi.task.tooBig": "ファイルが 5 MB を超えています"
 }

@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Не удалось открыть {0}. Файл мог быть перемещён или удалён.",
   "spotlight.navigate": "Навигация",
   "spotlight.noResults": "Ничего не найдено",
+  "spotlight.home.apps": "Приложения",
+  "spotlight.home.background": "В фоне",
   "spotlight.noResults.hint": "Попробуйте ввести другое имя файла или программы.",
   "spotlight.open": "Открыть",
   "spotlight.pin": "Закрепить приложение",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Показано в вырезе – нажмите, чтобы скрыть",
   "control.claude.notchOff": "Скрыто в вырезе – нажмите, чтобы показать",
   "settings.claudeInNotch": "Claude Code в вырезе",
-  "settings.claudeInNotch.hint": "Работающие и ожидающие сессии в закрытом вырезе, их уведомления и автоматическое открытие вкладки Claude."
+  "settings.claudeInNotch.hint": "Работающие и ожидающие сессии в закрытом вырезе, их уведомления и автоматическое открытие вкладки Claude.",
+  "pi.task.repo": "Открыть репозиторий {0}",
+  "pi.task.wmcMissing": "pi-wmc не настроен на этом ПК",
+  "pi.handedIn": "{0} · сдано {1}",
+  "pi.task.submitFile": "Сдать {0}",
+  "pi.task.pickFile": "Файл для сдачи",
+  "pi.task.dropFileHint": "Выберите файл или перетащите его на эту строку",
+  "pi.task.tooBig": "Файл больше 5 МБ"
 }

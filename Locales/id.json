@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Tidak dapat membuka {0}. File mungkin telah dipindahkan atau dihapus.",
   "spotlight.navigate": "Navigasi",
   "spotlight.noResults": "Hasil tidak ditemukan",
+  "spotlight.home.apps": "Aplikasi",
+  "spotlight.home.background": "Di latar belakang",
   "spotlight.noResults.hint": "Coba gunakan nama aplikasi atau file yang lain.",
   "spotlight.open": "Buka",
   "spotlight.pin": "Sematkan aplikasi",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Tampil di notch – klik untuk menyembunyikan",
   "control.claude.notchOff": "Tersembunyi di notch – klik untuk menampilkan",
   "settings.claudeInNotch": "Claude Code di notch",
-  "settings.claudeInNotch.hint": "Sesi yang bekerja dan menunggu di notch tertutup, pemberitahuannya, dan tab Claude yang terbuka sendiri."
+  "settings.claudeInNotch.hint": "Sesi yang bekerja dan menunggu di notch tertutup, pemberitahuannya, dan tab Claude yang terbuka sendiri.",
+  "pi.task.repo": "Buka repo {0}",
+  "pi.task.wmcMissing": "pi-wmc belum diatur di PC ini",
+  "pi.handedIn": "{0} · diserahkan {1}",
+  "pi.task.submitFile": "Serahkan {0}",
+  "pi.task.pickFile": "File untuk diserahkan",
+  "pi.task.dropFileHint": "Pilih file, atau jatuhkan di baris ini",
+  "pi.task.tooBig": "File lebih dari 5 MB"
 }

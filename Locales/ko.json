@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "{0}을(를) 열 수 없습니다. 파일이 이동되었거나 삭제되었을 수 있습니다.",
   "spotlight.navigate": "탐색",
   "spotlight.noResults": "검색 결과 없음",
+  "spotlight.home.apps": "앱",
+  "spotlight.home.background": "백그라운드",
   "spotlight.noResults.hint": "다른 앱 또는 파일 이름을 입력해 보세요.",
   "spotlight.open": "열기",
   "spotlight.pin": "앱 고정",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "노치에 표시 중 – 클릭하여 숨기기",
   "control.claude.notchOff": "노치에서 숨김 – 클릭하여 표시",
   "settings.claudeInNotch": "노치에 Claude Code",
-  "settings.claudeInNotch.hint": "닫힌 노치의 작업 중·대기 중 세션, 알림, Claude 탭 자동 열기."
+  "settings.claudeInNotch.hint": "닫힌 노치의 작업 중·대기 중 세션, 알림, Claude 탭 자동 열기.",
+  "pi.task.repo": "저장소 {0} 열기",
+  "pi.task.wmcMissing": "이 PC에 pi-wmc가 설정되어 있지 않습니다",
+  "pi.handedIn": "{0} · 제출함 {1}",
+  "pi.task.submitFile": "{0} 제출",
+  "pi.task.pickFile": "제출할 파일",
+  "pi.task.dropFileHint": "파일을 선택하거나 이 행에 놓으세요",
+  "pi.task.tooBig": "파일이 5MB보다 큽니다"
 }

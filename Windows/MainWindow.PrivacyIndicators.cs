@@ -9,6 +9,8 @@ namespace VNotch;
 
 public partial class MainWindow
 {
+    private const int PrivacyBreathFps = 24;
+
     #region Privacy Indicators (Mic/Camera In-Use — Single Dot)
 
     private bool _privacyIndicatorsVisible = false;
@@ -307,7 +309,9 @@ public partial class MainWindow
             RepeatBehavior = RepeatBehavior.Forever,
             EasingFunction = _easeSineInOut
         };
-        Timeline.SetDesiredFrameRate(breathing, VNotch.Services.AnimationConfig.TargetFps);
+        // A slow opacity breath looks the same at 24 fps; at the display rate (165 Hz here) it kept the whole
+        // notch window repainting for as long as an app holds the mic, which for an always-on mixer is always.
+        Timeline.SetDesiredFrameRate(breathing, PrivacyBreathFps);
         dot.BeginAnimation(OpacityProperty, breathing);
     }
 

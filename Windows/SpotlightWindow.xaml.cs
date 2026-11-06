@@ -139,6 +139,8 @@ public partial class SpotlightWindow : Window
 
         // The entrance morph publishes results while the shell is still at
         ResultsList.SizeChanged += (_, _) => ScheduleGlideUpdate();
+        HomePanel.AppActivated += LaunchItem;
+        HomePanel.TrayActivated += OpenTrayMenu;
 
         // Never measure the ListBox from inside ObservableCollection's
         _viewModel.Results.CollectionChanged += (_, _) => ScheduleStatusRefresh();
@@ -177,6 +179,7 @@ public partial class SpotlightWindow : Window
             SearchBox.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, Loc.Get("spotlight.placeholder"));
         }
         LocalizeAi();
+        HomePanel?.RefreshLocalization();
         RefreshStatus();
         if (IsSpotlightOpen && !_isClosing && SearchBox != null && !_aiMode)
         {
@@ -222,6 +225,11 @@ public partial class SpotlightWindow : Window
         SearchBox.Text = restoreQuery ? _lastDismissedQuery : string.Empty;
         if (restoreQuery) SearchBox.SelectAll();
         else if (!_aiMode) _ = _viewModel.SearchAsync(string.Empty);
+        if (!_aiMode && _settings.SpotlightReplacesStart)
+        {
+            if (HomePanel.HasContent) HomePanel.PlayReveal();
+            LoadHome();
+        }
 
         // Search mode may have left the results list/status visible. Re-sync
         // the whole surface so AI mode never reopens showing stale search UI.
@@ -935,9 +943,10 @@ public partial class SpotlightWindow : Window
         ResultsList.ScrollIntoView(ResultsList.SelectedItem);
     }
 
-    private async void LaunchSelected()
+    private void LaunchSelected() => LaunchItem(_viewModel.SelectedResult);
+
+    private async void LaunchItem(SpotlightSearchItem? selected)
     {
-        SpotlightSearchItem? selected = _viewModel.SelectedResult;
         if (selected == null)
         {
             // Honor a fast type-and-Enter: launch the top result when the
@@ -1405,10 +1414,13 @@ public partial class SpotlightWindow : Window
                           || (hasQuery && !hasResults && !searchPending
                               && (_viewModel.IsWindowsSearchUnavailable || _viewModel.HasNoResults));
         bool isSearchingInFlight = hasQuery && searchPending && _contentShown;
-        bool showContent = hasResults || showStatus || isSearchingInFlight;
+        // Standing in for the Start menu, an empty Spotlight shows the app grid and background apps.
+        bool showHome = !hasQuery && _settings.SpotlightReplacesStart && HomePanel.HasContent;
+        bool showContent = hasResults || showStatus || isSearchingInFlight || showHome;
 
         // Children first: the reveal/resize animations below measure the
-        ResultsList.Visibility = (hasResults || (isSearchingInFlight && !showStatus)) ? Visibility.Visible : Visibility.Collapsed;
+        HomePanel.Visibility = showHome ? Visibility.Visible : Visibility.Collapsed;
+        ResultsList.Visibility = !showHome && (hasResults || (isSearchingInFlight && !showStatus)) ? Visibility.Visible : Visibility.Collapsed;
         StatusPanel.Visibility = showStatus ? Visibility.Visible : Visibility.Collapsed;
         if (showStatus && !retainStatus)
         {

@@ -1059,6 +1059,8 @@ public partial class MainWindow
             currentHeight = NotchBorder.ActualHeight;
         }
         double currentCornerRadius = CurrentCornerRadius;
+        // Any closed-notch width animation still in flight (a pill sizing itself) is void from here on.
+        ++_compactWidthAnimationVersion;
         NotchBorder.BeginAnimation(WidthProperty, null);
         NotchBorder.BeginAnimation(HeightProperty, null);
         this.BeginAnimation(CurrentCornerRadiusProperty, null);

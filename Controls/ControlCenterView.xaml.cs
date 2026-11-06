@@ -2394,29 +2394,32 @@ public partial class ControlCenterView : UserControl, IDisposable
         VerticalAlignment = VerticalAlignment.Center
     };
 
-    private Grid NewRow(string glyph, string label, bool muted = false)
+    /// <param name="muted">A hint ("no devices"): grey, and free to run into the next columns.</param>
+    /// <param name="dim">A quiet entry (a task already handed in): grey, but trimmed to its column like any row.</param>
+    private Grid NewRow(string glyph, string label, bool muted = false, bool dim = false)
     {
         var grid = NewRowGrid();
         grid.Margin = new Thickness(0, 4, 0, 4);
         grid.Height = RowHeight;
-        grid.Children.Add(NameCell(glyph, label, muted));
+        grid.Children.Add(NameCell(glyph, label, muted, dim));
         return grid;
     }
 
-    private FrameworkElement NameCell(string glyph, string label, bool muted)
+    private FrameworkElement NameCell(string glyph, string label, bool muted, bool dim = false)
     {
+        Brush color = muted || dim ? Muted : VNotch.Services.UiPalette.PrimaryBrush;
         var namePanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         namePanel.Children.Add(new TextBlock
         {
             Text = glyph,
             FontFamily = SegoeSymbolFont,
             FontSize = 16,
-            Foreground = muted ? Muted : VNotch.Services.UiPalette.PrimaryBrush,
+            Foreground = color,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 10, 0)
         });
         // Muted rows are hints ("no devices"), so they may run into the next column.
-        namePanel.Children.Add(MakeLabel(label, 13.5, muted ? Muted : VNotch.Services.UiPalette.PrimaryBrush, maxWidth: muted ? double.PositiveInfinity : ColName - 30));
+        namePanel.Children.Add(MakeLabel(label, 13.5, color, maxWidth: muted ? double.PositiveInfinity : ColName - 30));
         Grid.SetColumn(namePanel, 0);
         if (muted) Grid.SetColumnSpan(namePanel, 3);
         return namePanel;

@@ -106,6 +106,26 @@ public sealed class MainWindowAnimationHelperTests
         Assert.True(double.IsFinite(window.CompactTitleScrollContainer.Width));
     });
 
+    [Fact]
+    public void CompactTitleStopsScrollingOnceTheHoverInfoIsGone() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        window.ShowActivated = false;
+        window.Show();
+        window.MusicCompactContent.Visibility = Visibility.Visible;
+        Set(window, "_isMusicCompactMode", true);
+        Set(window, "_currentMediaInfo", new MediaInfo { CurrentTrack = new string('W', 120), CurrentArtist = "Fixture artist" });
+        Set(window, "_isCompactThumbnailHovered", true);
+        Invoke(window, "AnimateThumbnailHover", true);
+        await WpfFrameWaiter.UntilAsync(() => window.CompactHoverInfo.IsVisible && window.CompactTitleMarqueeTranslate.HasAnimatedProperties, "long title scrolls on hover", ct);
+        Set(window, "_isCompactThumbnailHovered", false);
+        Invoke(window, "AnimateThumbnailHover", false);
+        await WpfFrameWaiter.UntilAsync(() => window.CompactHoverInfo.Visibility == Visibility.Collapsed, "compact hover info hidden", ct);
+        // A marquee left running on hidden text repaints the whole notch window every frame, forever.
+        Assert.False(window.CompactTitleMarqueeTranslate.HasAnimatedProperties);
+    });
+
     [Theory]
     [InlineData("PlayButtonPressAnimation")]
     [InlineData("PlayGentleButtonPressAnimation")]

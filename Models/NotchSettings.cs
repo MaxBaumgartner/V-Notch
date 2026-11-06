@@ -236,6 +236,8 @@ public partial class NotchSettings
     // Claude Code in the closed notch and the orb, its pills and opening the Claude tab by itself. Off keeps the
     // hooks: the Claude tab still lists the sessions.
     public bool ShowClaudeInNotch { get; set; } = true;
+    // A lone Win tap and a click on the taskbar's Start button open Spotlight instead of the Start menu.
+    public bool SpotlightReplacesStart { get; set; } = true;
     public string ClockPageStyle { get; set; } = "analog";
 
     public string ProcessPriority { get; set; } = "Normal";

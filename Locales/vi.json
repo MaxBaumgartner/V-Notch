@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Không thể mở {0}. Mục này có thể đã bị di chuyển hoặc xóa",
   "spotlight.navigate": "Di chuyển",
   "spotlight.noResults": "Không tìm thấy kết quả",
+  "spotlight.home.apps": "Ứng dụng",
+  "spotlight.home.background": "Chạy nền",
   "spotlight.noResults.hint": "Hãy thử tên ứng dụng hoặc tệp khác.",
   "spotlight.open": "Mở",
   "spotlight.pin": "Ghim ứng dụng",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Đang hiện trong notch – nhấp để ẩn",
   "control.claude.notchOff": "Đang ẩn trong notch – nhấp để hiện",
   "settings.claudeInNotch": "Claude Code trong notch",
-  "settings.claudeInNotch.hint": "Các phiên đang chạy và đang chờ trong notch đóng, thông báo của chúng và tab Claude tự mở."
+  "settings.claudeInNotch.hint": "Các phiên đang chạy và đang chờ trong notch đóng, thông báo của chúng và tab Claude tự mở.",
+  "pi.task.repo": "Mở repo {0}",
+  "pi.task.wmcMissing": "pi-wmc chưa được thiết lập trên PC này",
+  "pi.handedIn": "{0} · đã nộp {1}",
+  "pi.task.submitFile": "Nộp {0}",
+  "pi.task.pickFile": "Tệp để nộp",
+  "pi.task.dropFileHint": "Chọn tệp hoặc thả vào hàng này",
+  "pi.task.tooBig": "Tệp lớn hơn 5 MB"
 }

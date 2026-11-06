@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Impossible d’ouvrir {0}. L’élément a peut-être été déplacé ou supprimé",
   "spotlight.navigate": "Naviguer",
   "spotlight.noResults": "Aucun résultat",
+  "spotlight.home.apps": "Apps",
+  "spotlight.home.background": "En arrière-plan",
   "spotlight.noResults.hint": "Essayez un autre nom d’application ou de fichier.",
   "spotlight.open": "Ouvrir",
   "spotlight.pin": "Épingler l’application",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Affiché dans l'encoche – cliquer pour masquer",
   "control.claude.notchOff": "Masqué dans l'encoche – cliquer pour afficher",
   "settings.claudeInNotch": "Claude Code dans l'encoche",
-  "settings.claudeInNotch.hint": "Sessions actives ou en attente dans l'encoche fermée, leurs pastilles et l'ouverture automatique de l'onglet Claude."
+  "settings.claudeInNotch.hint": "Sessions actives ou en attente dans l'encoche fermée, leurs pastilles et l'ouverture automatique de l'onglet Claude.",
+  "pi.task.repo": "Ouvrir le dépôt {0}",
+  "pi.task.wmcMissing": "pi-wmc n'est pas configuré sur ce PC",
+  "pi.handedIn": "{0} · rendu {1}",
+  "pi.task.submitFile": "Rendre {0}",
+  "pi.task.pickFile": "Fichier à rendre",
+  "pi.task.dropFileHint": "Choisissez un fichier ou déposez-le sur cette ligne",
+  "pi.task.tooBig": "Fichier de plus de 5 Mo"
 }

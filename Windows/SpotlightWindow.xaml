@@ -994,6 +994,8 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
 
+                        <controls:SpotlightHomePanel x:Name="HomePanel" Visibility="Collapsed"/>
+
                         <Grid x:Name="StatusPanel"
                               MinHeight="112"
                               Margin="24,4,24,14"

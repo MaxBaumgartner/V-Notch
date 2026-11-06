@@ -20,10 +20,15 @@ internal sealed record PiEntity(string Id, string Label, string Icon, string Sta
 
 internal sealed record PiLesson(string Start, string End, string Subject, string Room, bool Cancelled, string Change, int StartMinutes, int EndMinutes);
 
-/// <summary>A Moodle assignment; <paramref name="Cmid"/> is its course-module id (its page's "?id=").</summary>
-internal sealed record PiDeadline(string Name, string Course, DateTimeOffset Due, bool Submitted, int Cmid = 0);
+/// <summary>
+/// A Moodle assignment; <paramref name="Cmid"/> is its course-module id (its page's "?id="). <paramref name="Kind"/>
+/// "classroom" is a WMC task on Classroom 50 (a Moodle link, its page in <paramref name="Url"/>); handed-in ones carry
+/// when (<paramref name="SubmittedAt"/>) and stay listed for a week after their due date.
+/// </summary>
+internal sealed record PiDeadline(string Name, string Course, DateTimeOffset Due, bool Submitted, int Cmid = 0,
+    string Kind = "", string Url = "", DateTimeOffset? SubmittedAt = null);
 
-/// <summary>What the Pi's hand-in panel knows about an assignment: "pose" (a code project at the PC), "photo" (maths: photos as one PDF) or "link".</summary>
+/// <summary>What the Pi's hand-in panel knows about an assignment: "pose" (a code project at the PC), "photo" (maths: photos as one PDF), "classroom" (WMC repo on Classroom 50) or "link".</summary>
 internal sealed record PiAssignment(int Cmid, string Name, string Mode, string Nr, IReadOnlyList<PiAttachment> Attachments,
     string Status, string? Blocked, string Filename);
 
@@ -87,7 +92,11 @@ internal sealed partial class PiDashboardClient : IDisposable
     public async Task<PiSchool?> GetSchoolAsync()
     {
         if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerSchoolAsync().ConfigureAwait(false);
-        if (await GetAsync("/api/school") is not JsonObject school) return null;
+        return await GetAsync("/api/school").ConfigureAwait(false) is JsonObject school ? ParseSchool(school) : null;
+    }
+
+    internal static PiSchool ParseSchool(JsonObject school)
+    {
         var lessons = new List<PiLesson>();
         if (school["timetable"] is JsonArray timetable)
         {
@@ -104,7 +113,9 @@ internal sealed partial class PiDashboardClient : IDisposable
             foreach (var node in due)
             {
                 if (node is not JsonObject d || !(d["duedate"] is JsonValue v && v.TryGetValue(out long seconds))) continue;
-                deadlines.Add(new PiDeadline(Str(d, "name"), Str(d, "course"), DateTimeOffset.FromUnixTimeSeconds(seconds), Bool(d, "submitted"), Int(d, "cmid")));
+                DateTimeOffset? submittedAt = d["submittedAt"] is JsonValue s && s.TryGetValue(out long at) && at > 0 ? DateTimeOffset.FromUnixTimeSeconds(at) : null;
+                deadlines.Add(new PiDeadline(Str(d, "name"), Str(d, "course"), DateTimeOffset.FromUnixTimeSeconds(seconds), Bool(d, "submitted"), Int(d, "cmid"),
+                    Str(d, "kind"), Str(d, "url"), submittedAt));
             }
         }
         var exams = new List<PiExam>();
@@ -214,10 +225,23 @@ internal sealed partial class PiDashboardClient : IDisposable
         if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerSubmitPhotosAsync(cmid, filename, jpegPages).ConfigureAwait(false);
         var pages = new JsonArray();
         foreach (string page in jpegPages) pages.Add(page);
+        return await HandInAsync(cmid, new JsonObject { ["filename"] = filename, ["pages"] = pages }).ConfigureAwait(false);
+    }
+
+    /// <summary>One file for a task on the school's NW hand-in site (NSCS); the Pi holds that site's login.</summary>
+    public Task<PiSubmitResult> SubmitFileAsync(int cmid, string filename, byte[] bytes) =>
+        bytes.Length == 0 ? Task.FromResult(new PiSubmitResult(false, null, null))
+            : HandInAsync(cmid, new JsonObject { ["filename"] = filename, ["file"] = Convert.ToBase64String(bytes) });
+
+    /// <summary>The dashboard's hand-in panel of a task (its page opens it from the address).</summary>
+    public string? PanelLink(int cmid) => IsConfigured && cmid > 0 ? $"{_baseUrl().Trim().TrimEnd('/')}/#abgabe-{cmid}" : null;
+
+    private async Task<PiSubmitResult> HandInAsync(int cmid, JsonObject request)
+    {
+        if (!IsConfigured || cmid <= 0) return new(false, null, null);
         try
         {
-            using var content = new StringContent(new JsonObject { ["filename"] = filename, ["pages"] = pages }.ToJsonString(),
-                Encoding.UTF8, "application/json");
+            using var content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json");
             using var response = await _transfer.PostAsync(Url($"/api/abgabe/{cmid}"), content).ConfigureAwait(false);
             string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             // The Pi explains refusals (too many pages, Moodle closed) in the body, with an error status.

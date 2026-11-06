@@ -25,15 +25,18 @@ public partial class ControlCenterView
     private readonly HashSet<int> _piAssignmentsLoading = new();
     private readonly Dictionary<int, PiTaskState> _piTasks = new();
 
+    private const long PiMaxUploadBytes = 5L * 1024 * 1024;
+
     private enum PiTaskStep { Idle, Loading, Picked, Uploading, Done, Failed }
 
-    private sealed record PiTaskState(PiTaskStep Step, IReadOnlyList<string>? Pages = null, string? Message = null);
+    /// <summary>Pages: picked maths photos (base64 JPEG); File: the one file picked for an NW hand-in.</summary>
+    private sealed record PiTaskState(PiTaskStep Step, IReadOnlyList<string>? Pages = null, string? Message = null, string? File = null);
 
     private string PiTaskKey()
     {
         var sb = new StringBuilder();
         foreach (var (cmid, a) in _piAssignments) sb.Append(cmid).Append(a.Mode).Append(a.Attachments.Count).Append(';');
-        foreach (var (cmid, t) in _piTasks) sb.Append(cmid).Append(t.Step).Append(t.Pages?.Count).Append(t.Message).Append(';');
+        foreach (var (cmid, t) in _piTasks) sb.Append(cmid).Append(t.Step).Append(t.Pages?.Count).Append(t.Message).Append(t.File).Append(';');
         return sb.ToString();
     }
 
@@ -89,6 +92,10 @@ public partial class ControlCenterView
             case PiTaskStep.Done:
                 panel.Children.Add(Note("✓ " + Loc.Get("pi.task.submitted"), Mint));
                 return panel;
+            case PiTaskStep.Picked when state.File is { } file:
+                panel.Children.Add(TextButton(Loc.Get("pi.task.submitFile", Path.GetFileName(file)), accent: true, () => SubmitPiFile(deadline, file)));
+                panel.Children.Add(IconButton("\uE711", Loc.Get("pi.task.cancel"), () => SetPiTask(cmid, new(PiTaskStep.Idle))));
+                return panel;
             case PiTaskStep.Picked when state.Pages is { Count: > 0 } pages:
                 panel.Children.Add(TextButton(Loc.Get("pi.task.submitPages", pages.Count), accent: true, () => SubmitPiPhotos(deadline, task, pages)));
                 panel.Children.Add(IconButton("", Loc.Get("pi.task.cancel"), () => SetPiTask(cmid, new(PiTaskStep.Idle))));
@@ -104,13 +111,35 @@ public partial class ControlCenterView
                     panel.Children.Add(IconButton("", Loc.Get("pi.task.cancel"), () => SetPiTask(cmid, new(PiTaskStep.Idle))));
                     return panel;
                 }
+                if (state.File is { } keptFile)
+                {
+                    panel.Children.Add(TextButton(Loc.Get("pi.task.submitFile", Path.GetFileName(keptFile)), accent: true, () => SubmitPiFile(deadline, keptFile)));
+                    panel.Children.Add(IconButton("\uE711", Loc.Get("pi.task.cancel"), () => SetPiTask(cmid, new(PiTaskStep.Idle))));
+                    return panel;
+                }
                 break;
+        }
+
+        // NW-Abgaben (NSCS): one file, picked or dropped on the row, handed in only after a second click.
+        if (task.Mode == "upload")
+        {
+            var hand = TextButton(Loc.Get("pi.task.submit"), accent: true, () => PickPiFile(deadline, task));
+            hand.ToolTip = Loc.Get("pi.task.dropFileHint");
+            panel.Children.Add(hand);
+            AcceptFileDrop(row, cmid);
+            return panel;
         }
 
         if (task.Mode == "pose")
             panel.Children.Add(TextButton(Loc.Get("pi.task.project", task.Nr), accent: true, () =>
             {
                 if (!SchoolFiles.OpenPoseProject(cmid)) SetPiTask(cmid, new(PiTaskStep.Failed, Message: Loc.Get("pi.task.poseMissing")));
+            }));
+        // WMC on Classroom 50: accept, clone into WMC\HÜn and open VS Code, all through the dashboard's pi-wmc:// tool.
+        else if (task.Mode == "classroom")
+            panel.Children.Add(TextButton(Loc.Get("pi.task.repo", task.Nr), accent: true, () =>
+            {
+                if (!SchoolFiles.OpenClassroomRepo(cmid)) SetPiTask(cmid, new(PiTaskStep.Failed, Message: Loc.Get("pi.task.wmcMissing")));
             }));
         else if (task.Attachments.Count > 0)
             panel.Children.Add(TextButton(Loc.Get("pi.task.files"), accent: false, () => DownloadPiTask(deadline, task)));
@@ -136,7 +165,7 @@ public partial class ControlCenterView
         return note;
     }
 
-    /// <summary>The task's files into Downloads\Schule\&lt;subject&gt;, then open (one document) or show (several).</summary>
+    /// <summary>The task's files into the school folder (Schule\3AHIF\DBI\01), then open (one document) or show (several).</summary>
     private async void DownloadPiTask(PiDeadline deadline, PiAssignment task)
     {
         if (_pi == null) return;
@@ -154,7 +183,7 @@ public partial class ControlCenterView
         }
         try
         {
-            string folder = SchoolFiles.FolderFor(deadline.Course);
+            string folder = SchoolFiles.FolderFor(deadline.Course, task.Nr);
             var paths = await Task.Run(() => SchoolFiles.Save(folder, files));
             SchoolFiles.Open(paths);
             SetPiTask(cmid, new(PiTaskStep.Idle));
@@ -228,6 +257,71 @@ public partial class ControlCenterView
         _piAssignments.Remove(cmid);
         SetPiTask(cmid, new(PiTaskStep.Done, Message: result.SubmittedName));
         // The deadline list drops it once Moodle shows the hand-in.
+        _piSchoolAtUtc = DateTime.MinValue;
+        await Task.Delay(1500);
+        RefreshPi();
+    }
+
+    /// <summary>A file for an NW hand-in, starting in the task's school folder (where the script usually is).</summary>
+    private void PickPiFile(PiDeadline deadline, PiAssignment task)
+    {
+        string folder = SchoolFiles.FolderFor(deadline.Course, task.Nr);
+        string start = Directory.Exists(folder) ? folder : Path.GetDirectoryName(folder) is { } parent && Directory.Exists(parent) ? parent : SchoolFiles.SchoolRoot;
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = Loc.Get("pi.task.pickFile"),
+            InitialDirectory = Directory.Exists(start) ? start : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+        };
+        if (dialog.ShowDialog(Window.GetWindow(this)) == true) SetPiTask(deadline.Cmid, new(PiTaskStep.Picked, File: dialog.FileName));
+    }
+
+    /// <summary>A file dropped on an NW task is taken like a picked one (the first, if several).</summary>
+    private void AcceptFileDrop(Grid row, int cmid)
+    {
+        row.AllowDrop = true;
+        if (row.Background == null) row.Background = Brushes.Transparent;
+        row.DragOver += (_, e) =>
+        {
+            e.Effects = e.Data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+        };
+        row.Drop += (_, e) =>
+        {
+            e.Handled = true;
+            if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.FirstOrDefault(File.Exists) is { } file)
+                SetPiTask(cmid, new(PiTaskStep.Picked, File: file));
+        };
+    }
+
+    private async void SubmitPiFile(PiDeadline deadline, string file)
+    {
+        if (_pi == null) return;
+        int cmid = deadline.Cmid;
+        byte[] bytes;
+        try
+        {
+            if (new FileInfo(file).Length > PiMaxUploadBytes)
+            {
+                SetPiTask(cmid, new(PiTaskStep.Failed, Message: Loc.Get("pi.task.tooBig"), File: file));
+                return;
+            }
+            bytes = await File.ReadAllBytesAsync(file);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetPiTask(cmid, new(PiTaskStep.Failed, Message: ex.Message, File: file));
+            return;
+        }
+        SetPiTask(cmid, new(PiTaskStep.Uploading));
+        var result = await _pi.SubmitFileAsync(cmid, Path.GetFileName(file), bytes);
+        if (!result.Ok)
+        {
+            // The file stays picked: one more click hands it in once whatever the site complained about is sorted.
+            SetPiTask(cmid, new(PiTaskStep.Failed, Message: result.Error ?? Loc.Get("pi.task.failed"), File: file));
+            return;
+        }
+        _piAssignments.Remove(cmid);
+        SetPiTask(cmid, new(PiTaskStep.Done, Message: result.SubmittedName));
         _piSchoolAtUtc = DateTime.MinValue;
         await Task.Delay(1500);
         RefreshPi();

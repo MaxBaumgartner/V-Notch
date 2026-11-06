@@ -19,6 +19,10 @@ internal static class SchoolLinks
         return cmid > 0 && root.Length > 0 ? $"{root}/mod/assign/view.php?id={cmid}" : null;
     }
 
+    /// <summary>Where a deadline's row leads: its own page when the Pi gave one (a WMC task's Moodle link), else the assignment.</summary>
+    public static string? For(PiDeadline deadline, string moodleBase) =>
+        deadline.Url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? deadline.Url : Assignment(moodleBase, deadline.Cmid);
+
     public static string? Untis(string untisUrl) => (untisUrl ?? "").Trim() is { Length: > 0 } url ? url : null;
 
     /// <summary>"Heute fällig" and "Für morgen" name no assignment in their key: these need the deadlines.</summary>
@@ -37,11 +41,11 @@ internal static class SchoolLinks
             case "neu":
                 return reminderKey.Length > kind.Length + 1 &&
                        int.TryParse(reminderKey.AsSpan(kind.Length + 1), NumberStyles.None, CultureInfo.InvariantCulture, out int cmid)
-                    ? Assignment(moodleBase, cmid)
+                    ? (Find(school, cmid) is { } known ? For(known, moodleBase) : Assignment(moodleBase, cmid))
                     : null;
             case "morgen":
             case "abend":
-                return (NextDue(school, now) is { } due ? Assignment(moodleBase, due.Cmid) : null) ?? Untis(untisUrl);
+                return (NextDue(school, now) is { } due ? For(due, moodleBase) : null) ?? Untis(untisUrl);
             case "aenderung":
             case "msg":
                 return Untis(untisUrl);
@@ -61,6 +65,14 @@ internal static class SchoolLinks
             if (next == null || deadline.Due < next.Due) next = deadline;
         }
         return next;
+    }
+
+    private static PiDeadline? Find(PiSchool? school, int cmid)
+    {
+        if (school == null) return null;
+        foreach (var deadline in school.Deadlines)
+            if (deadline.Cmid == cmid) return deadline;
+        return null;
     }
 
     private static string Kind(string key)

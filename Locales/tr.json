@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "{0} açılamadı. Dosya taşınmış veya silinmiş olabilir.",
   "spotlight.navigate": "Gözat",
   "spotlight.noResults": "Sonuç bulunamadı",
+  "spotlight.home.apps": "Uygulamalar",
+  "spotlight.home.background": "Arka planda",
   "spotlight.noResults.hint": "Farklı bir uygulama veya dosya adı deneyin.",
   "spotlight.open": "Aç",
   "spotlight.pin": "Uygulamayı sabitle",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Çentikte görünüyor – gizlemek için tıklayın",
   "control.claude.notchOff": "Çentikte gizli – göstermek için tıklayın",
   "settings.claudeInNotch": "Çentikte Claude Code",
-  "settings.claudeInNotch.hint": "Kapalı çentikte çalışan ve bekleyen oturumlar, bildirimleri ve Claude sekmesinin kendiliğinden açılması."
+  "settings.claudeInNotch.hint": "Kapalı çentikte çalışan ve bekleyen oturumlar, bildirimleri ve Claude sekmesinin kendiliğinden açılması.",
+  "pi.task.repo": "Depo {0} aç",
+  "pi.task.wmcMissing": "pi-wmc bu bilgisayarda kurulu değil",
+  "pi.handedIn": "{0} · teslim edildi {1}",
+  "pi.task.submitFile": "{0} teslim et",
+  "pi.task.pickFile": "Teslim edilecek dosya",
+  "pi.task.dropFileHint": "Bir dosya seçin veya bu satıra bırakın",
+  "pi.task.tooBig": "Dosya 5 MB’tan büyük"
 }

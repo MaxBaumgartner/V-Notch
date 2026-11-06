@@ -162,6 +162,7 @@ public partial class SpotlightWindow
     {
         ResultsList.Visibility = Visibility.Collapsed;
         StatusPanel.Visibility = Visibility.Collapsed;
+        HomePanel.Visibility = Visibility.Collapsed;
         AiPanel.Visibility = Visibility.Visible;
         SetSearchActivity(false);
         UpdateAiActivity();

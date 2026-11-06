@@ -728,6 +728,8 @@
   "spotlight.launchFailed": "Não foi possível abrir {0}. O arquivo pode ter sido movido ou excluído.",
   "spotlight.navigate": "Navegar",
   "spotlight.noResults": "Nenhum resultado encontrado",
+  "spotlight.home.apps": "Apps",
+  "spotlight.home.background": "Em segundo plano",
   "spotlight.noResults.hint": "Tente outro nome de aplicativo ou arquivo.",
   "spotlight.open": "Abrir",
   "spotlight.pin": "Fixar aplicativo",
@@ -1279,5 +1281,12 @@
   "control.claude.notchOn": "Visível no notch – clique para ocultar",
   "control.claude.notchOff": "Oculto no notch – clique para mostrar",
   "settings.claudeInNotch": "Claude Code no notch",
-  "settings.claudeInNotch.hint": "Sessões trabalhando ou aguardando no notch fechado, seus avisos e a aba Claude abrindo sozinha."
+  "settings.claudeInNotch.hint": "Sessões trabalhando ou aguardando no notch fechado, seus avisos e a aba Claude abrindo sozinha.",
+  "pi.task.repo": "Abrir repositório {0}",
+  "pi.task.wmcMissing": "pi-wmc não está configurado neste PC",
+  "pi.handedIn": "{0} · entregue {1}",
+  "pi.task.submitFile": "Entregar {0}",
+  "pi.task.pickFile": "Ficheiro para entregar",
+  "pi.task.dropFileHint": "Escolha um ficheiro ou largue-o nesta linha",
+  "pi.task.tooBig": "Ficheiro maior que 5 MB"
 }
