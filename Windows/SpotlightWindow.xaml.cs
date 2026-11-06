@@ -91,10 +91,14 @@ public partial class SpotlightWindow : Window
     private bool _unparkedWindowFocusable = true;
     private IntPtr _previousForegroundWindow;
     private CancellationTokenSource? _searchDebounceCts;
-    private Uri? _spotlightClickUri;
     internal ISpotlightMorphHost? MorphHostOverride { get; set; }
     internal bool SuppressForegroundActivationForTests { get; set; }
     internal bool IsSpotlightOpen => IsVisible && !_isParked;
+    /// <summary>The next opening came from a Win tap: an auto-hidden taskbar comes up with it (see TaskbarReveal).</summary>
+    internal bool RevealTaskbarOnNextOpen { get; set; }
+    private TaskbarReveal.Loan? _taskbarLoan;
+    // Whether the running close began because another app took the focus: to the user Spotlight was still open.
+    private bool _closingFromFocusLoss;
     internal event EventHandler? OpenStateChanged;
 
     internal SpotlightWindow(SpotlightViewModel viewModel, SpotlightLauncher launcher, NotchSettings? settings = null,
@@ -207,7 +211,6 @@ public partial class SpotlightWindow : Window
         if (_aiMode && _aiRequest == null) RenderAiHistory();
         SyncSearchIconState(animate: false);
         _glassResourceExpiry?.Stop();
-        PlaySpotlightClickSfx();
 
         _previousForegroundWindow = GetForegroundWindow();
         int generation = ++_animationGeneration;
@@ -268,7 +271,10 @@ public partial class SpotlightWindow : Window
             // Reserve content against the same inner width used after the morph.
             Shell.BorderThickness = new Thickness(IsLiquidGlassEnabled ? 0 : 1);
             UpdateLayout();
+            bool revealTaskbar = RevealTaskbarOnNextOpen;
+            RevealTaskbarOnNextOpen = false;
             FocusSearchBox(generation);
+            if (revealTaskbar) RevealTaskbar(hwnd, generation);
             PrepareEntranceContentReservation();
 
             var target = GetSpotlightTarget();
@@ -293,74 +299,6 @@ public partial class SpotlightWindow : Window
         }
     }
 
-    // The click sound is decoded, softened and played by VNotch.Native (Native/Services/SpotlightSfx.cpp).
-    [System.Runtime.InteropServices.LibraryImport("VNotch.Native.dll", StringMarshalling = System.Runtime.InteropServices.StringMarshalling.Utf16)]
-    private static partial int vn_spotlight_sfx_load(string path, int pathLength, out int hresult);
-
-    [System.Runtime.InteropServices.LibraryImport("VNotch.Native.dll")]
-    private static partial int vn_spotlight_sfx_play(float volume);
-
-    [System.Runtime.InteropServices.LibraryImport("VNotch.Native.dll")]
-    private static partial int vn_spotlight_sfx_stop();
-
-    [System.Runtime.InteropServices.LibraryImport("VNotch.Native.dll")]
-    private static partial int vn_spotlight_sfx_is_loaded(out byte loaded);
-
-    private bool _sfxCleanupHooked;
-    private long _lastSpotlightSfxTick;
-
-    private static void DisposeSpotlightSfxOutput() => vn_spotlight_sfx_stop();
-
-    private void EnsureSfxCleanupHooked()
-    {
-        if (_sfxCleanupHooked) return;
-        _sfxCleanupHooked = true;
-        Closed += (_, _) => DisposeSpotlightSfxOutput();
-    }
-
-    private void PlaySpotlightClickSfx()
-    {
-        if (SuppressForegroundActivationForTests || !_settings.EnableInteractionSounds || _settings.InteractionSoundVolume <= 0) return;
-        long now = Environment.TickCount64;
-        if (now - _lastSpotlightSfxTick < 220) return;
-        _lastSpotlightSfxTick = now;
-        try
-        {
-            EnsureSfxCleanupHooked();
-            if (vn_spotlight_sfx_is_loaded(out byte loaded) != 0 || loaded == 0)
-            {
-                static string FindSfx(string folder)
-                {
-                    string m4a = System.IO.Path.Combine(folder, "Assets", "SPL_CLICK_SFX.m4a");
-                    if (System.IO.File.Exists(m4a)) return m4a;
-                    string mp3 = System.IO.Path.Combine(folder, "Assets", "SPL_CLICK_SFX.mp3");
-                    return System.IO.File.Exists(mp3) ? mp3 : m4a;
-                }
-
-                string? dir = AppDomain.CurrentDomain.BaseDirectory;
-                for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
-                {
-                    string candidate = FindSfx(dir);
-                    if (System.IO.File.Exists(candidate))
-                    {
-                        _spotlightClickUri = new Uri(candidate, UriKind.Absolute);
-                        break;
-                    }
-                    dir = System.IO.Directory.GetParent(dir)?.FullName;
-                }
-
-                if (_spotlightClickUri == null) return;
-                string path = _spotlightClickUri.LocalPath;
-                if (vn_spotlight_sfx_load(path, path.Length, out _) != 0) return;
-            }
-
-            vn_spotlight_sfx_play((float)Math.Clamp(_settings.InteractionSoundVolume * 1.35, 0.0, 1.0));
-        }
-        catch
-        {
-            // Ignore audio playback errors
-        }
-    }
     private void ScheduleFreshEntranceAfterComposition(
         Action startEntrance,
         int generation)
@@ -407,6 +345,26 @@ public partial class SpotlightWindow : Window
         });
     }
 
+    /// <summary>
+    /// A Win tap brings an auto-hidden taskbar up, as the Start menu does: Spotlight is lent to the taskbar, the
+    /// taskbar is activated (it slides up) and Spotlight takes the keyboard back, which keeps it up (see TaskbarReveal).
+    /// </summary>
+    private void RevealTaskbar(IntPtr hwnd, int generation)
+    {
+        if (SuppressForegroundActivationForTests) return;
+        _taskbarLoan ??= TaskbarReveal.Lend(hwnd);
+        if (_taskbarLoan is not { } loan) return;
+        TaskbarReveal.ActivateTaskbar(loan);
+        FocusSearchBox(generation);
+    }
+
+    private void ReturnTaskbar()
+    {
+        if (_taskbarLoan is not { } loan) return;
+        _taskbarLoan = null;
+        TaskbarReveal.GiveBack(loan);
+    }
+
     private void ForceForeground()
     {
         IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
@@ -450,9 +408,21 @@ public partial class SpotlightWindow : Window
 
     internal void ToggleFromHotkey()
     {
+        if (_isClosing && _closingFromFocusLoss)
+        {
+            // Closing by itself (another app took the focus): it still looked open, so this toggle closes it.
+            RevealTaskbarOnNextOpen = false;
+            DismissFromGlobalShortcut();
+            return;
+        }
+
         if (_isClosing)
         {
+            bool revealTaskbar = RevealTaskbarOnNextOpen;
+            RevealTaskbarOnNextOpen = false;
             ReverseExitToEntrance();
+            // Opened again mid-way out: the taskbar, already on its way down, comes back up with it.
+            if (revealTaskbar) RevealTaskbar(new WindowInteropHelper(this).Handle, _animationGeneration);
             return;
         }
 
@@ -462,6 +432,7 @@ public partial class SpotlightWindow : Window
             return;
         }
 
+        RevealTaskbarOnNextOpen = false;
         DismissFromGlobalShortcut();
     }
 
@@ -498,15 +469,18 @@ public partial class SpotlightWindow : Window
         DismissFromGlobalShortcut();
     }
 
-    internal void HideSpotlight()
+    internal void HideSpotlight([System.Runtime.CompilerServices.CallerMemberName] string reason = "")
     {
         if (!IsSpotlightOpen || _isClosing) return;
-        PlaySpotlightClickSfx();
+        RuntimeLog.Log("SPOTLIGHT-HOTKEY", $"Closing ({reason}, foreground {TaskbarReveal.Describe(GetForegroundWindow())})");
+        _closingFromFocusLoss = false;
         SaveAiHistory();
         StopAiActivity();
         _lastDismissedQuery = SearchBox.Text;
         _lastDismissedAtUtc = DateTime.UtcNow;
         _isClosing = true;
+        // The taskbar slides away with the closing animation, not half a second after it.
+        ReturnTaskbar();
         InvalidateLaunchAttempt();
         CancelSearchDebounce();
         _viewModel.CancelPendingSearch();
@@ -572,6 +546,7 @@ public partial class SpotlightWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        RuntimeLog.Log("SPOTLIGHT-HOTKEY", $"Spotlight window destroyed (allowed {_allowClose})");
         AnimationConfig.ReduceMotionChanged -= OnSearchMotionPreferenceChanged;
         SetSearchActivity(false);
         ClearLaunchFailure();
@@ -608,6 +583,8 @@ public partial class SpotlightWindow : Window
     private void ParkWindow()
     {
         if (_isParked || !IsVisible) return;
+        // Back to the notch before the previous app is active again, so the taskbar hides as usual.
+        ReturnTaskbar();
 
         _unparkedWindowOpacity = Opacity;
         _unparkedWindowHitTesting = IsHitTestVisible;
@@ -936,8 +913,10 @@ public partial class SpotlightWindow : Window
         int generation = _animationGeneration;
         Dispatcher.BeginInvoke(() =>
         {
-            if (generation != _animationGeneration || !IsSpotlightOpen || _isClosing || _personalizationOpen || _resultMenuOpen) return;
+            // Active again by now (the taskbar was activated for a moment to bring it up): nothing was lost.
+            if (generation != _animationGeneration || !IsSpotlightOpen || _isClosing || _personalizationOpen || _resultMenuOpen || IsActive) return;
             HideSpotlight();
+            _closingFromFocusLoss = _isClosing;
         }, DispatcherPriority.Input);
     }
 
@@ -2037,7 +2016,6 @@ public partial class SpotlightWindow : Window
 
     private void ReverseExitToEntrance()
     {
-        PlaySpotlightClickSfx();
         int generation = ++_animationGeneration;
         MorphSnapshot current = FreezeCurrentMorphState();
         var target = GetSpotlightTarget();

@@ -106,7 +106,6 @@
     <None Update="Assets\MediaProtocols.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="Introduction\**\*" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
     <None Update="Assets\Translation\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
-    <None Update="Assets\SPL_CLICK_SFX.m4a" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <Target Name="KeepTranslationNativeLibrariesBesideExecutable" BeforeTargets="AssignTargetPaths">
     <ItemGroup>

@@ -28,6 +28,8 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private IntPtr _hwnd;
     private DedicatedKeyboardHook? _keyboardHook;
     private StartMenuHooks? _startHooks;
+    // Set only while a Win tap toggles Spotlight: that opening brings an auto-hidden taskbar up too.
+    private bool _winTapToggle;
     private readonly SpotlightKeyboardState _keyboardState = new();
     private bool _nativeRegistered;
     private NotchSettings? _settings;
@@ -221,11 +223,23 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private void Window_OpenStateChanged(object? sender, EventArgs e) => UpdateKeyboardHook();
     private void Window_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateKeyboardHook();
 
+    // A window closed under us (its owner went away, see TaskbarReveal) cannot open again: the next toggle makes a new one.
+    private void Window_Closed(object? sender, EventArgs e)
+    {
+        if (sender is not SpotlightWindow window || !ReferenceEquals(window, _window)) return;
+        window.OpenStateChanged -= Window_OpenStateChanged;
+        window.IsVisibleChanged -= Window_IsVisibleChanged;
+        window.Closed -= Window_Closed;
+        _window = null;
+        UpdateKeyboardHook();
+    }
+
     private SpotlightWindow CreateWindow()
     {
         var window = _windowFactory();
         window.OpenStateChanged += Window_OpenStateChanged;
         window.IsVisibleChanged += Window_IsVisibleChanged;
+        window.Closed += Window_Closed;
         return window;
     }
 
@@ -246,6 +260,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
             if (_host != null) _window.Owner = _host;
             if (_settings != null) _window.ApplySettings(_settings);
         }
+        _window.RevealTaskbarOnNextOpen = _winTapToggle;
         _window.ToggleFromHotkey();
         UpdateKeyboardHook();
     }
@@ -309,11 +324,25 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private void OnWinTap(int generation)
     {
         if (_disposed || generation != _hostGeneration) return;
-        // A Win tap inside a fullscreen game does nothing: no Start menu, no Spotlight, no lost focus.
-        if (FullscreenDetector.DetectFullscreenType(GetForegroundWindow(), _hwnd) != FullscreenType.None)
-            return;
-        ToggleSpotlight();
+        IntPtr foreground = GetForegroundWindow();
+        FullscreenType fullscreen = FullscreenDetector.DetectFullscreenType(foreground, _hwnd);
+        bool ignored = fullscreen != FullscreenType.None
+            && IgnoresWinTap(fullscreen, FullscreenDetector.TryGetProcessName(foreground));
+        string action = ignored ? "ignored" : _window?.IsSpotlightOpen == true ? "close" : "open";
+        RuntimeLog.Log(LogTag, $"Win tap ({action}, fullscreen {fullscreen}), foreground {TaskbarReveal.Describe(foreground)}");
+        if (ignored) return;
+        // Like the Start menu, a Win tap brings an auto-hidden taskbar up while Spotlight is open.
+        _winTapToggle = true;
+        try { ToggleSpotlight(); }
+        finally { _winTapToggle = false; }
     }
+
+    /// <summary>
+    /// A Win tap in a fullscreen game does nothing: no Start menu, no Spotlight, no lost focus. A fullscreen browser
+    /// (a film or video in fullscreen) is no game, so there Win opens Spotlight as everywhere else.
+    /// </summary>
+    internal static bool IgnoresWinTap(FullscreenType fullscreen, string processName) =>
+        fullscreen != FullscreenType.None && !MediaWindowActivator.IsBrowserProcess(processName);
 
     private void DetachHost()
     {
@@ -331,6 +360,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
         {
             _window.OpenStateChanged -= Window_OpenStateChanged;
             _window.IsVisibleChanged -= Window_IsVisibleChanged;
+            _window.Closed -= Window_Closed;
             _window.Shutdown();
             _window = null;
         }
