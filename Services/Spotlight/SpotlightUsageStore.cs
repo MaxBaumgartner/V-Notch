@@ -7,13 +7,18 @@ namespace VNotch.Services.Spotlight;
 
 internal sealed partial class SpotlightUsageStore : IAsyncDisposable, IDisposable
 {
-    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int vn_spotlight_usage_compute_boost(
-        int count,
-        long lastLaunchedUtcTicks,
-        long nowUtcTicks,
-        byte remembered,
-        out double outBoost);
+    // Use outweighs the gaps between ranking tiers (exact 1000, prefix ~900, word 800-850, contains 700 in
+    // SpotlightRanker): among the matches, apps used often come before apps used less. The tiers only decide
+    // between items used about as much.
+    private const double CountBoostFactor = 150;     // 1 use 150, 3 uses 300, 7 uses 450
+    private const double CountBoostCap = 600;         // reached at 15 uses
+    // The item last chosen for exactly this query beats any amount of other use.
+    private const double RememberedQueryBoost = 700;
+    // A name that only contains the query somewhere inside ("d" in "Calendar") gets a fifth of the lift, so a name
+    // that starts with it ("Drawing") stays ahead.
+    private const double LooseMatchShare = 0.2;
+    /// <summary>A pin beats every use: pinned items stay first.</summary>
+    internal const double PinnedBoost = 1500;
 
     [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_spotlight_usage_is_allowed_app_history_target(
@@ -170,7 +175,7 @@ internal sealed partial class SpotlightUsageStore : IAsyncDisposable, IDisposabl
         return GetBoostNormalized(id, SettingsSearchMatcher.Normalize(query));
     }
 
-    internal double GetBoostNormalized(string id, string normalizedQuery)
+    internal double GetBoostNormalized(string id, string normalizedQuery, bool nameStartsWithQuery = true)
     {
         if (!Enabled) return 0;
         UsageEntry? entry;
@@ -181,14 +186,33 @@ internal sealed partial class SpotlightUsageStore : IAsyncDisposable, IDisposabl
             remembered = entry?.Queries != null && normalizedQuery.Length > 0 && entry.Queries.Contains(normalizedQuery);
         }
         if (entry == null) return 0;
+        return ComputeBoost(entry.Count, entry.LastLaunchedUtc, _utcNow(), remembered, nameStartsWithQuery);
+    }
 
-        _ = vn_spotlight_usage_compute_boost(
-            entry.Count,
-            entry.LastLaunchedUtc.Ticks,
-            _utcNow().Ticks,
-            remembered ? (byte)1 : (byte)0,
-            out double boost);
-        return boost;
+    /// <summary>How far use lifts an item: mostly how often it was opened, a little how lately.</summary>
+    internal static double ComputeBoost(int count, DateTime lastLaunchedUtc, DateTime nowUtc, bool remembered,
+        bool nameStartsWithQuery = true)
+    {
+        double countBoost = Math.Min(CountBoostCap, CountBoostFactor * Math.Log2(1 + Math.Max(0, count)));
+        double ageDays = Math.Max(0, (nowUtc - lastLaunchedUtc).TotalDays);
+        double recencyBoost = ageDays < 1 ? 60 : ageDays < 3 ? 40 : ageDays < 7 ? 25 : ageDays < 30 ? 10 : 0;
+        double useBoost = (countBoost + recencyBoost) * (nameStartsWithQuery ? 1 : LooseMatchShare);
+        return useBoost + (remembered ? RememberedQueryBoost : 0);
+    }
+
+    /// <summary>Whether the name, or one of its words, starts with the (normalized) query.</summary>
+    internal static bool NameStartsWith(string title, string normalizedQuery)
+    {
+        if (normalizedQuery.Length == 0) return true;
+        string name = SettingsSearchMatcher.Normalize(title);
+        int i = 0;
+        while (i < name.Length)
+        {
+            if (name.AsSpan(i).StartsWith(normalizedQuery, StringComparison.Ordinal)) return true;
+            while (i < name.Length && char.IsLetterOrDigit(name[i])) i++;
+            while (i < name.Length && !char.IsLetterOrDigit(name[i])) i++;
+        }
+        return false;
     }
 
     public IReadOnlyList<SpotlightSearchItem> GetRememberedItems(string query)

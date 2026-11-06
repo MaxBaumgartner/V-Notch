@@ -70,9 +70,9 @@ public sealed class SpotlightUsageStoreTests : IDisposable
         for (int i = 0; i < 10_000; i++) store.RecordLaunch(item);
 
         double fresh = store.GetBoost("app:one");
-        // The cap keeps habitual items below a full ranking tier (tiers are
-        // spaced 50-100 apart in SpotlightRanker).
-        Assert.InRange(fresh, 1, 125);
+        // Habitual use outweighs the ranking tiers (spaced 50-300 apart in SpotlightRanker) but stays below
+        // a pin and below the item remembered for the exact query.
+        Assert.InRange(fresh, 600, 660);
 
         _now = _now.AddDays(45);
         double aged = store.GetBoost("app:one");
