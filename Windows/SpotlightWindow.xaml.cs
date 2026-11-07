@@ -1828,15 +1828,14 @@ public partial class SpotlightWindow : Window
         ContentRegion.BeginAnimation(OpacityProperty, fade);
     }
 
+    /// <summary>
+    /// Always the primary monitor, wherever the mouse is: Spotlight stands in for the Start menu there,
+    /// next to the notch it grows out of.
+    /// </summary>
     private (double Left, double Top) GetSpotlightTarget()
     {
-        POINT point;
-        if (!GetCursorPos(out point))
-        {
-            point = default;
-        }
-
-        IntPtr monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        // The primary monitor is the one holding the desktop's origin.
+        IntPtr monitor = MonitorFromPoint(default, MONITOR_DEFAULTTOPRIMARY);
         var info = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
         {

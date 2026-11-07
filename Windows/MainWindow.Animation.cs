@@ -875,7 +875,9 @@ public partial class MainWindow
             _isSecondaryView = false;
             _isAudioView = false;
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(PiContent);
-            ResizeHostWindowHeight(PiViewHeight);
+            ResizeHostWindowHeight(_homeViewHeight);
+            // The dashboard may have answered while it opened.
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, SettleHomeNotchToFit);
         }
         else if (effectiveTarget == VNotch.Models.NotchView.School)
         {
@@ -883,7 +885,8 @@ public partial class MainWindow
             _isSecondaryView = false;
             _isAudioView = false;
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(SchoolContent);
-            ResizeHostWindowHeight(PiViewHeight);
+            ResizeHostWindowHeight(_schoolViewHeight);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, SettleSchoolNotchToFit);
         }
         else if (effectiveTarget == VNotch.Models.NotchView.Weather)
         {
@@ -1135,8 +1138,8 @@ public partial class MainWindow
         else if (effectiveTarget == VNotch.Models.NotchView.Pi)
         {
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(PiContent);
-            targetWidth = PiViewWidth;
-            targetHeight = PiViewHeight;
+            targetWidth = HomeViewWidth;
+            targetHeight = MeasureHomeViewHeight();
             // Laid out at its final size; the shell's clip reveals it while expanding.
             PiContent.Width = targetWidth - PiContent.Margin.Left - PiContent.Margin.Right;
             PiContent.Height = targetHeight - PiContent.Margin.Top - PiContent.Margin.Bottom;
@@ -1147,8 +1150,8 @@ public partial class MainWindow
         else if (effectiveTarget == VNotch.Models.NotchView.School)
         {
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(SchoolContent);
-            targetWidth = PiViewWidth;
-            targetHeight = PiViewHeight;
+            targetWidth = SchoolViewWidth;
+            targetHeight = MeasureSchoolViewHeight();
             SchoolContent.Width = targetWidth - SchoolContent.Margin.Left - SchoolContent.Margin.Right;
             SchoolContent.Height = targetHeight - SchoolContent.Margin.Top - SchoolContent.Margin.Bottom;
             if (targetHeight > currentHeight)

@@ -15,9 +15,6 @@ public partial class MainWindow
 {
     #region Pi dashboard tab and reminders
 
-    // Same footprint as the controls tab; the list scrolls.
-    private const double PiViewWidth = 720;
-    private const double PiViewHeight = 378;
     private static readonly TimeSpan PiReminderPoll = TimeSpan.FromMinutes(1);
 
     private PiDashboardClient? _piClient;
@@ -41,6 +38,8 @@ public partial class MainWindow
         }
         PiCenter.AttachBackdrop(HomeBackdrop);
         SchoolCenter.AttachBackdrop(SchoolBackdrop);
+        PiCenter.ContentHeightChanged += OnHomeContentHeightChanged;
+        SchoolCenter.ContentHeightChanged += OnSchoolContentHeightChanged;
         _piReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = PiReminderPoll };
         _piReminderTimer.Tick += async (_, _) => await PollPiRemindersAsync();
         _piReminderTimer.Start();
@@ -53,6 +52,8 @@ public partial class MainWindow
         DisposeLessonTimer();
         PiCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
         SchoolCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
+        PiCenter.ContentHeightChanged -= OnHomeContentHeightChanged;
+        SchoolCenter.ContentHeightChanged -= OnSchoolContentHeightChanged;
         PiCenter.Dispose();
         SchoolCenter.Dispose();
         _piClient?.Dispose();

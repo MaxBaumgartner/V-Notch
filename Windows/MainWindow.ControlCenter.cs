@@ -17,10 +17,10 @@ public partial class MainWindow
     #region Control Center and Claude tabs
 
     private static readonly TimeSpan ClaudeSweepInterval = TimeSpan.FromSeconds(15);
-    // As wide as the controls tab next to it; as tall as its cards, up to where the list scrolls.
-    private const double ClaudeViewWidth = 720;
+    // Narrower than the system tab, as tall as its cards up to where the list scrolls.
+    private const double ClaudeViewWidth = 640;
     private const double ClaudeViewMinHeight = 120;
-    private const double ClaudeViewMaxHeight = 420;
+    private const double ClaudeViewMaxHeight = 460;
 
     private ClaudeSessionTracker? _claudeTracker;
     private ClaudeHookServer? _claudeHookServer;
@@ -32,7 +32,6 @@ public partial class MainWindow
     private DispatcherTimer? _claudeAttentionRetry;
     private static readonly TimeSpan ClaudeAttentionRetryInterval = TimeSpan.FromSeconds(1);
     private double _claudeViewHeight = ClaudeViewMaxHeight;
-    private int _claudeNotchHeightGeneration;
 
     private void InitializeControlCenter()
     {
@@ -47,6 +46,7 @@ public partial class MainWindow
         ControlCenter.AttachBackdrop(SystemBackdrop);
         ClaudeCenter.AttachClaude(_claudeTracker, _claudeHookServer, _claudeUsage,
             () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled);
+        ClaudeCenter.AttachBackdrop(ClaudeBackdrop);
         ClaudeCenter.AttentionRequested += OpenClaudeTabForAttention;
         ClaudeCenter.ContentHeightChanged += OnClaudeContentHeightChanged;
         ClaudeCenter.SessionOpened += OnClaudeSessionOpened;
@@ -187,56 +187,19 @@ public partial class MainWindow
         if (_isClaudeView && !_isAnimating) CollapseNotch();
     }
 
-    /// <summary>The notch height that fits the Claude page, between a header-only page and a scrolling list.</summary>
-    private double MeasureClaudeViewHeight()
-    {
-        var margin = ClaudeContent.Margin;
-        double content = ClaudeCenter.MeasureContentHeight(ClaudeViewWidth - margin.Left - margin.Right);
-        return Math.Clamp(Math.Ceiling(content + margin.Top + margin.Bottom), ClaudeViewMinHeight, ClaudeViewMaxHeight);
-    }
+    /// <summary>The notch height that fits the Claude page, between a single card and a scrolling list.</summary>
+    private double MeasureClaudeViewHeight() =>
+        FitHeight(ClaudeCenter, ClaudeContent, ClaudeViewWidth, ClaudeViewMinHeight, ClaudeViewMaxHeight);
 
     private void OnClaudeContentHeightChanged() =>
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, SettleClaudeNotchToFit);
 
-    /// <summary>Grows or shrinks the open tab when sessions or requests come and go, like the mixer with its devices.</summary>
+    /// <summary>Grows or shrinks the open tab when sessions or requests come and go.</summary>
     private void SettleClaudeNotchToFit()
     {
         if (!_isClaudeView || _isAnimating || _cleanedUp) return;
-        double target = MeasureClaudeViewHeight();
-        double current = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : target;
-        double chrome = ClaudeContent.Margin.Top + ClaudeContent.Margin.Bottom;
-        _claudeViewHeight = target;
-        if (Math.Abs(current - target) < 0.5) return;
-
-        int generation = ++_claudeNotchHeightGeneration;
-        bool growing = target > current;
-        if (growing) ResizeHostWindowHeight(target);
-
-        double currentContent = ClaudeContent.ActualHeight > 0 ? ClaudeContent.ActualHeight : Math.Max(0, current - chrome);
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        ClaudeContent.BeginAnimation(HeightProperty, null);
-        NotchBorder.Height = current;
-        ClaudeContent.Height = currentContent;
-        _isAnimating = true;
-
-        var duration = new Duration(TimeSpan.FromMilliseconds(320));
-        var notchAnim = MakeAnim(current, target, duration, _easeExpOut6);
-        var contentAnim = MakeAnim(currentContent, Math.Max(0, target - chrome), duration, _easeExpOut6);
-        Timeline.SetDesiredFrameRate(notchAnim, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(contentAnim, AnimationConfig.TargetFps);
-        notchAnim.Completed += (_, _) =>
-        {
-            if (generation != _claudeNotchHeightGeneration) return;
-            _isAnimating = false;
-            if (!_isClaudeView) return;
-            NotchBorder.BeginAnimation(HeightProperty, null);
-            NotchBorder.Height = target;
-            ClaudeContent.BeginAnimation(HeightProperty, null);
-            ClaudeContent.Height = Math.Max(0, target - chrome);
-            if (!growing) ResizeHostWindowHeight(target);
-        };
-        NotchBorder.BeginAnimation(HeightProperty, notchAnim, HandoffBehavior.SnapshotAndReplace);
-        ClaudeContent.BeginAnimation(HeightProperty, contentAnim, HandoffBehavior.SnapshotAndReplace);
+        _claudeViewHeight = MeasureClaudeViewHeight();
+        SettleNotchToContent(ClaudeContent, _claudeViewHeight, () => _isClaudeView);
     }
 
     #endregion

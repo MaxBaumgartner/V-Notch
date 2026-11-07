@@ -743,6 +743,7 @@ internal static unsafe partial class Win32Interop
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+    public const uint MONITOR_DEFAULTTOPRIMARY = 0x00000001;
     public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
     public const int MDT_EFFECTIVE_DPI = 0;
 

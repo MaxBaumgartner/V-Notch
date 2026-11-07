@@ -143,6 +143,7 @@ public partial class ControlCenterView
         if (!IsSchoolPage)
         {
             BuildHome();
+            ContentHeightChanged?.Invoke();
             return;
         }
         // Typing a to-do: a rebuild would take the box away; the next refresh catches up.
@@ -154,6 +155,7 @@ public partial class ControlCenterView
         BuildPiSchool();
         BuildPiExams();
         BuildPiTodos();
+        ContentHeightChanged?.Invoke();
     }
 
     private string PiKey()

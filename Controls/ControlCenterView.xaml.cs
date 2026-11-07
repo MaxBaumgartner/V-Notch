@@ -52,8 +52,6 @@ public partial class ControlCenterView : UserControl, IDisposable
     private static readonly Brush MenuBg = Frozen("#F21C1C1C");
     private static readonly Brush KnobBrush = Frozen("#FFFFFF");
     private static readonly Brush OnGreenText = Frozen("#0B0B0B");
-    private static readonly Brush WaitingYellow = Frozen("#FFD60A");
-    private static readonly Brush WorkingOrange = Frozen("#D97757");
     private static readonly Brush CardBg = Frozen("#0FFFFFFF");
     private static readonly Brush CardHover = Frozen("#1CFFFFFF");
 
@@ -170,6 +168,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         tracker.PermissionRequested += OnPermissionRequested;
         tracker.UsageMayHaveChanged += OnUsageMayHaveChanged;
         _claudeInstalled = ClaudeCodeSetup.IsInstalled(ClaudeHookServer.HookUrl);
+        // Quiet until the first build says otherwise, so the backdrop never starts in the system tab's blue.
+        ApplyClaudeMood(ClaudeQuiet);
         RefreshOnceShellIsReady();
     }
 
@@ -187,6 +187,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         _wifiLoops.StopAll();
         _bluetoothLoops.StopAll();
         _backdrop?.SetDrifting(false);
+        StopClaudeLoops();
+        StopTokenClock();
         SetGpuSampling(false);
         _stats.Dispose();
         IsVisibleChanged -= OnIsVisibleChanged;
@@ -214,6 +216,8 @@ public partial class ControlCenterView : UserControl, IDisposable
                 RefreshUsage(UsageViewMinAge);
                 _clockTimer.Start();
                 StartRipples();
+                ApplyClaudeLoops();
+                StartTokenClock();
             }
             else if (Page is ControlCenterPage.Pi or ControlCenterPage.School)
             {
@@ -238,6 +242,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             _refreshTimer.Stop();
             _clockTimer.Stop();
             StopRipples();
+            StopClaudeLoops();
+            StopTokenClock();
             SetGpuSampling(false);
             if (Page == ControlCenterPage.System)
             {
@@ -251,6 +257,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             _backdrop?.SetDrifting(false);
             CloseMenu();
             if (_composingSessionId != null) StopComposing();
+            // The next open shows what matters then, not the session picked last time.
+            _focusedSessionId = null;
             if (Page is ControlCenterPage.Pi or ControlCenterPage.School) OnPiVisibleChanged(false);
         }
     }
@@ -1166,56 +1174,13 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     #region Claude Code
 
-    private void BuildClaudeSection()
-    {
-        _accent = WorkingOrange;
-        if (_disposed || _claude == null) return;
-        // A rebuild would take the text box from under the typing; catch up once the message is sent.
-        if (_composerBox?.IsKeyboardFocusWithin == true)
-        {
-            _rebuildAfterComposing = true;
-            return;
-        }
-        var sessions = _claude.GetSessions();
-        var pending = _claude.GetPending();
-        var limits = _usage?.Latest;
-        bool listening = _hookServer?.IsListening == true;
-
-        string key = ClaudeKey(sessions, pending, limits, listening);
-        if (key == _claudeKey) return;
-        _claudeKey = key;
-
-        _elapsedLabels.Clear();
-        _firstRequestCard = null;
-        ForgetAnsweredQuestions(pending);
-        StopRipples();
-        _ripples.Clear();
-        _claudeSection.Children.Clear();
-        _claudeSection.Children.Add(ClaudeHeader());
-        if (!_claudeInstalled) _claudeSection.Children.Add(SetupCard(listening));
-        if (LimitCards(limits) is { } limitCards) _claudeSection.Children.Add(limitCards);
-
-        // Hooks in a project's own settings report here too, without our entry in the user settings.
-        if (_claudeInstalled || sessions.Count > 0)
-        {
-            if (!listening) _claudeSection.Children.Add(HintCard("\uE7BA", Loc.Get("control.claude.portBusy", ClaudeHookServer.DefaultPort)));
-            _claudeSection.Children.Add(Caption(Loc.Get("control.claude.sessions"), sessions.Count));
-            if (sessions.Count == 0) _claudeSection.Children.Add(HintCard("\uE99A", Loc.Get("control.claude.noSessions")));
-            foreach (var session in sessions) _claudeSection.Children.Add(SessionCard(session, pending));
-        }
-        RevealNewCards(_cardScratch);
-        _cardScratch.Clear();
-        if (IsVisible) StartRipples();
-        ContentHeightChanged?.Invoke();
-    }
-
     /// <summary>
     /// The height the page needs at <paramref name="width"/>, so the notch can fit it instead of leaving
     /// a gap under the last card.
     /// </summary>
     public double MeasureContentHeight(double width)
     {
-        BuildClaudeSection();
+        if (Page == ControlCenterPage.Claude) BuildClaudeSection();
         var padding = ControlScrollViewer.Padding;
         ControlRoot.Measure(new Size(Math.Max(0, width - padding.Left - padding.Right), double.PositiveInfinity));
         return Math.Ceiling(ControlRoot.DesiredSize.Height);
@@ -1232,21 +1197,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         _claudeKey = "";
     }
 
-    private string ClaudeKey(List<ClaudeSession> sessions, List<ClaudePermissionRequest> pending, ClaudeLimits? limits, bool listening)
-    {
-        var sb = new StringBuilder();
-        sb.Append(_claudeInstalled).Append(listening).Append(_soundsOn?.Invoke()).Append('|');
-        if (limits != null)
-        {
-            sb.Append(limits.FiveHour?.UsedPercent).Append(limits.FiveHour?.ResetsAt?.ToUnixTimeSeconds() / 60)
-              .Append(limits.Week?.UsedPercent).Append(limits.Week?.ResetsAt?.ToUnixTimeSeconds() / 60).Append('|');
-        }
-        foreach (var s in sessions)
-            sb.Append(s.Id).Append(s.Status).Append(s.Title).Append(s.Activity).Append(s.Prompt).Append(s.Summary).Append(s.Cwd).Append(s.TurnStartedUtc?.Ticks).Append(';');
-        foreach (var p in pending) sb.Append(p.Id).Append(';');
-        return sb.ToString();
-    }
-
     private void InstallClaudeHooks()
     {
         _claudeInstalled = ClaudeCodeSetup.Install(ClaudeHookServer.HookUrl);
@@ -1259,62 +1209,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (ClaudeCodeSetup.Uninstall(ClaudeHookServer.HookUrl)) _claudeInstalled = false;
         _claudeKey = "";
         BuildClaudeSection();
-    }
-
-    private FrameworkElement ClaudeHeader()
-    {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        // Whether sessions show in the closed notch at all (see ControlCenterView.ClaudeNotch.cs).
-        if (ClaudeNotchButton() is { } eye)
-        {
-            Grid.SetColumn(eye, 1);
-            grid.Children.Add(eye);
-        }
-
-        var title = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        title.Children.Add(new System.Windows.Shapes.Path
-        {
-            Data = ClaudeGlyph.Data,
-            Fill = WorkingOrange,
-            Width = 15,
-            Height = 15,
-            Stretch = Stretch.Uniform,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2, 0, 9, 0)
-        });
-        title.Children.Add(MakeLabel("Claude Code", 15, VNotch.Services.UiPalette.PrimaryBrush));
-        grid.Children.Add(title);
-
-        if (_soundsOn != null)
-        {
-            // Sounds when a turn ends or a session waits: the speaker shows and flips the setting.
-            bool on = _soundsOn();
-            var sound = IconButton(on ? "\uE767" : "\uE74F", Loc.Get(on ? "control.claude.soundsOn" : "control.claude.soundsOff"), () =>
-            {
-                _setSounds?.Invoke(!_soundsOn());
-                _claudeKey = "";
-                BuildClaudeSection();
-            });
-            sound.Width = sound.Height = 24;
-            sound.Margin = new Thickness(0, 0, 12, 0);
-            sound.Opacity = on ? 1 : 0.6;
-            Grid.SetColumn(sound, 2);
-            grid.Children.Add(sound);
-        }
-        if (_claudeInstalled)
-        {
-            var remove = ColumnLabel(Loc.Get("control.claude.remove"));
-            remove.FontSize = 11.5;
-            MakeLink(remove, RemoveClaudeHooks);
-            Grid.SetColumn(remove, 3);
-            grid.Children.Add(remove);
-        }
-        return grid;
     }
 
     private FrameworkElement SetupCard(bool listening)
@@ -1350,142 +1244,12 @@ public partial class ControlCenterView : UserControl, IDisposable
         return card;
     }
 
-    private FrameworkElement Caption(string text, int count)
-    {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 0, 0, 8) };
-        panel.Children.Add(ColumnLabel(text));
-        if (count > 0)
-        {
-            var number = MakeLabel(count.ToString(System.Globalization.CultureInfo.CurrentCulture), 12, Muted);
-            number.Margin = new Thickness(6, 0, 0, 0);
-            panel.Children.Add(number);
-        }
-        return panel;
-    }
-
     private static Border Card() => new()
     {
         Background = CardBg,
         CornerRadius = new CornerRadius(12),
         Padding = new Thickness(14, 11, 14, 11)
     };
-
-    /// <summary>
-    /// One session: its name, what it is doing and any request waiting on it. A click brings its terminal
-    /// tab or app to the front.
-    /// </summary>
-    private FrameworkElement SessionCard(ClaudeSession session, List<ClaudePermissionRequest> pending)
-    {
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        Brush statusBrush = StatusBrush(session.Status);
-        grid.Children.Add(StatusDot(statusBrush, session.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting));
-
-        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
-        var name = MakeLabel(session.Name, 13.5, VNotch.Services.UiPalette.PrimaryBrush);
-        if (session.Cwd.Length > 0) name.ToolTip = session.Cwd;
-        text.Children.Add(name);
-        text.Children.Add(StatusLine(session, statusBrush));
-        string? preview = session.Status == ClaudeSessionStatus.Done && session.Summary is { Length: > 0 } ? session.Summary : session.Prompt;
-        if (preview is { Length: > 0 })
-        {
-            var line = MakeLabel(preview, 11, HeaderText);
-            line.FontWeight = FontWeights.Medium;
-            line.Margin = new Thickness(0, 3, 0, 0);
-            text.Children.Add(line);
-        }
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
-
-        var side = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 1, 0, 0) };
-        if (TimeLabel(session) is { } time) side.Children.Add(time);
-        // Shown on hover, like the open arrow; a waiting session wants its request answered first.
-        var hoverButtons = new List<Border>(3);
-        if (session.Status != ClaudeSessionStatus.Waiting && _composingSessionId != session.Id)
-        {
-            string replyTo = session.Id;
-            hoverButtons.Add(IconButton("\uE97A", Loc.Get("control.claude.reply"), () => StartComposing(replyTo)));
-            hoverButtons.Add(IconButton("\uE77F", Loc.Get("control.claude.pasteClipboard"), () => AttachClipboard(replyTo)));
-            hoverButtons.Add(IconButton("\uE722", Loc.Get("control.claude.screenshot"), () => ScreenshotRequested?.Invoke(replyTo)));
-            for (int i = 0; i < hoverButtons.Count; i++)
-            {
-                hoverButtons[i].Width = hoverButtons[i].Height = 24;
-                hoverButtons[i].Margin = new Thickness(i == 0 ? 10 : 5, -3, 0, -3);
-                hoverButtons[i].Opacity = 0;
-                side.Children.Add(hoverButtons[i]);
-            }
-        }
-        var open = new TextBlock
-        {
-            Text = "\uE8A7",
-            FontFamily = SegoeSymbolFont,
-            FontSize = 12,
-            Foreground = VNotch.Services.UiPalette.PrimaryBrush,
-            Opacity = 0,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(10, 0, 0, 0)
-        };
-        side.Children.Add(open);
-        Grid.SetColumn(side, 2);
-        grid.Children.Add(side);
-
-        StackPanel? requests = null;
-        foreach (var request in pending)
-        {
-            if (request.SessionId != session.Id) continue;
-            var requestCard = request.Questions != null ? QuestionCard(request, request.Questions)
-                : request.Plan != null ? PlanCard(request, request.Plan)
-                : PermissionCard(request);
-            _firstRequestCard ??= requestCard;
-            _cardScratch.Add(("request:" + request.Id, requestCard));
-            requests ??= new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-            requests.Children.Add(requestCard);
-        }
-        if (_composingSessionId == session.Id)
-        {
-            requests ??= new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-            requests.Children.Add(Composer(session.Id));
-        }
-        if (requests != null)
-        {
-            Grid.SetRow(requests, 1);
-            Grid.SetColumn(requests, 1);
-            Grid.SetColumnSpan(requests, 2);
-            grid.Children.Add(requests);
-        }
-
-        var card = Card();
-        card.Margin = new Thickness(0, 0, 0, 6);
-        card.Cursor = Cursors.Hand;
-        card.Child = grid;
-        _cardScratch.Add(("session:" + session.Id, card));
-        System.Windows.Automation.AutomationProperties.SetName(card, session.Name);
-        card.MouseEnter += (_, _) =>
-        {
-            card.Background = CardHover;
-            open.Opacity = 1;
-            foreach (var button in hoverButtons) button.Opacity = 1;
-        };
-        card.MouseLeave += (_, _) =>
-        {
-            card.Background = CardBg;
-            open.Opacity = 0;
-            foreach (var button in hoverButtons) button.Opacity = 0;
-        };
-        string sessionId = session.Id;
-        string? title = session.Title;
-        card.MouseLeftButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-            OpenSession(card, sessionId, title);
-        };
-        return card;
-    }
 
     private void OpenSession(Border card, string sessionId, string? title)
     {
@@ -1557,7 +1321,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             BorderThickness = new Thickness(0),
             Foreground = VNotch.Services.UiPalette.PrimaryBrush,
             CaretBrush = VNotch.Services.UiPalette.PrimaryBrush,
-            SelectionBrush = WorkingOrange,
+            SelectionBrush = _mood,
             FontFamily = ControlFont,
             FontSize = 12.5,
             Padding = new Thickness(0),
@@ -1601,9 +1365,9 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         var send = IconButton("\uE724", Loc.Get("control.claude.reply"), () => SendMessage(sessionId, box.Text));
         send.Width = send.Height = 26;
-        send.Background = WorkingOrange;
-        send.BorderBrush = WorkingOrange;
-        ((TextBlock)send.Child).Foreground = OnGreenText;
+        send.Background = _mood;
+        send.BorderBrush = _mood;
+        ((TextBlock)send.Child).Foreground = InkOn(_mood);
         send.MouseEnter += (_, _) => send.Opacity = 0.85;
         send.MouseLeave += (_, _) => send.Opacity = 1;
 
@@ -1677,7 +1441,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             Text = glyph,
             FontFamily = SegoeSymbolFont,
             FontSize = 12,
-            Foreground = WorkingOrange,
+            Foreground = _moodInk,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 7, 0)
         });
@@ -1704,92 +1468,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         };
         row.Children.Add(remove);
         return row;
-    }
-
-    private static Brush StatusBrush(ClaudeSessionStatus status) => status switch
-    {
-        ClaudeSessionStatus.Waiting => WaitingYellow,
-        ClaudeSessionStatus.Working => WorkingOrange,
-        ClaudeSessionStatus.Done => VNotch.Services.UiPalette.PrimaryBrush,
-        _ => Muted
-    };
-
-    /// <summary>
-    /// A dot in the state's colour; while the session is busy or waiting a ring ripples out of it, as long as
-    /// the tab is on screen.
-    /// </summary>
-    private FrameworkElement StatusDot(Brush brush, bool active)
-    {
-        var dot = new Grid
-        {
-            Width = 14,
-            Height = 14,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 2, 0, 0)
-        };
-        if (active)
-        {
-            var ring = new System.Windows.Shapes.Ellipse
-            {
-                Fill = brush,
-                Opacity = 0.22,
-                RenderTransformOrigin = new Point(0.5, 0.5),
-                RenderTransform = new ScaleTransform(1, 1)
-            };
-            _ripples.Add(ring);
-            dot.Children.Add(ring);
-        }
-        dot.Children.Add(new System.Windows.Shapes.Ellipse
-        {
-            Width = 8,
-            Height = 8,
-            Fill = brush,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        return dot;
-    }
-
-    /// <summary>"V-Notch · Thinking…": the folder (once the session has its own name) and what it does.</summary>
-    private TextBlock StatusLine(ClaudeSession session, Brush statusBrush)
-    {
-        string status = session.Status switch
-        {
-            ClaudeSessionStatus.Waiting => Loc.Get("control.claude.waiting"),
-            ClaudeSessionStatus.Working => session.Activity is { Length: > 0 } activity ? activity : Loc.Get("control.claude.thinking"),
-            ClaudeSessionStatus.Done => Loc.Get("control.claude.done"),
-            _ => Loc.Get("control.claude.idle")
-        };
-        var line = new TextBlock
-        {
-            FontFamily = ControlFont,
-            FontSize = 11.5,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = Muted,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(0, 2, 0, 0)
-        };
-        if (session.Title is { Length: > 0 }) line.Inlines.Add(new System.Windows.Documents.Run(session.Project + "  ·  "));
-        line.Inlines.Add(new System.Windows.Documents.Run(status)
-        {
-            Foreground = session.Status is ClaudeSessionStatus.Waiting or ClaudeSessionStatus.Done ? statusBrush : Muted
-        });
-        return line;
-    }
-
-    /// <summary>How long the turn runs (ticking) or took; null for an idle session.</summary>
-    private TextBlock? TimeLabel(ClaudeSession session)
-    {
-        if (session.TurnStartedUtc is { } started && session.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting)
-        {
-            var elapsed = MakeLabel(FormatElapsed(DateTime.UtcNow - started), 12, Muted);
-            _elapsedLabels.Add((elapsed, started));
-            return elapsed;
-        }
-        if (session.Status == ClaudeSessionStatus.Done && session.FinishedUtc is { } finished && session.TurnStartedUtc is { } turnStart)
-            return MakeLabel(FormatElapsed(finished - turnStart), 12, Muted);
-        return null;
     }
 
     private void StartRipples()
@@ -1830,8 +1508,8 @@ public partial class ControlCenterView : UserControl, IDisposable
     private static void Shake(FrameworkElement element)
     {
         if (AnimationConfig.ReduceMotion) return;
-        var shift = element.RenderTransform as TranslateTransform ?? new TranslateTransform();
-        element.RenderTransform = shift;
+        // The Claude tab's cards move with a scale and a shift already; shake that shift.
+        var shift = element.RenderTransform as TranslateTransform ?? LiftParts(element).Shift;
         var shake = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(320) };
         double[] offsets = { -6, 5, -3, 2, 0 };
         for (int i = 0; i < offsets.Length; i++)
@@ -1903,30 +1581,36 @@ public partial class ControlCenterView : UserControl, IDisposable
                 Margin = new Thickness(0, 3, 0, 0)
             });
         }
-        Grid.SetColumn(text, 0);
+        Grid.SetColumnSpan(text, 2);
         grid.Children.Add(text);
-
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        string id = request.Id;
-        var deny = TextButton(Loc.Get("control.claude.deny"), accent: false, () => _claude?.Decide(id, ClaudeDecision.Deny));
-        var always = TextButton(Loc.Get("control.claude.always"), accent: false, () => _claude?.Decide(id, ClaudeDecision.Always));
-        if (request.AlwaysLabel is { Length: > 0 } rule) always.ToolTip = rule;
-        var allow = TextButton(Loc.Get("control.claude.allow"), accent: true, () => _claude?.Decide(id, ClaudeDecision.Allow));
-        deny.Margin = always.Margin = new Thickness(0, 0, 6, 0);
-        buttons.Children.Add(deny);
-        buttons.Children.Add(always);
-        buttons.Children.Add(allow);
-        Grid.SetColumn(buttons, 1);
-        grid.Children.Add(buttons);
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         if (ChangePreview(request) is { } preview)
         {
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             Grid.SetRow(preview, 1);
             Grid.SetColumnSpan(preview, 2);
             grid.Children.Add(preview);
         }
+
+        // Big buttons under the request, the answer you most likely want first.
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 1) };
+        string id = request.Id;
+        var allow = TextButton(Loc.Get("control.claude.allow"), accent: true, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Allow)));
+        var always = TextButton(Loc.Get("control.claude.always"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Always)));
+        if (request.AlwaysLabel is { Length: > 0 } rule) always.ToolTip = rule;
+        var deny = TextButton(Loc.Get("control.claude.deny"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Deny)));
+        foreach (var button in new[] { allow, always, deny })
+        {
+            button.Height = 30;
+            button.Margin = new Thickness(0, 0, 6, 0);
+            buttons.Children.Add(button);
+        }
+        allow.Padding = new Thickness(18, 0, 18, 0);
+        Grid.SetRow(buttons, 2);
+        Grid.SetColumnSpan(buttons, 2);
+        grid.Children.Add(buttons);
 
         card.Child = grid;
         return card;
@@ -2044,12 +1728,12 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         string id = request.Id;
-        var keepPlanning = TextButton(Loc.Get("control.claude.keepPlanning"), accent: false, () => _claude?.Decide(id, ClaudeDecision.Deny));
+        var keepPlanning = TextButton(Loc.Get("control.claude.keepPlanning"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Deny)));
         buttons.Children.Add(keepPlanning);
         // Claude Code offers "auto-accept edits" as the mode to switch to; the Always answer applies it.
         if (request.AlwaysLabel?.Contains("acceptEdits", StringComparison.OrdinalIgnoreCase) == true)
-            buttons.Children.Add(TextButton(Loc.Get("control.claude.autoEdits"), accent: false, () => _claude?.Decide(id, ClaudeDecision.Always)));
-        var approve = TextButton(Loc.Get("control.claude.approvePlan"), accent: true, () => _claude?.Decide(id, ClaudeDecision.Allow));
+            buttons.Children.Add(TextButton(Loc.Get("control.claude.autoEdits"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Always))));
+        var approve = TextButton(Loc.Get("control.claude.approvePlan"), accent: true, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Allow)));
         approve.Margin = new Thickness(0);
         buttons.Children.Add(approve);
         stack.Children.Add(buttons);
@@ -2156,7 +1840,7 @@ public partial class ControlCenterView : UserControl, IDisposable
                 if (chosen.Contains(option.Label)) labels.Add(option.Label);
             answers[question.Text] = string.Join(", ", labels);
         }
-        _claude?.Answer(request.Id, answers);
+        Settle(request.Id, () => _claude?.Answer(request.Id, answers));
     }
 
     private static bool AllAnswered(IReadOnlyList<ClaudeQuestion> questions, Dictionary<string, List<string>> picks)
@@ -2178,62 +1862,6 @@ public partial class ControlCenterView : UserControl, IDisposable
             if (!open) gone.Add(id);
         }
         foreach (var id in gone) _questionPicks.Remove(id);
-    }
-
-    /// <summary>The 5-hour and weekly limits side by side; null before the first reading.</summary>
-    private FrameworkElement? LimitCards(ClaudeLimits? limits)
-    {
-        if (limits == null || (limits.FiveHour == null && limits.Week == null)) return null;
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 14) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        if (limits.FiveHour is { } fiveHour) grid.Children.Add(LimitCard(Loc.Get("control.claude.limit5h"), fiveHour));
-        if (limits.Week is { } week)
-        {
-            var card = LimitCard(Loc.Get("control.claude.limitWeek"), week);
-            Grid.SetColumn(card, 2);
-            grid.Children.Add(card);
-        }
-        return grid;
-    }
-
-    private Border LimitCard(string label, ClaudeLimitWindow window)
-    {
-        var top = new Grid();
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        top.Children.Add(MakeLabel(label, 12, VNotch.Services.UiPalette.PrimaryBrush));
-        var percent = MakeLabel($"{Math.Round(window.UsedPercent)} %", 12.5,
-            window.UsedPercent >= 90 ? WorkingOrange : VNotch.Services.UiPalette.PrimaryBrush);
-        Grid.SetColumn(percent, 1);
-        top.Children.Add(percent);
-
-        var stack = new StackPanel();
-        stack.Children.Add(top);
-        stack.Children.Add(UsageBar(window.UsedPercent));
-        if (window.ResetsAt is { } resets)
-            stack.Children.Add(MakeLabel(Loc.Get("control.claude.resetsIn", FormatDuration(resets - DateTimeOffset.UtcNow)), 11, Muted));
-
-        var card = Card();
-        card.Child = stack;
-        return card;
-    }
-
-    private static Grid UsageBar(double usedPercent)
-    {
-        var bar = new Grid { Height = 4, Margin = new Thickness(0, 8, 0, 7) };
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(usedPercent, 0.001), GridUnitType.Star) });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(100 - usedPercent, 0.001), GridUnitType.Star) });
-        var trackBorder = new Border { Background = Track, CornerRadius = new CornerRadius(2) };
-        Grid.SetColumnSpan(trackBorder, 2);
-        bar.Children.Add(trackBorder);
-        bar.Children.Add(new Border
-        {
-            Background = usedPercent >= 90 ? Red : WorkingOrange,
-            CornerRadius = new CornerRadius(2)
-        });
-        return bar;
     }
 
     private void UpdateElapsedLabels()
@@ -2749,6 +2377,11 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         if (_revealRequestFirst) Dispatcher.BeginInvoke(DispatcherPriority.Loaded, ScrollToRequest);
         else ControlScrollViewer.ScrollToTop();
+        if (Page == ControlCenterPage.Claude)
+        {
+            RevealClaude(baseDelay);
+            return;
+        }
         if (AnimationConfig.ReduceMotion) return;
         int index = 0;
         foreach (UIElement child in ControlRoot.Children)
@@ -2785,7 +2418,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         foreach (var (key, element) in cards)
         {
             if (animate && !_shownCards.Contains(key))
-                RevealElement(element, TimeSpan.FromMilliseconds(60 + Math.Min(index++ * 30, 120)));
+                GlideIn(element, 60 + Math.Min(index++ * 50, 200));
         }
         _shownCards.Clear();
         foreach (var (key, _) in cards) _shownCards.Add(key);

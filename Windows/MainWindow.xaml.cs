@@ -1205,7 +1205,7 @@ public partial class MainWindow : Window
     }
 
     private double MaxExpandedNotchHeight =>
-        Math.Max(ClaudeViewMaxHeight,
+        Math.Max(Math.Max(ClaudeViewMaxHeight, CenterViewMaxHeight),
         Math.Max(CameraViewHeight,
         Math.Max(ClipboardTrayHeight,
         Math.Max(_clockViewHeight,

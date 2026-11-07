@@ -1082,7 +1082,7 @@
                         <Grid x:Name="SpotlightReturnContentHost">
                         <Grid x:Name="NotchContent" Margin="0" SizeChanged="NotchContent_SizeChanged" RenderOptions.ClearTypeHint="Enabled" UseLayoutRounding="False" SnapsToDevicePixels="False">
 
-                    <!-- The colour fields of the system, home and school tabs, behind everything; each fades in and out with its tab. -->
+                    <!-- The colour fields of the system, home, school and Claude tabs, behind everything; each fades in and out with its tab. -->
                     <ctrl:MoodBackdrop x:Name="SystemBackdrop"
                                        Panel.ZIndex="-1"
                                        Opacity="{Binding Opacity, ElementName=TimerContent}"
@@ -1095,6 +1095,10 @@
                                        Panel.ZIndex="-1"
                                        Opacity="{Binding Opacity, ElementName=SchoolContent}"
                                        Visibility="{Binding Visibility, ElementName=SchoolContent}"/>
+                    <ctrl:MoodBackdrop x:Name="ClaudeBackdrop"
+                                       Panel.ZIndex="-1"
+                                       Opacity="{Binding Opacity, ElementName=ClaudeContent}"
+                                       Visibility="{Binding Visibility, ElementName=ClaudeContent}"/>
 
 
 
