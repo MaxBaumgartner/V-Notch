@@ -175,6 +175,10 @@ c1.513-0.625,3.253-0.275,4.407,0.885l17.862,17.951c2.088,2.098,2.088,5.488,0,7.5
                                               VerticalAlignment="Top"
                                               HorizontalAlignment="Left"
                                               Margin="0,2,0,0">
+                                            <!-- Cached like the nav icons: its shadow is drawn once, not on every frame of the opening. -->
+                                            <Grid.CacheMode>
+                                                <BitmapCache SnapsToDevicePixels="True"/>
+                                            </Grid.CacheMode>
                                             <Grid.Effect>
                                                 <DropShadowEffect BlurRadius="6" ShadowDepth="1.2" Direction="270" Opacity="0.55" Color="Black" RenderingBias="Performance"/>
                                             </Grid.Effect>
@@ -303,6 +307,9 @@ c1.513-0.625,3.253-0.275,4.407,0.885l17.862,17.951c2.088,2.098,2.088,5.488,0,7.5
                                         </Grid>
 
                                         <Grid x:Name="ProgressSection" Grid.Row="1" Margin="0,8,0,0" Visibility="Visible">
+                                            <Grid.CacheMode>
+                                                <BitmapCache SnapsToDevicePixels="True"/>
+                                            </Grid.CacheMode>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="Auto"/>

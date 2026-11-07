@@ -16,8 +16,9 @@ internal sealed record ClaudeLimits(ClaudeLimitWindow? FiveHour, ClaudeLimitWind
 
 /// <summary>
 /// Plan limits from the endpoint Claude Code's <c>/usage</c> uses, signed in with the OAuth token Claude Code
-/// keeps in <c>~/.claude/.credentials.json</c>. The token only ever goes to api.anthropic.com. The endpoint
-/// is rate limited, so callers ask at most once a minute and failures back off.
+/// keeps in <c>~/.claude/.credentials.json</c>. The token only ever goes to Anthropic. The endpoint is rate limited,
+/// so callers ask at most once a minute and failures back off. When the sign-in has run out and no Claude Code is
+/// running to renew it, <see cref="ClaudeTokenRefresher"/> renews it the way Claude Code does.
 /// </summary>
 internal sealed class ClaudeUsageClient : IDisposable
 {
@@ -47,7 +48,9 @@ internal sealed class ClaudeUsageClient : IDisposable
         _lastAttemptUtc = now;
         try
         {
-            string? token = ReadAccessToken();
+            string? token = ReadAccessToken(out bool expired);
+            if (token == null && expired)
+                token = await ClaudeTokenRefresher.RefreshAsync(_http, CredentialsPath, ct).ConfigureAwait(false);
             if (token == null)
             {
                 _blockedUntilUtc = DateTime.UtcNow + FailureBackoff;
@@ -102,18 +105,18 @@ internal sealed class ClaudeUsageClient : IDisposable
         return new ClaudeLimitWindow(Math.Clamp(percent, 0, 100), resets);
     }
 
-    private static string? ReadAccessToken()
+    /// <summary>The current access token; <paramref name="expired"/> says a renewal could help when there is none.</summary>
+    private static string? ReadAccessToken(out bool expired)
     {
+        expired = false;
         try
         {
             if (JsonNode.Parse(File.ReadAllText(CredentialsPath)) is not JsonObject root ||
                 root["claudeAiOauth"] is not JsonObject oauth)
                 return null;
-            // Claude Code refreshes it; an expired token would only get a 401.
-            if (oauth["expiresAt"] is JsonValue expires && expires.TryGetValue(out long expiresMs) &&
-                DateTimeOffset.FromUnixTimeMilliseconds(expiresMs) <= DateTimeOffset.UtcNow)
-                return null;
-            return oauth["accessToken"] is JsonValue token && token.TryGetValue(out string? value) && value.Length > 0 ? value : null;
+            string? token = ClaudeTokenRefresher.UsableAccessToken(oauth, DateTimeOffset.UtcNow);
+            expired = token == null && oauth["refreshToken"] != null;
+            return token;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {

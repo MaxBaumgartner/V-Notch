@@ -86,7 +86,7 @@ public partial class MainWindow
     private SyncedTextSource _syncedTextSource = SyncedTextSource.None;
     private string? _subtitleRequestKey;
     private bool CanFetchSyncedText => _isExpanded && !_cleanedUp &&
-        !_isTimerView && !_isAudioView && !_isSecondaryView && !_isCameraView && !_isClaudeView && !_isPiView && !_isWeatherView && !_isLegionView;
+        !_isTimerView && !_isAudioView && !_isSecondaryView && !_isCameraView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isWeatherView;
 
     private async Task FetchLyricsForTrack(MediaInfo info)
     {
@@ -172,7 +172,7 @@ public partial class MainWindow
                          !_isAnimating &&
                          !_isTimerView &&
                          !_isAudioView &&
-                         !_isSecondaryView && !_isCameraView && !_isClaudeView && !_isPiView && !_isWeatherView && !_isLegionView;
+                         !_isSecondaryView && !_isCameraView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isWeatherView;
 
         bool blurFallbackEnabled = _settings.EnableBlurEffects && !IsLiquidGlassEnabled;
 

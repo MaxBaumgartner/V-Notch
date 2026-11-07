@@ -90,7 +90,10 @@ public partial class MainWindow
     #region Media Changed Handler
 
 #pragma warning disable S3776 // Cognitive complexity is inherent to dispatching rich media UI states
-    private void OnMediaChanged(MediaInfo info) => _mediaUpdates.Enqueue(info);
+    private void OnMediaChanged(MediaInfo info)
+    {
+        if (!MotionLabNoMedia) _mediaUpdates.Enqueue(info);
+    }
 
     private void ApplyMediaUpdate(MediaInfo info)
     {

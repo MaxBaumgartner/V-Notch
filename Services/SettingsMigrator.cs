@@ -37,7 +37,7 @@ public static partial class SettingsMigrator
         int consentVersion,
         out byte outRevoke);
 
-    public const int CurrentVersion = 18;
+    public const int CurrentVersion = 19;
 
     private static readonly IReadOnlyDictionary<int, Func<JsonObject, JsonObject>> _migrations =
         new Dictionary<int, Func<JsonObject, JsonObject>>
@@ -60,6 +60,7 @@ public static partial class SettingsMigrator
             [15] = MigrateV15,
             [16] = MigrateV16,
             [17] = MigrateV17,
+            [18] = MigrateV18,
         };
 
     private static void EnsureProperty(JsonObject root, string propertyName, JsonNode? defaultValue)
@@ -211,9 +212,17 @@ public static partial class SettingsMigrator
 
     private static JsonObject MigrateV17(JsonObject root)
     {
-        // The Legion tab is new: it goes next to the weather tab (and only shows on a Legion).
+        // The Legion tab was new here. It later moved into the system tab; the leftover token is ignored.
         AddNavTab(root, nameof(NotchSettings.NavTabOrder), "Legion", after: "Weather");
         AddNavTab(root, nameof(NotchSettings.VisibleNavTabs), "Legion", after: "Weather");
+        return root;
+    }
+
+    private static JsonObject MigrateV18(JsonObject root)
+    {
+        // The Pi tab split in two: home stays, school is a tab of its own right after it.
+        AddNavTab(root, nameof(NotchSettings.NavTabOrder), "School", after: "Pi");
+        AddNavTab(root, nameof(NotchSettings.VisibleNavTabs), "School", after: "Pi");
         return root;
     }
 

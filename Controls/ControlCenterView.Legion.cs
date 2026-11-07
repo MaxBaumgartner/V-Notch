@@ -13,10 +13,10 @@ using VNotch.Services;
 namespace VNotch.Controls;
 
 /// <summary>
-/// The <see cref="ControlCenterPage.Legion"/> page: what Lenovo Vantage does on a Legion that matters at
-/// the desk — the power mode (Fn+Q), CPU and GPU temperature, the Windows key and touchpad locks.
-/// The whole page wears the colour the power button glows in for the current mode: switching modes slides
-/// a glowing pill to the new tile and every gauge and lit tile fades to the new colour with it.
+/// On a Legion, the system tab also does what Lenovo Vantage does that matters at the desk: the power mode
+/// (Fn+Q) and the Windows key and touchpad locks; the CPU and GPU temperatures join the system tiles.
+/// These parts wear the colour the power button glows in for the current mode (muted like the rest of the
+/// tab): switching modes slides a glowing pill to the new tile and the lit key tiles fade along with it.
 /// </summary>
 public partial class ControlCenterView
 {
@@ -27,12 +27,12 @@ public partial class ControlCenterView
 
     private static readonly (LegionMode Mode, string Glyph, string Key, Color Glow)[] LegionModes =
     [
-        (LegionMode.Quiet, "", "legion.quiet", Color.FromRgb(0x0A, 0x84, 0xFF)),
-        (LegionMode.Balanced, "", "legion.balanced", Color.FromRgb(0xF2, 0xF2, 0xF2)),
-        (LegionMode.Performance, "", "legion.performance", Color.FromRgb(0xFF, 0x45, 0x3A)),
-        (LegionMode.Extreme, "", "legion.extreme", Color.FromRgb(0xBF, 0x5A, 0xF2)),
+        (LegionMode.Quiet, "", "legion.quiet", Color.FromRgb(0x86, 0xA8, 0xD8)),
+        (LegionMode.Balanced, "", "legion.balanced", Color.FromRgb(0xD4, 0xD4, 0xDA)),
+        (LegionMode.Performance, "", "legion.performance", Color.FromRgb(0xD9, 0x8A, 0x84)),
+        (LegionMode.Extreme, "", "legion.extreme", Color.FromRgb(0xAE, 0x9C, 0xD8)),
     ];
-    private static readonly Color LegionCustomGlow = Color.FromRgb(0xFF, 0x9F, 0x0A);
+    private static readonly Color LegionCustomGlow = Color.FromRgb(0xD9, 0xB0, 0x88);
 
     private DispatcherTimer? _legionTimer;
     private LegionState? _legion;
@@ -41,9 +41,10 @@ public partial class ControlCenterView
     private string _legionKey = "";
     private LegionParts? _legionParts;
     private readonly LoopSet _legionLoops = new();
-    private readonly StackPanel _legionSection = new();
+    private readonly StackPanel _legionSection = new() { Tag = NestedSectionTag };
     private readonly StackPanel _legionModeSection = new() { Tag = NestedSectionTag };
-    private readonly StackPanel _legionSystemSection = new() { Tag = NestedSectionTag };
+    private readonly StackPanel _legionKeysSection = new() { Tag = NestedSectionTag };
+    private bool _legionAttached;
     private bool _legionWasReady;
 
     // One colour for the whole page, faded on every mode change.
@@ -59,8 +60,7 @@ public partial class ControlCenterView
         public required DropShadowEffect PillGlow;
         public required ModeTile[] Modes;
         public required FrameworkElement CustomNote;
-        public required Grid SystemGrid;
-        public required Gauge Cpu, Gpu;
+        public required Grid KeysGrid;
         public required KeyTile WinKey, Touchpad;
         public int Selected = -2; // -2: nothing shown yet, -1: a mode without a tile (custom)
     }
@@ -73,14 +73,6 @@ public partial class ControlCenterView
         public required TextBlock State;
     }
 
-    private sealed class Gauge
-    {
-        public required Path Value;
-        public required TextBlock Number;
-        public required WeatherTween Tween;
-        public double Shown = double.NaN;
-    }
-
     private sealed class KeyTile
     {
         public required Border Card;
@@ -90,18 +82,21 @@ public partial class ControlCenterView
         public bool? On;
     }
 
-    /// <summary>For the <see cref="ControlCenterPage.Legion"/> page.</summary>
+    /// <summary>On a Legion: the power mode and key locks go right below the system tiles.</summary>
     internal void AttachLegion()
     {
+        if (_legionAttached) return;
+        _legionAttached = true;
         _legionSection.Children.Add(_legionModeSection);
-        _legionSection.Children.Add(_legionSystemSection);
-        ControlRoot.Children.Add(_legionSection);
+        _legionSection.Children.Add(_legionKeysSection);
+        ControlRoot.Children.Insert(ControlRoot.Children.IndexOf(_statsSection) + 1, _legionSection);
         _legionTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = LegionRefreshInterval };
         _legionTimer.Tick += (_, _) => RefreshLegion();
     }
 
     private void OnLegionVisibleChanged(bool visible)
     {
+        if (!_legionAttached) return;
         if (visible)
         {
             BuildLegionPage();
@@ -109,7 +104,6 @@ public partial class ControlCenterView
             if (_legionParts is { } parts && _legion != null)
             {
                 parts.Selected = -2;
-                parts.Cpu.Shown = parts.Gpu.Shown = double.NaN;
                 UpdateLegion(_legion);
             }
             RefreshLegion();
@@ -124,7 +118,7 @@ public partial class ControlCenterView
 
     private async void RefreshLegion()
     {
-        if (_legionBusy || _disposed) return;
+        if (_legionBusy || _disposed || !_legionAttached) return;
         _legionBusy = true;
         try
         {
@@ -148,7 +142,7 @@ public partial class ControlCenterView
     /// <summary>Builds the tiles once per layout (reachable, sections open); values only animate after that.</summary>
     private void BuildLegionPage()
     {
-        if (_disposed) return;
+        if (_disposed || !_legionAttached) return;
         bool ready = _legionReachable && _legion != null;
         // Opening or closing a section only shows or hides its rows (ToggleLegionSection): a rebuild
         // would make the pill and the rings arrive all over again.
@@ -158,9 +152,9 @@ public partial class ControlCenterView
         _legionParts = null;
         _legionLoops.StopAll();
         _legionModeSection.Children.Clear();
-        _legionSystemSection.Children.Clear();
+        _legionKeysSection.Children.Clear();
 
-        _legionModeSection.Children.Add(BuildSectionHeader("legion.mode", Loc.Get("legion.mode"), "", null, topMargin: 0));
+        _legionModeSection.Children.Add(BuildSectionHeader("legion.mode", Loc.Get("legion.mode"), "", null, topMargin: 14));
         if (!ready)
         {
             _legionModeSection.Children.Add(NewRow("", Loc.Get(_legionReachable ? "pi.loading" : "legion.setupHint"), muted: true));
@@ -175,23 +169,19 @@ public partial class ControlCenterView
         _legionModeSection.Children.Add(modeGrid);
         _legionModeSection.Children.Add(customNote);
 
-        _legionSystemSection.Children.Add(BuildSectionHeader("control.system", Loc.Get("control.system"), "", null, topMargin: 6));
-        var systemGrid = TileGrid(4, 4);
-        var cpu = GaugeTile("CPU", out var cpuCard);
-        var gpu = GaugeTile("GPU", out var gpuCard);
+        _legionKeysSection.Children.Add(BuildSectionHeader("legion.keys", Loc.Get("legion.keys"), "", null, topMargin: 6));
+        var keysGrid = TileGrid(2, 2);
         var winKey = LegionKeyTile("", Loc.Get("legion.winKey"), on => LegionService.SetWinKeyLockedAsync(!on));
         var touchpad = LegionKeyTile("", Loc.Get("legion.touchpad"), on => LegionService.SetTouchpadLockedAsync(!on));
-        PlaceTile(systemGrid, cpuCard, 0, 4);
-        PlaceTile(systemGrid, gpuCard, 1, 4);
-        PlaceTile(systemGrid, winKey.Card, 2, 4);
-        PlaceTile(systemGrid, touchpad.Card, 3, 4);
-        systemGrid.Visibility = IsExpanded("control.system") ? Visibility.Visible : Visibility.Collapsed;
-        _legionSystemSection.Children.Add(systemGrid);
+        PlaceTile(keysGrid, winKey.Card, 0, 2);
+        PlaceTile(keysGrid, touchpad.Card, 1, 2);
+        keysGrid.Visibility = IsExpanded("legion.keys") ? Visibility.Visible : Visibility.Collapsed;
+        _legionKeysSection.Children.Add(keysGrid);
 
         _legionParts = new LegionParts
         {
             ModeGrid = modeGrid, Pill = pill, PillShift = shift, PillScale = pillScale, PillGlow = glow, Modes = modes,
-            CustomNote = customNote, SystemGrid = systemGrid, Cpu = cpu, Gpu = gpu, WinKey = winKey, Touchpad = touchpad
+            CustomNote = customNote, KeysGrid = keysGrid, WinKey = winKey, Touchpad = touchpad
         };
         if (_legion != null) UpdateLegion(_legion);
         // Arriving from "loading" or the setup: the page falls into place.
@@ -212,13 +202,13 @@ public partial class ControlCenterView
             return;
         }
         bool mode = section == "legion.mode";
-        var panel = mode ? _legionModeSection : _legionSystemSection;
+        var panel = mode ? _legionModeSection : _legionKeysSection;
         bool open = IsExpanded(section);
         // A UIElementCollection slot cannot be overwritten while it holds a visual: take the old header out first.
         panel.Children.RemoveAt(0);
         panel.Children.Insert(0, mode
-            ? BuildSectionHeader("legion.mode", Loc.Get("legion.mode"), "", null, topMargin: 0)
-            : BuildSectionHeader("control.system", Loc.Get("control.system"), "", null, topMargin: 6));
+            ? BuildSectionHeader("legion.mode", Loc.Get("legion.mode"), "", null, topMargin: 14)
+            : BuildSectionHeader("legion.keys", Loc.Get("legion.keys"), "", null, topMargin: 6));
         for (int i = 1; i < panel.Children.Count; i++)
         {
             // Undo the fold-away the header played on the way out.
@@ -232,7 +222,7 @@ public partial class ControlCenterView
             parts.ModeGrid.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
             parts.CustomNote.Visibility = open && _legion?.Mode == (int)LegionMode.Custom ? Visibility.Visible : Visibility.Collapsed;
         }
-        else parts.SystemGrid.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        else parts.KeysGrid.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
     }
 
     #region Modes
@@ -397,71 +387,7 @@ public partial class ControlCenterView
 
     #endregion
 
-    #region Gauges and keys
-
-    /// <summary>A three-quarter ring that fills with the temperature in the page's colour; the number rolls.</summary>
-    private Gauge GaugeTile(string label, out Border card)
-    {
-        const double Size = 62, Stroke = 5;
-        double r = (Size - Stroke) / 2, c = Size / 2;
-        var track = new Path
-        {
-            Data = Arc(c, c, r, 135, 270),
-            Stroke = Track,
-            StrokeThickness = Stroke,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round
-        };
-        var value = new Path
-        {
-            Stroke = _legionAccent,
-            StrokeThickness = Stroke,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round,
-            Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 6, ShadowDepth = 0, Opacity = 0.4 }
-        };
-        var number = new TextBlock
-        {
-            Text = "–",
-            FontFamily = ControlFont,
-            FontSize = 16,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = VNotch.Services.UiPalette.PrimaryBrush,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2, 0, 0, 2)
-        };
-        var caption = MakeLabel(label, 10, Muted);
-        caption.HorizontalAlignment = HorizontalAlignment.Center;
-        caption.VerticalAlignment = VerticalAlignment.Bottom;
-        caption.Margin = new Thickness(0, 0, 0, -2);
-        var dial = new Grid { Width = Size, Height = Size, Children = { track, value, number, caption } };
-
-        card = Card();
-        card.Padding = new Thickness(8, 8, 8, 6);
-        card.Child = dial;
-        dial.HorizontalAlignment = HorizontalAlignment.Center;
-
-        var gauge = new Gauge { Value = value, Number = number, Tween = new WeatherTween() };
-        gauge.Tween.Step = t =>
-        {
-            value.Data = Arc(c, c, r, 135, 270 * Math.Clamp((t - 30) / 70, 0, 1));
-            number.Text = $"{Math.Round(t)}°";
-        };
-        return gauge;
-    }
-
-    private static void SetGauge(Gauge gauge, int celsius)
-    {
-        if (celsius <= 0) return;
-        double from = double.IsNaN(gauge.Shown) ? 30 : gauge.Tween.Value;
-        bool first = double.IsNaN(gauge.Shown);
-        if (gauge.Shown == celsius) return;
-        gauge.Shown = celsius;
-        // The first reading sweeps the ring up from cold; later ones glide.
-        gauge.Tween.Play(from, celsius, first ? 1100 : 700, first ? WeatherMotion.OutQuint : WeatherMotion.Out, first ? 250 : 0);
-        gauge.Number.Foreground = celsius >= 90 ? Red : VNotch.Services.UiPalette.PrimaryBrush;
-    }
+    #region Keys
 
     private static Geometry Arc(double cx, double cy, double r, double startDegrees, double sweepDegrees)
     {
@@ -475,19 +401,22 @@ public partial class ControlCenterView
         return geometry;
     }
 
-    /// <summary>A key lock as a tile, lit in the page's colour while the key works.</summary>
+    /// <summary>A key lock as a wide tile (glyph, then name over state), lit in the mode's colour while the key works.</summary>
     private KeyTile LegionKeyTile(string glyphText, string label, Func<bool, Task<LegionState?>> apply)
     {
         var ink = new SolidColorBrush(((SolidColorBrush)Muted).Color);
-        var glyph = new TextBlock { Text = glyphText, FontFamily = SegoeSymbolFont, FontSize = 17, Foreground = ink, HorizontalAlignment = HorizontalAlignment.Left };
+        var glyph = new TextBlock { Text = glyphText, FontFamily = SegoeSymbolFont, FontSize = 18, Foreground = ink, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 14, 0) };
         var name = MakeLabel(label, 12.5, VNotch.Services.UiPalette.PrimaryBrush);
-        name.Margin = new Thickness(0, 7, 0, 0);
         var state = MakeLabel("", 11, Muted);
         state.Margin = new Thickness(0, 1, 0, 0);
         var card = Card();
-        card.Padding = new Thickness(12, 10, 12, 10);
+        card.Padding = new Thickness(12, 9, 12, 9);
         card.Cursor = Cursors.Hand;
-        card.Child = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { glyph, name, state } };
+        card.Child = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Children = { glyph, new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { name, state } } }
+        };
         System.Windows.Automation.AutomationProperties.SetName(card, label);
         var tile = new KeyTile { Card = card, Glyph = glyph, Ink = ink, State = state };
         Pressable(card, () => tile.On == true ? _legionWash : CardBg, CardHover, gentle: true);
@@ -526,8 +455,7 @@ public partial class ControlCenterView
         if (_legionParts is not { } parts) return;
         int index = Array.FindIndex(LegionModes, m => (int)m.Mode == state.Mode);
         if (index != parts.Selected || parts.Selected == -2) SelectLegionMode(index, state.Mode);
-        SetGauge(parts.Cpu, state.CpuTemp);
-        SetGauge(parts.Gpu, state.GpuTemp);
+        ShowTemps(state.CpuTemp, state.GpuTemp);
         PaintKey(parts.WinKey, !state.WinKeyLocked, animate: false);
         PaintKey(parts.Touchpad, !state.TouchpadLocked, animate: false);
     }

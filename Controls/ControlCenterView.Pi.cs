@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
@@ -8,31 +9,35 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using VNotch.Services;
 using VNotch.Services.ControlCenter;
 
 namespace VNotch.Controls;
 
-/// <summary>The <see cref="ControlCenterPage.Pi"/> page: the user's Raspberry Pi dashboard in the notch.</summary>
+/// <summary>
+/// The two tabs fed by the user's Raspberry Pi dashboard: <see cref="ControlCenterPage.Pi"/> is home (the room,
+/// see ControlCenterView.Home.cs), <see cref="ControlCenterPage.School"/> the deadlines, tests and to-dos. Both
+/// wear one muted colour like the system tab: home from the room's lights, school from how soon things are due.
+/// </summary>
 public partial class ControlCenterView
 {
     #region Pi dashboard
 
     private static readonly TimeSpan PiRefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PiSchoolMaxAge = TimeSpan.FromMinutes(5);
-    private const int PiMaxTiles = 6;
     private const int PiMaxDeadlines = 4;
     private const int PiMaxSubmitted = 3;
-    private const int PiMaxExams = 2;
+    private const int PiMaxExams = 4;
     private const int PiMaxTodos = 6;
-    private static readonly Brush DueSoon = Frozen("#FF9F0A");
-    private static readonly Brush DueToday = Frozen("#FF453A");
+    private static readonly TimeSpan ExamHorizon = TimeSpan.FromDays(21);
+    private static readonly Brush DueSoon = Frozen("#D2AE7C");
+    private static readonly Brush DueToday = Frozen("#D2857E");
 
     private PiDashboardClient? _pi;
     private DispatcherTimer? _piTimer;
     private bool _piRefreshing;
-    private List<PiEntity>? _piHome;
     private PiSchool? _piSchool;
     private DateTime _piSchoolAtUtc = DateTime.MinValue;
     private List<PiTodo>? _piTodos;
@@ -41,14 +46,16 @@ public partial class ControlCenterView
     private string _todoDraft = "";
     private TextBox? _todoBox;
 
-    private readonly StackPanel _piHomeSection = new();
     private readonly StackPanel _piSchoolSection = new();
+    private readonly StackPanel _piExamSection = new();
     private readonly StackPanel _piTodoSection = new();
 
     private Func<string> _moodleUrl = () => "";
     private Func<string> _untisUrl = () => "";
 
-    /// <summary>For the <see cref="ControlCenterPage.Pi"/> page.</summary>
+    private bool IsSchoolPage => Page == ControlCenterPage.School;
+
+    /// <summary>For the <see cref="ControlCenterPage.Pi"/> (home) and <see cref="ControlCenterPage.School"/> pages.</summary>
     internal void AttachPi(PiDashboardClient client, Func<bool> isLocalOnly, Func<bool> usesGlass,
         Func<string> moodleUrl, Func<string> untisUrl)
     {
@@ -57,9 +64,17 @@ public partial class ControlCenterView
         _usesGlass = usesGlass;
         _moodleUrl = moodleUrl;
         _untisUrl = untisUrl;
-        ControlRoot.Children.Add(_piHomeSection);
-        ControlRoot.Children.Add(_piSchoolSection);
-        ControlRoot.Children.Add(_piTodoSection);
+        if (IsSchoolPage)
+        {
+            ControlRoot.Children.Add(_piSchoolSection);
+            ControlRoot.Children.Add(_piExamSection);
+            ControlRoot.Children.Add(_piTodoSection);
+            SetMoodColors(SchoolCalm.Main, SchoolCalm.Warmer, SchoolCalm.Cooler);
+        }
+        else
+        {
+            AttachHome();
+        }
         _piTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = PiRefreshInterval };
         _piTimer.Tick += (_, _) => RefreshPi();
     }
@@ -75,11 +90,12 @@ public partial class ControlCenterView
         else
         {
             _piTimer?.Stop();
+            _homeLoops.StopAll();
             if (_todoBox?.IsKeyboardFocusWithin == true) KeyboardInputRequested?.Invoke(false);
         }
     }
 
-    /// <summary>Home and to-dos every refresh; the timetable, which the Pi caches itself, every few minutes.</summary>
+    /// <summary>Home: the room every refresh. School: to-dos every refresh, the deadlines (cached on the Pi) every few minutes.</summary>
     private async void RefreshPi()
     {
         if (_pi == null || _piRefreshing || _disposed) return;
@@ -91,14 +107,22 @@ public partial class ControlCenterView
         _piRefreshing = true;
         try
         {
+            if (!IsSchoolPage)
+            {
+                var home = await _pi.GetHomeAsync();
+                await RefreshMusicSyncAsync();
+                if (_disposed) return;
+                _piReachable = home != null;
+                if (home != null) _home = home;
+                BuildPiPage();
+                return;
+            }
             bool school = DateTime.UtcNow - _piSchoolAtUtc > PiSchoolMaxAge || _piSchool == null;
-            var home = _pi.GetHomeAsync();
             var todos = _pi.GetTodosAsync();
             var timetable = school ? _pi.GetSchoolAsync() : Task.FromResult(_piSchool);
-            await Task.WhenAll(home, todos, timetable);
+            await Task.WhenAll(todos, timetable);
             if (_disposed) return;
-            _piReachable = home.Result != null || todos.Result != null;
-            if (home.Result != null) _piHome = home.Result;
+            _piReachable = todos.Result != null || timetable.Result != null;
             if (todos.Result != null) _piTodos = todos.Result;
             if (school && timetable.Result != null)
             {
@@ -116,14 +140,19 @@ public partial class ControlCenterView
     private void BuildPiPage()
     {
         if (_disposed || _pi == null) return;
+        if (!IsSchoolPage)
+        {
+            BuildHome();
+            return;
+        }
         // Typing a to-do: a rebuild would take the box away; the next refresh catches up.
         if (_todoBox?.IsKeyboardFocusWithin == true) return;
         string key = PiKey();
         if (key == _piKey) return;
         _piKey = key;
 
-        BuildPiHome();
         BuildPiSchool();
+        BuildPiExams();
         BuildPiTodos();
     }
 
@@ -131,68 +160,12 @@ public partial class ControlCenterView
     {
         var sb = new StringBuilder();
         sb.Append(_isLocalOnly()).Append(_pi?.IsConfigured).Append(_piReachable).Append('|');
-        sb.Append(IsExpanded("pi.home")).Append(IsExpanded("pi.school")).Append(IsExpanded("pi.todos")).Append('|');
-        if (_piHome != null) foreach (var e in _piHome) sb.Append(e.Id).Append(e.Display).Append(';');
-        sb.Append('|').Append(_piSchoolAtUtc.Ticks).Append('|').Append(DateTime.Now.ToString("HHmm", CultureInfo.InvariantCulture)).Append('|');
+        sb.Append(IsExpanded("pi.school")).Append(IsExpanded("pi.exams")).Append(IsExpanded("pi.todos")).Append('|');
+        sb.Append(_piSchoolAtUtc.Ticks).Append('|').Append(DateTime.Now.ToString("yyyyMMddHH", CultureInfo.InvariantCulture)).Append('|');
         if (_piTodos != null) foreach (var t in _piTodos) sb.Append(t.Id).Append(t.Done).Append(';');
         sb.Append('|').Append(PiTaskKey());
         return sb.ToString();
     }
-
-    #region Home
-
-    private void BuildPiHome()
-    {
-        _piHomeSection.Children.Clear();
-        _piHomeSection.Children.Add(BuildSectionHeader("pi.home", Loc.Get("pi.home"), "", null, topMargin: 0));
-        if (!IsExpanded("pi.home")) return;
-
-        if (_isLocalOnly() || _pi?.IsConfigured != true)
-        {
-            _piHomeSection.Children.Add(NewRow("\uE7BA", Loc.Get(_isLocalOnly() ? "pi.localOnly" : "pi.notConfigured"), muted: true));
-            return;
-        }
-        if (_piHome == null)
-        {
-            _piHomeSection.Children.Add(NewRow("\uE7BA", Loc.Get(_piReachable ? "pi.loading" : "pi.unreachable"), muted: true));
-            return;
-        }
-
-        var switches = new List<PiEntity>();
-        var readings = new List<PiEntity>(PiMaxTiles);
-        foreach (var entity in _piHome)
-        {
-            if (entity.CanToggle) switches.Add(entity);
-            else if (readings.Count < PiMaxTiles && IsReading(entity)) readings.Add(entity);
-        }
-
-        // Switches as tiles, like a phone's control center: a tap flips them, lit while on.
-        var switchGrid = TileGrid(PiSwitchColumns, switches.Count);
-        for (int i = 0; i < switches.Count; i++)
-            PlaceTile(switchGrid, SwitchTile(switches[i]), i, PiSwitchColumns);
-        _piHomeSection.Children.Add(switchGrid);
-
-        var readingGrid = TileGrid(PiReadingColumns, readings.Count);
-        for (int i = 0; i < readings.Count; i++)
-        {
-            var stack = new StackPanel();
-            stack.Children.Add(MakeLabel(readings[i].Label, 10.5, Muted));
-            var value = MakeLabel(readings[i].Display, 13.5, VNotch.Services.UiPalette.PrimaryBrush);
-            value.Margin = new Thickness(0, 2, 0, 0);
-            stack.Children.Add(value);
-            var card = Card();
-            card.Padding = new Thickness(11, 8, 11, 8);
-            card.Child = stack;
-            PlaceTile(readingGrid, card, i, PiReadingColumns);
-        }
-        if (readings.Count > 0) _piHomeSection.Children.Add(readingGrid);
-    }
-
-    private const int PiSwitchColumns = 4;
-    private const int PiReadingColumns = 5;
-    private const string LightGlyph = "\uE82F";
-    private static readonly Brush LightOnBg = Frozen("#33FFD60A");
-    private static readonly Brush LightOnGlyph = Frozen("#FFD60A");
 
     private static Grid TileGrid(int columns, int count)
     {
@@ -212,126 +185,58 @@ public partial class ControlCenterView
         grid.Children.Add(tile);
     }
 
-    /// <summary>
-    /// A switch as a tile: glyph, name, "on · 157 W". Tapping flips it at once and springs a little; the
-    /// dashboard is told in the background and the next refresh shows what really happened.
-    /// </summary>
-    private FrameworkElement SwitchTile(PiEntity entity)
-    {
-        bool light = GlyphFor(entity) == LightGlyph;
-        var glyph = new TextBlock
-        {
-            Text = GlyphFor(entity),
-            FontFamily = SegoeSymbolFont,
-            FontSize = 16,
-            HorizontalAlignment = HorizontalAlignment.Left
-        };
-        var name = MakeLabel(entity.Label, 12.5, VNotch.Services.UiPalette.PrimaryBrush);
-        name.Margin = new Thickness(0, 7, 0, 0);
-        var state = MakeLabel("", 11, Muted);
-        state.Margin = new Thickness(0, 1, 0, 0);
-        var stack = new StackPanel();
-        stack.Children.Add(glyph);
-        stack.Children.Add(name);
-        stack.Children.Add(state);
-
-        var card = Card();
-        card.Padding = new Thickness(12, 10, 12, 10);
-        card.Cursor = Cursors.Hand;
-        card.Child = stack;
-        System.Windows.Automation.AutomationProperties.SetName(card, entity.Label);
-
-        // Lamps glow yellow, plugs and other switches mint; the colour fades in and out with the state.
-        bool on = entity.IsOn;
-        string? power = PowerOf(entity);
-        var tint = light ? LightOnGlyph : Mint;
-        var litBg = light ? LightOnBg : Wash(Mint, 0.18);
-        var glyphInk = new SolidColorBrush(((SolidColorBrush)(on ? tint : Muted)).Color);
-        glyph.Foreground = glyphInk;
-        Pressable(card, () => on ? litBg : CardBg, CardHover);
-        void Paint(bool animate)
-        {
-            var fill = (SolidColorBrush)card.Background;
-            var target = ((SolidColorBrush)(on ? litBg : CardBg)).Color;
-            if (animate) WeatherMotion.Tint(fill, target, 260);
-            else fill.Color = target;
-            WeatherMotion.Tint(glyphInk, ((SolidColorBrush)(on ? tint : Muted)).Color, animate ? 260 : 0);
-            string word = Loc.Get(on ? "control.on" : "control.off");
-            state.Text = on && power != null ? $"{word} · {power}" : word;
-        }
-        Paint(animate: false);
-
-        string id = entity.Id;
-        card.MouseLeftButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-            on = !on;
-            Paint(animate: true);
-            Bounce(glyph, on ? 1.45 : 0.8);
-            TogglePi(id);
-        };
-        return card;
-    }
-
-    private async void TogglePi(string entityId)
-    {
-        if (_pi == null) return;
-        await _pi.ToggleAsync(entityId);
-        // Home Assistant reports the new state a moment later.
-        await Task.Delay(700);
-        _piKey = "";
-        RefreshPi();
-    }
-
-    private static string GlyphFor(PiEntity entity) =>
-        entity.Icon == LightBulbIcon || entity.Id.Contains("light", StringComparison.OrdinalIgnoreCase) ? "\uE82F" : "\uE945";
-
-    // The dashboard marks lights with this emoji; WPF draws emoji in outline, so the row gets a glyph instead.
-    private const string LightBulbIcon = "U0001F4A1";
-
-    /// <summary>A switched socket's draw, from the power sensor with the same number ("switch_2" ↔ "leistung_2").</summary>
-    private string? PowerOf(PiEntity socket)
-    {
-        if (_piHome == null) return null;
-        int cut = socket.Id.LastIndexOf('_');
-        if (cut < 0 || !int.TryParse(socket.Id.AsSpan(cut + 1), out _)) return null;
-        string suffix = socket.Id[cut..];
-        foreach (var entity in _piHome)
-        {
-            if (entity.Display.EndsWith(" W", StringComparison.Ordinal) && entity.Id.EndsWith(suffix, StringComparison.Ordinal))
-                return entity.Display;
-        }
-        return null;
-    }
-
-    /// <summary>Temperature, humidity, a window, the heating…: not people, players, or the sockets' power (shown with them).</summary>
-    private static bool IsReading(PiEntity entity) =>
-        entity.Type is "sensor" or "binary" &&
-        entity.State != "unavailable" &&
-        !entity.Display.EndsWith(" W", StringComparison.Ordinal) &&
-        !entity.Id.StartsWith("person.", StringComparison.Ordinal) &&
-        !entity.Id.StartsWith("media_player.", StringComparison.Ordinal);
-
-    #endregion
-
     #region School
+
+    // How soon things are due sets the colour: sage while there is time, sand within three days, rosé within a day.
+    private static readonly (Color Main, Color Warmer, Color Cooler) SchoolCalm =
+        (Color.FromRgb(0x86, 0xB6, 0xB0), Color.FromRgb(0x9B, 0xB0, 0xCC), Color.FromRgb(0x7F, 0xA6, 0xCC));
+    private static readonly (Color Main, Color Warmer, Color Cooler) SchoolSoon =
+        (Color.FromRgb(0xD2, 0xAE, 0x7C), Color.FromRgb(0xD2, 0x95, 0x7E), Color.FromRgb(0x86, 0xB6, 0xB0));
+    private static readonly (Color Main, Color Warmer, Color Cooler) SchoolNow =
+        (Color.FromRgb(0xD2, 0x85, 0x7E), Color.FromRgb(0xC9, 0x8A, 0xB0), Color.FromRgb(0xD2, 0xAE, 0x7C));
+
+    /// <summary>The colour for what is due next: a deadline or a test, whichever comes first.</summary>
+    internal static (Color Main, Color Warmer, Color Cooler) SchoolMood(TimeSpan? untilNext) => untilNext switch
+    {
+        { } left when left < TimeSpan.FromDays(1) => SchoolNow,
+        { } left when left < TimeSpan.FromDays(3) => SchoolSoon,
+        _ => SchoolCalm
+    };
 
     private void BuildPiSchool()
     {
+        _accent = _mood;
         _piSchoolSection.Children.Clear();
-        if (_piSchool is not { } school || _isLocalOnly()) return;
-        _piSchoolSection.Children.Add(BuildSectionHeader("pi.school", Loc.Get("pi.school"), "", null, topMargin: 14));
-        if (!IsExpanded("pi.school")) return;
-
-        var lessonCard = NextLessonCard(school);
-        OpenOnClick(lessonCard, () => SchoolLinks.Untis(_untisUrl()), SignInToSchoolAsync);
-        _piSchoolSection.Children.Add(lessonCard);
-        int shown = 0;
-        var now = DateTimeOffset.Now;
-        foreach (var deadline in school.Deadlines)
+        if (_isLocalOnly() || _pi?.IsConfigured != true)
         {
-            if (deadline.Submitted || deadline.Due < now || shown == PiMaxDeadlines) continue;
-            shown++;
+            _piSchoolSection.Children.Add(NewRow("\uE7BA", Loc.Get(_isLocalOnly() ? "pi.localOnly" : "pi.notConfigured"), muted: true));
+            return;
+        }
+        if (_piSchool is not { } school)
+        {
+            _piSchoolSection.Children.Add(NewRow("\uE7BA", Loc.Get(_piReachable ? "pi.loading" : "pi.unreachable"), muted: true));
+            return;
+        }
+
+        var now = DateTimeOffset.Now;
+        var open = school.Deadlines.Where(d => !d.Submitted && d.Due >= now).OrderBy(d => d.Due).ToList();
+        var nextExam = school.Exams.Where(e => e.Date.Date >= DateTime.Today).OrderBy(e => e.Date).FirstOrDefault();
+        TimeSpan? untilNext = open.Count > 0 ? open[0].Due - now : null;
+        if (nextExam != null && (untilNext == null || nextExam.Date - DateTime.Now < untilNext)) untilNext = nextExam.Date - DateTime.Now;
+        var mood = SchoolMood(untilNext);
+        SetMoodColors(mood.Main, mood.Warmer, mood.Cooler);
+
+        // What is due next, big, like the player in the music tab.
+        if (open.Count > 0) _piSchoolSection.Children.Add(NextDeadlineHero(open[0], now));
+        else _piSchoolSection.Children.Add(NewRow("\uE73E", Loc.Get("school.nothingDue"), muted: true));
+
+        if (open.Count > 1 || school.Deadlines.Any(d => d.Submitted))
+        {
+            _piSchoolSection.Children.Add(BuildSectionHeader("pi.school", Loc.Get("school.deadlines"), "", null, topMargin: 12));
+            if (!IsExpanded("pi.school")) return;
+        }
+        foreach (var deadline in open.Skip(1).Take(PiMaxDeadlines))
+        {
             var left = deadline.Due - now;
             var row = NewRow("\uE916", deadline.Name);
             Brush urgency = left < TimeSpan.FromDays(1) ? DueToday : left < TimeSpan.FromDays(3) ? DueSoon : Muted;
@@ -347,23 +252,121 @@ public partial class ControlCenterView
         foreach (var deadline in school.Deadlines.Where(d => d.Submitted && (d.SubmittedAt ?? d.Due) >= weekAgo)
                      .OrderByDescending(d => d.SubmittedAt ?? d.Due).Take(PiMaxSubmitted))
         {
-            var row = NewRow("", deadline.Name, dim: true);
+            var row = NewRow("\uE73E", deadline.Name, dim: true);
             string day = (deadline.SubmittedAt ?? deadline.Due).ToLocalTime().ToString("ddd d.M.", Loc.GetCulture());
-            AddStatus(row, Loc.Get("pi.handedIn", ShortCourse(deadline.Course), day), Mint);
+            AddStatus(row, Loc.Get("pi.handedIn", ShortCourse(deadline.Course), day), HandedIn);
             if (deadline.Cmid > 0) OpenOnClick(row, () => DeadlineLink(deadline), SignInToSchoolAsync);
             _piSchoolSection.Children.Add(row);
         }
-        int exams = 0;
-        foreach (var exam in school.Exams)
-        {
-            if (exam.Date.Date < DateTime.Today || exams == PiMaxExams) continue;
-            exams++;
-            var row = NewRow("\uE787", exam.Title);
-            AddStatus(row, $"{exam.Kind} · {exam.Date.ToString("ddd d.M.", Loc.GetCulture())} {exam.Start}", Muted);
-            OpenOnClick(row, () => SchoolLinks.Untis(_untisUrl()), SignInToSchoolAsync);
-            _piSchoolSection.Children.Add(row);
-        }
     }
+
+    private static readonly Brush HandedIn = Frozen("#9BCFC4");
+    private const double HeroRing = 84;
+    // The ring counts down two weeks: a task due in a fortnight or more starts full.
+    private static readonly TimeSpan HeroRingSpan = TimeSpan.FromDays(14);
+
+    /// <summary>
+    /// The next deadline as the tab's hero: a ring that empties as the due date comes closer, with the days left in
+    /// it, the task's name, its subject and date, and the buttons of its row (open the project, the files, hand in).
+    /// </summary>
+    private FrameworkElement NextDeadlineHero(PiDeadline deadline, DateTimeOffset now)
+    {
+        var left = deadline.Due - now;
+        double share = Math.Clamp(left.TotalMilliseconds / HeroRingSpan.TotalMilliseconds, 0.02, 1);
+        const double Stroke = 7;
+        double r = (HeroRing - Stroke) / 2, c = HeroRing / 2;
+        var value = new Path { Stroke = _mood, StrokeThickness = Stroke, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
+        bool hours = left < TimeSpan.FromDays(1);
+        var number = MakeLabel(hours ? $"{Math.Max(0, (int)left.TotalHours)}" : $"{(int)Math.Ceiling(left.TotalDays)}", 20, VNotch.Services.UiPalette.PrimaryBrush);
+        number.HorizontalAlignment = HorizontalAlignment.Center;
+        var unit = MakeLabel(Loc.Get(hours ? "school.hours" : "school.days"), 10, Muted);
+        unit.HorizontalAlignment = HorizontalAlignment.Center;
+        var ring = new Grid
+        {
+            Width = HeroRing,
+            Height = HeroRing,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new Ellipse { Stroke = Track, StrokeThickness = Stroke, Opacity = 0.6 },
+                value,
+                new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { number, unit } }
+            }
+        };
+        // The ring sweeps to its share when the tab opens.
+        var tween = new WeatherTween { Step = t => value.Data = Arc(c, c, r, -90, Math.Min(359.5, 360 * t)) };
+        bool animate = IsVisible && !AnimationConfig.ReduceMotion;
+        tween.Play(animate ? 0 : share, share, animate ? 1100 : 0, WeatherMotion.OutQuint, 150);
+
+        var title = MakeLabel(deadline.Name, 16, VNotch.Services.UiPalette.PrimaryBrush);
+        var meta = MakeLabel($"{ShortCourse(deadline.Course)} · {deadline.Due.ToLocalTime().ToString("ddd d.M. · HH:mm", Loc.GetCulture())}", 12, _moodSoft);
+        meta.Margin = new Thickness(0, 3, 0, 0);
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0), Children = { title, meta } };
+
+        var hero = new Grid { Margin = new Thickness(0, 0, 0, 6), Background = Brushes.Transparent };
+        hero.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        hero.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        hero.Children.Add(ring);
+        Grid.SetColumn(text, 1);
+        hero.Children.Add(text);
+        if (deadline.Cmid > 0)
+        {
+            var actions = PiTaskActions(deadline, hero);
+            actions.HorizontalAlignment = HorizontalAlignment.Left;
+            actions.Margin = new Thickness(0, 9, 0, 0);
+            text.Children.Add(actions);
+            OpenOnClick(title, () => DeadlineLink(deadline), SignInToSchoolAsync);
+        }
+        return hero;
+    }
+
+    /// <summary>Tests and school exams of the next three weeks, as a row of tiles; the next few days glow rosé.</summary>
+    private void BuildPiExams()
+    {
+        _piExamSection.Children.Clear();
+        if (_piSchool is not { } school || _isLocalOnly()) return;
+        var exams = school.Exams.Where(e => e.Date.Date >= DateTime.Today && e.Date - DateTime.Today <= ExamHorizon)
+            .OrderBy(e => e.Date).Take(PiMaxExams).ToList();
+        if (exams.Count == 0) return;
+        _piExamSection.Children.Add(BuildSectionHeader("pi.exams", Loc.Get("school.exams"), "", null, topMargin: 12));
+        if (!IsExpanded("pi.exams")) return;
+
+        var grid = TileGrid(PiMaxExams, PiMaxExams);
+        for (int i = 0; i < exams.Count; i++)
+        {
+            var exam = exams[i];
+            int days = (exam.Date.Date - DateTime.Today).Days;
+            bool soon = days <= 5;
+            string when = exam.Date.ToString("ddd d.M.", Loc.GetCulture())
+                + (days == 0 ? " · " + Loc.Get("school.today") : soon ? " · " + Loc.Get("school.inDaysShort", days) : "");
+            var date = MakeLabel(when, 10.5, soon ? DueToday : Muted);
+            var subject = MakeLabel(ExamSubject(exam), 14, VNotch.Services.UiPalette.PrimaryBrush);
+            subject.Margin = new Thickness(0, 3, 0, 0);
+            var kind = MakeLabel(exam.Kind, 10.5, Muted);
+            var card = Card();
+            card.Padding = new Thickness(11, 8, 11, 8);
+            card.Background = soon ? Wash(DueToday, 0.18) : new SolidColorBrush(((SolidColorBrush)CardBg).Color);
+            card.Child = new StackPanel { Children = { date, subject, kind } };
+            card.ToolTip = exam.Title;
+            Pressable(card, () => soon ? Wash(DueToday, 0.18) : CardBg, CardHover, grow: true);
+            OpenOnClick(card, () => SchoolLinks.Untis(_untisUrl()), SignInToSchoolAsync);
+            PlaceTile(grid, card, i, PiMaxExams);
+        }
+        _piExamSection.Children.Add(grid);
+    }
+
+    /// <summary>"0D" → "D", "1WMC" → "WMC", "0POSETHI" → "POSE": like the dashboard's subject chips.</summary>
+    internal static string ExamSubject(PiExam exam)
+    {
+        string raw = exam.Subject.Length > 0 ? exam.Subject : exam.Title;
+        string word = raw.Split(new[] { ' ', '_', ',' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        string key = new string(word.ToUpperInvariant().SkipWhile(char.IsDigit).TakeWhile(ch => !char.IsDigit(ch)).Where(char.IsLetter).ToArray());
+        foreach (string root in SubjectRoots)
+            if (key.StartsWith(root, StringComparison.Ordinal)) return root;
+        return key.Length > 0 ? key[..Math.Min(key.Length, 6)] : exam.Title;
+    }
+
+    private static readonly string[] SubjectRoots = ["POSE", "SYP", "BWM", "WMC", "DBI", "NSCS"];
 
     /// <summary>
     /// Where a deadline row leads: an NW task (NSCS) to the dashboard's panel (its site needs a login the Pi keeps),
@@ -385,9 +388,13 @@ public partial class ControlCenterView
         element.Cursor = Cursors.Hand;
         if (element is Border card)
         {
-            Brush rest = card.Background;
-            card.MouseEnter += (_, _) => card.Background = CardHover;
-            card.MouseLeave += (_, _) => card.Background = rest;
+            // Pressable cards fade their own background; plain ones swap it.
+            if (card.RenderTransform is not ScaleTransform)
+            {
+                Brush rest = card.Background;
+                card.MouseEnter += (_, _) => card.Background = CardHover;
+                card.MouseLeave += (_, _) => card.Background = rest;
+            }
         }
         else
         {
@@ -403,64 +410,6 @@ public partial class ControlCenterView
             SafeLauncher.TryOpenUrl(prepare == null ? target : await prepare(target));
         };
     }
-
-    /// <summary>"Now: Chemistry · E07 until 09:45", "Next: …", or the first lesson of the next school day.</summary>
-    private FrameworkElement NextLessonCard(PiSchool school)
-    {
-        string title, detail;
-        if (school.Break is { } holiday && school.Lessons.Count == 0)
-        {
-            title = holiday;
-            detail = Loc.Get("pi.noSchool");
-        }
-        else if (FindLesson(school, out var lesson, out bool now))
-        {
-            title = lesson.Subject;
-            string room = lesson.Room.Length > 0 ? $" · {lesson.Room}" : "";
-            detail = lesson.Cancelled ? Loc.Get("pi.cancelled")
-                : now ? Loc.Get("pi.nowUntil", lesson.End) + room
-                : school.IsToday ? Loc.Get("pi.nextAt", lesson.Start) + room
-                : Loc.Get("pi.nextDay", DayLabel(school.Date), lesson.Start) + room;
-        }
-        else
-        {
-            title = Loc.Get("pi.noLessons");
-            detail = school.IsToday ? Loc.Get("pi.doneForToday") : "";
-        }
-        var stack = new StackPanel();
-        stack.Children.Add(MakeLabel(title, 13.5, VNotch.Services.UiPalette.PrimaryBrush));
-        if (detail.Length > 0)
-        {
-            var line = MakeLabel(detail, 11.5, Muted);
-            line.FontWeight = FontWeights.SemiBold;
-            line.Margin = new Thickness(0, 2, 0, 0);
-            stack.Children.Add(line);
-        }
-        var card = Card();
-        card.Margin = new Thickness(0, 0, 0, 6);
-        card.Child = stack;
-        return card;
-    }
-
-    private static bool FindLesson(PiSchool school, out PiLesson lesson, out bool now)
-    {
-        int minutes = DateTime.Now.Hour * 60 + DateTime.Now.Minute;
-        foreach (var l in school.Lessons)
-        {
-            if (school.IsToday && l.EndMinutes <= minutes) continue;
-            lesson = l;
-            now = school.IsToday && l.StartMinutes <= minutes;
-            return true;
-        }
-        lesson = null!;
-        now = false;
-        return false;
-    }
-
-    private static string DayLabel(string isoDate) =>
-        DateTime.TryParseExact(isoDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)
-            ? day.ToString("ddd d.M.", Loc.GetCulture())
-            : isoDate;
 
     private static string DueText(DateTimeOffset due, TimeSpan left)
     {
@@ -489,7 +438,7 @@ public partial class ControlCenterView
         if (!IsExpanded("pi.todos")) return;
 
         _piTodoSection.Children.Add(TodoComposer());
-        _accent = Pink;
+        _accent = _mood;
         int shown = 0;
         foreach (var todo in _piTodos)
         {

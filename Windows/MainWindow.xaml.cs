@@ -229,6 +229,7 @@ public partial class MainWindow : Window
         VNotch.Services.Clipboard.ClipboardHistoryStore? clipboardHistoryStore = null)
     {
         InitializeComponent();
+        InitializeTransparency();
         SettingsButton.AddHandler(Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler((sender, e) =>
         {
             if (e.ChangedButton == MouseButton.Left)
@@ -278,8 +279,8 @@ public partial class MainWindow : Window
             CameraContent = CameraContent,
             ClaudeContent = ClaudeContent,
             PiContent = PiContent,
+            SchoolContent = SchoolContent,
             WeatherContent = WeatherContent,
-            LegionContent = LegionContent,
             IsSessionCurrent = sessionId => !_cleanedUp && sessionId == _transitionCoordinator.ActiveTransitionId
         });
         _viewModel = viewModel;
@@ -517,6 +518,7 @@ public partial class MainWindow : Window
     private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         InitializeSessionUnlockFeedback();
+        StartMotionLab();
         _invisibleHotkey ??= new VNotch.Controllers.InvisibleHotkeyController(this, ToggleInvisibleMode);
         _overlayWindow.Initialize();
         _spotlightController.Initialize(this, _settings);
@@ -796,8 +798,8 @@ public partial class MainWindow : Window
         _isCameraView = snapshot.CurrentView == VNotch.Models.NotchView.Camera;
         _isClaudeView = snapshot.CurrentView == VNotch.Models.NotchView.Claude;
         _isPiView = snapshot.CurrentView == VNotch.Models.NotchView.Pi;
+        _isSchoolView = snapshot.CurrentView == VNotch.Models.NotchView.School;
         _isWeatherView = snapshot.CurrentView == VNotch.Models.NotchView.Weather;
-        _isLegionView = snapshot.CurrentView == VNotch.Models.NotchView.Legion;
         _isAudioView = snapshot.CurrentView == VNotch.Models.NotchView.AudioMixer;
         _isSecondaryView = snapshot.CurrentView == VNotch.Models.NotchView.Secondary;
         _isTimerView = snapshot.CurrentView == VNotch.Models.NotchView.Timer;
@@ -870,8 +872,8 @@ public partial class MainWindow : Window
         else if (args.TargetView == VNotch.Models.NotchView.Camera && _pendingCameraPreviewVisualTeardown)
             FinalizePendingCameraPreviewTeardown();
         if (args.TargetView != VNotch.Models.NotchView.Compact && args.Reason != "CountdownCompletion" &&
-            (args.TargetView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.Weather or VNotch.Models.NotchView.Legion ||
-             args.FromView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.Weather or VNotch.Models.NotchView.Legion))
+            (args.TargetView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.School or VNotch.Models.NotchView.Weather ||
+             args.FromView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.School or VNotch.Models.NotchView.Weather))
         {
             ExpandNotch(args.TransitionId, targetView: args.TargetView, fromView: args.FromView);
             return;

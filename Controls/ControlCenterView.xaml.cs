@@ -18,19 +18,20 @@ namespace VNotch.Controls;
 /// <summary>Which part of the control center an instance shows.</summary>
 public enum ControlCenterPage
 {
-    /// <summary>Wired and Wi-Fi network, Bluetooth and Wallpaper Engine.</summary>
+    /// <summary>The system monitor, a Legion's power modes and key locks, wired and Wi-Fi network and Bluetooth.</summary>
     System,
     /// <summary>Claude Code sessions, approvals, questions and plan limits.</summary>
     Claude,
-    /// <summary>The user's Raspberry Pi dashboard: Home Assistant, school, to-dos.</summary>
+    /// <summary>Home, from the user's Raspberry Pi dashboard: lights, heating, air conditioner, sockets, scenes, the Pi.</summary>
     Pi,
-    /// <summary>A Lenovo Legion's power modes, key locks and temperatures.</summary>
-    Legion
+    /// <summary>School, from the same dashboard: the next deadline, the others, tests and to-dos.</summary>
+    School
 }
 
 /// <summary>
-/// The quick settings that live in Windows' notification area, in the notch: wired and Wi-Fi network,
-/// Bluetooth devices and Wallpaper Engine on one tab, Claude Code sessions on another. Built in code with
+/// The quick settings that live in Windows' notification area, in the notch: the system monitor, wired and
+/// Wi-Fi network and Bluetooth devices on one tab, Claude Code sessions on another. Sound lives in the audio
+/// tab and the notification switches in the settings window, so neither is repeated here. Built in code with
 /// the same rows, headers and pickers as <see cref="AudioMixerView"/> so the tabs look alike.
 /// </summary>
 public partial class ControlCenterView : UserControl, IDisposable
@@ -59,7 +60,6 @@ public partial class ControlCenterView : UserControl, IDisposable
     private static readonly FontFamily SegoeSymbolFont = new("pack://application:,,,/Fonts/#Segoe MDL2 Assets, Segoe Fluent Icons, Segoe MDL2 Assets, Segoe UI Symbol, Segoe UI");
     private static readonly FontFamily MonoFont = new("Cascadia Mono, Consolas");
 
-    private readonly WallpaperEngineControl _wallpaper = new();
     private readonly SystemStatsSampler _stats = new();
     private readonly ProcessLoadSampler _processes = new();
     private bool _gpuSampling;
@@ -100,19 +100,11 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private string _networkKey = "";
     private string _bluetoothKey = "";
-    private string _wallpaperKey = "";
-    private string _audioKey = "";
-    private string _notificationKey = "";
-    // The output in use before the last switch, so the swap button goes back to it.
-    private string? _previousOutputId;
     private string _claudeKey = "";
 
     private readonly StackPanel _statsSection = new();
     private readonly StackPanel _networkSection = new();
     private readonly StackPanel _bluetoothSection = new();
-    private readonly StackPanel _audioSection = new();
-    private readonly StackPanel _notificationSection = new();
-    private readonly StackPanel _wallpaperSection = new();
     private readonly StackPanel _claudeSection = new();
 
     private FontFamily? _fontCached;
@@ -125,9 +117,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         ControlRoot.Children.Add(_laptopSection);
         ControlRoot.Children.Add(_networkSection);
         ControlRoot.Children.Add(_bluetoothSection);
-        ControlRoot.Children.Add(_audioSection);
-        ControlRoot.Children.Add(_notificationSection);
-        ControlRoot.Children.Add(_wallpaperSection);
         ControlRoot.Children.Add(_claudeSection);
 
         _refreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = RefreshInterval };
@@ -151,9 +140,6 @@ public partial class ControlCenterView : UserControl, IDisposable
     /// <summary>Raised when a session's window was brought to the front from its card.</summary>
     public event Action? SessionOpened;
 
-    /// <summary>Raised with the device id when an audio output is picked; the mixer makes it the default.</summary>
-    public event Action<string>? OutputDeviceSelected;
-
     /// <summary>True while a message is typed here: the notch then has to take keyboard focus.</summary>
     public event Action<bool>? KeyboardInputRequested;
 
@@ -161,6 +147,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     internal void Attach(Func<bool> usesGlass)
     {
         _usesGlass = usesGlass;
+        if (LegionService.IsSupported) AttachLegion();
         RefreshOnceShellIsReady();
     }
 
@@ -193,6 +180,13 @@ public partial class ControlCenterView : UserControl, IDisposable
         _refreshTimer.Stop();
         _clockTimer.Stop();
         _piTimer?.Stop();
+        _legionTimer?.Stop();
+        _legionLoops.StopAll();
+        _homeLoops.StopAll();
+        _targetSend?.Stop();
+        _wifiLoops.StopAll();
+        _bluetoothLoops.StopAll();
+        _backdrop?.SetDrifting(false);
         SetGpuSampling(false);
         _stats.Dispose();
         IsVisibleChanged -= OnIsVisibleChanged;
@@ -213,6 +207,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (_disposed) return;
         if (IsVisible)
         {
+            if (Page == ControlCenterPage.System) ForgetStaleHistory();
             Refresh();
             if (Page == ControlCenterPage.Claude)
             {
@@ -220,18 +215,22 @@ public partial class ControlCenterView : UserControl, IDisposable
                 _clockTimer.Start();
                 StartRipples();
             }
-            else if (Page == ControlCenterPage.Pi)
+            else if (Page is ControlCenterPage.Pi or ControlCenterPage.School)
             {
                 OnPiVisibleChanged(true);
-            }
-            else if (Page == ControlCenterPage.Legion)
-            {
-                OnLegionVisibleChanged(true);
             }
             else
             {
                 _refreshTimer.Start();
                 SetGpuSampling(true);
+                OnLegionVisibleChanged(true);
+                DrawSparksIn();
+            }
+            // The colour fields drift only while the tab is on screen.
+            if (_backdrop != null)
+            {
+                _backdrop.Suppressed = _usesGlass();
+                _backdrop.SetDrifting(true);
             }
         }
         else
@@ -245,19 +244,22 @@ public partial class ControlCenterView : UserControl, IDisposable
                 _stats.Reset();
                 _processes.Reset();
                 _topMode = TopMode.Off;
+                _wifiLoops.StopAll();
+                _bluetoothLoops.StopAll();
+                OnLegionVisibleChanged(false);
             }
+            _backdrop?.SetDrifting(false);
             CloseMenu();
             if (_composingSessionId != null) StopComposing();
-            if (Page == ControlCenterPage.Pi) OnPiVisibleChanged(false);
-            if (Page == ControlCenterPage.Legion) OnLegionVisibleChanged(false);
+            if (Page is ControlCenterPage.Pi or ControlCenterPage.School) OnPiVisibleChanged(false);
         }
     }
 
     private void OnLanguageChanged() => Dispatcher.BeginInvoke(() =>
     {
-        _networkKey = _bluetoothKey = _audioKey = _notificationKey = _wallpaperKey = _claudeKey = _laptopKey = "";
+        _networkKey = _bluetoothKey = _claudeKey = _laptopKey = "";
         _statsTiles = null;
-        _piKey = _legionKey = "";
+        _piKey = _legionKey = _homeKey = "";
         if (_snapshot != null) ApplySnapshot(_snapshot);
         BuildClaudeSection();
         BuildPiPage();
@@ -303,14 +305,9 @@ public partial class ControlCenterView : UserControl, IDisposable
             BuildClaudeSection();
             return;
         }
-        if (Page == ControlCenterPage.Pi)
+        if (Page is ControlCenterPage.Pi or ControlCenterPage.School)
         {
             RefreshPi();
-            return;
-        }
-        if (Page == ControlCenterPage.Legion)
-        {
-            RefreshLegion();
             return;
         }
         if (_refreshing) return;
@@ -378,11 +375,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         public List<WiredAdapter> Wired = new();
         public bool? BluetoothOn;
         public List<BluetoothDevice> Devices = new();
-        public WallpaperEngineState Wallpaper;
-        public bool WallpaperMuted;
-        public List<AudioDeviceInfo> Outputs = new();
-        public bool? MicMuted;
-        public string? MicName;
         public SystemStats? Stats;
         public List<ProcessLoad>? Top;
         public LaptopStatus? Laptop;
@@ -403,14 +395,6 @@ public partial class ControlCenterView : UserControl, IDisposable
             }
         }
         if (bluetoothOn != false) s.Devices = BluetoothControl.Paired();
-        s.Wallpaper = _wallpaper.GetState();
-        s.WallpaperMuted = _wallpaper.IsMuted;
-        s.Outputs = AudioMixerService.EnumerateOutputDevices();
-        s.MicMuted = MicrophoneControl.IsMuted();
-        foreach (var input in AudioMixerService.EnumerateInputDevices())
-        {
-            if (input.IsDefault) s.MicName = input.FriendlyName;
-        }
         if (withStats) s.Laptop = LaptopControl.Read();
         return s;
     }
@@ -436,23 +420,6 @@ public partial class ControlCenterView : UserControl, IDisposable
             _bluetoothKey = bluetoothKey;
             BuildBluetoothSection(s);
         }
-
-        var audioKey = new StringBuilder().Append(IsExpanded("audio")).Append('|').Append(s.MicMuted).Append(s.MicName).Append('|');
-        foreach (var d in s.Outputs) audioKey.Append(d.Id).Append(d.IsDefault).Append(';');
-        if (audioKey.ToString() != _audioKey)
-        {
-            _audioKey = audioKey.ToString();
-            BuildAudioSection(s);
-        }
-
-        BuildNotificationSectionIfChanged();
-
-        string wallpaperKey = $"{s.Wallpaper}|{s.WallpaperMuted}|{IsExpanded("wallpaper")}";
-        if (wallpaperKey != _wallpaperKey)
-        {
-            _wallpaperKey = wallpaperKey;
-            BuildWallpaperSection(s);
-        }
     }
 
     private string NetworkKey(Snapshot s)
@@ -461,7 +428,9 @@ public partial class ControlCenterView : UserControl, IDisposable
         sb.Append(IsExpanded("network")).Append('|').Append(s.WifiOn).Append('|').Append(s.WifiStatus).Append('|');
         foreach (var w in s.Wired) sb.Append(w.Name).Append(w.IsUp).Append(';');
         foreach (var n in s.Networks)
-            if (n.IsConnected) sb.Append(n.Ssid);
+            if (n.IsConnected) sb.Append(n.Ssid).Append(WifiBars(n.Signal));
+        // When the search wave runs out, the arcs are drawn again without it.
+        sb.Append('|').Append(IsWifiSearching);
         return sb.ToString();
     }
 
@@ -469,7 +438,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         var sb = new StringBuilder();
         sb.Append(IsExpanded("bluetooth")).Append('|').Append(s.BluetoothOn).Append('|');
-        foreach (var d in s.Devices) sb.Append(d.Address).Append(d.IsConnected).Append(d.Battery).Append(d.CanConnect).Append(';');
+        foreach (var d in s.Devices) sb.Append(d.Address).Append(d.IsConnected).Append(d.Battery).Append(d.CanConnect).Append(IsConnecting(d)).Append(';');
         return sb.ToString();
     }
 
@@ -481,10 +450,17 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         public required TextBlock Value;
         public TextBlock? Detail;
+        public TextBlock? Temp;
         public ScaleTransform? Fill;
-        public Border? FillBar;
-        public Brush Tint = Blue;
+        public Grid? Bar;
+        public TranslateTransform? Peak;
+        public double PeakValue = double.NaN;
         public RollingNumber? Roll;
+        public double Last = double.NaN;
+        public SolidColorBrush? ValueInk;
+        public Spark? Spark;
+        public PingDot? Ping;
+        public FrameworkElement? Down, Up;
     }
 
     private sealed class StatTiles
@@ -493,7 +469,10 @@ public partial class ControlCenterView : UserControl, IDisposable
     }
 
     private StatTiles? _statsTiles;
-    private static readonly Brush StatWarm = Frozen("#FFD60A");
+    // How fast a peak mark sinks back, in points per refresh (every three seconds).
+    private const double PeakFall = 6;
+    private const double JumpToFlash = 25;
+    private (int Cpu, int Gpu)? _temps;
 
     /// <summary>Five tiles built once; every refresh only changes their numbers and slides their bars.</summary>
     private void BuildStatsSection()
@@ -513,55 +492,108 @@ public partial class ControlCenterView : UserControl, IDisposable
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = i % 2 == 0 ? new GridLength(1, GridUnitType.Star) : new GridLength(8) });
         _statsTiles = new StatTiles
         {
-            Cpu = AddStatTile(grid, 0, "CPU", withBar: true, () => ToggleTop(TopMode.Cpu), Blue),
-            Gpu = AddStatTile(grid, 2, "GPU", withBar: true, () => Launch("taskmgr.exe"), Purple),
-            Ram = AddStatTile(grid, 4, "RAM", withBar: true, () => ToggleTop(TopMode.Memory), Orange),
-            Ping = AddStatTile(grid, 6, "Ping", withBar: false, null, Mint),
-            Net = AddStatTile(grid, 8, Loc.Get("control.network"), withBar: false, () => Launch("ms-settings:network-status"), Teal)
+            Cpu = AddStatTile(grid, 0, "CPU", "cpu", () => ToggleTop(TopMode.Cpu)),
+            Gpu = AddStatTile(grid, 2, "GPU", "gpu", () => Launch("taskmgr.exe")),
+            Ram = AddStatTile(grid, 4, "RAM", "ram", () => ToggleTop(TopMode.Memory)),
+            Ping = AddStatTile(grid, 6, "Ping", null, null),
+            Net = AddStatTile(grid, 8, Loc.Get("control.network"), null, () => Launch("ms-settings:network-status"))
         };
         _statsSection.Children.Add(grid);
         _topList.Children.Clear();
+        _topRows.Clear();
+        _topListShown = false;
         _statsSection.Children.Add(_topList);
+        if (_temps is { } temps) ShowTemps(temps.Cpu, temps.Gpu);
 
         static StatTile Dummy() => new() { Value = new TextBlock() };
     }
 
-    private StatTile AddStatTile(Grid grid, int column, string label, bool withBar, Action? onClick, Brush tint)
+    /// <param name="metric">"cpu", "gpu" or "ram": a load tile with a bar and a curve; null for ping and network.</param>
+    private StatTile AddStatTile(Grid grid, int column, string label, string? metric, Action? onClick)
     {
-        var stack = new StackPanel();
-        stack.Children.Add(MakeLabel(label, 11, tint));
-        var value = MakeLabel("–", 15, VNotch.Services.UiPalette.PrimaryBrush);
+        bool isNet = column == 8, isPing = column == 6;
+        var head = new StackPanel { Orientation = Orientation.Horizontal };
+        head.Children.Add(MakeLabel(label, 11, _moodInk));
+        var temp = MakeLabel("", 11, Muted);
+        temp.Visibility = Visibility.Collapsed;
+        head.Children.Add(temp);
+
+        var valueInk = new SolidColorBrush(((SolidColorBrush)VNotch.Services.UiPalette.PrimaryBrush).Color);
+        var value = MakeLabel("–", isNet ? 13.5 : 15, valueInk);
         value.Margin = new Thickness(0, 3, 0, 0);
-        stack.Children.Add(value);
-        var tile = new StatTile { Value = value, Tint = tint, Roll = new RollingNumber(v => value.Text = $"{Math.Round(v)} %") };
-        if (withBar)
+        var stack = new StackPanel();
+        stack.Children.Add(head);
+        var tile = new StatTile { Value = value, Temp = temp, ValueInk = valueInk };
+
+        if (isNet)
         {
+            // ↓ and ↑ are their own glyphs so they can hop with the traffic.
+            tile.Down = Arrow("↓", 13.5, VNotch.Services.UiPalette.PrimaryBrush);
+            value.Margin = new Thickness(0);
+            stack.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 0), Children = { tile.Down, value } });
+        }
+        else stack.Children.Add(value);
+
+        if (metric != null)
+        {
+            tile.Roll = new RollingNumber(v => value.Text = $"{Math.Round(v)} %");
             var fill = new ScaleTransform(0, 1);
-            var bar = new Border { Background = new SolidColorBrush(((SolidColorBrush)tint).Color), CornerRadius = new CornerRadius(1.5), RenderTransform = fill, RenderTransformOrigin = new Point(0, 0.5) };
-            stack.Children.Add(new Grid
+            var peak = new TranslateTransform();
+            var bar = new Grid
             {
                 Height = 3,
                 Margin = new Thickness(0, 7, 0, 1),
-                Children = { new Border { Background = Track, CornerRadius = new CornerRadius(1.5) }, bar }
-            });
+                Children =
+                {
+                    new Border { Background = Track, CornerRadius = new CornerRadius(1.5) },
+                    new Border { Background = MoodBar, CornerRadius = new CornerRadius(1.5), RenderTransform = fill, RenderTransformOrigin = new Point(0, 0.5) },
+                    // Where the load peaked lately; it sinks back slowly, like a level meter.
+                    new Border
+                    {
+                        Width = 2, Height = 7, Margin = new Thickness(0, -2, 0, -2), CornerRadius = new CornerRadius(1),
+                        Background = PeakBrush, HorizontalAlignment = HorizontalAlignment.Left, RenderTransform = peak, Opacity = 0
+                    }
+                }
+            };
+            bar.SizeChanged += (_, _) => PlacePeak(tile, animate: false);
+            stack.Children.Add(bar);
             tile.Fill = fill;
-            tile.FillBar = bar;
+            tile.Bar = bar;
+            tile.Peak = peak;
+            tile.Spark = NewSpark(metric);
         }
         else
         {
             var detail = MakeLabel("", 10.5, Muted);
-            detail.Margin = new Thickness(0, 2, 0, 0);
-            stack.Children.Add(detail);
+            if (isNet)
+            {
+                tile.Up = Arrow("↑", 10.5, Muted);
+                stack.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0), Children = { tile.Up, detail } });
+            }
+            else
+            {
+                detail.Margin = new Thickness(0, 2, 0, 0);
+                stack.Children.Add(detail);
+            }
             tile.Detail = detail;
         }
+        if (isPing)
+        {
+            tile.Ping = NewPingDot();
+            head.Children.Add(tile.Ping.Host);
+        }
+
+        var body = new Grid();
+        if (tile.Spark != null) body.Children.Add(tile.Spark.Host);
+        body.Children.Add(stack);
         var card = Card();
         card.Padding = new Thickness(12, 9, 12, 9);
-        card.Child = stack;
+        card.Child = body;
         if (onClick != null)
         {
-            // CPU, GPU and RAM lead to Task Manager, the network tile to its settings.
+            // CPU and RAM list the busiest apps, GPU opens Task Manager, the network tile its settings.
             card.Cursor = Cursors.Hand;
-            Pressable(card, () => CardBg, CardHover);
+            Pressable(card, () => CardBg, CardHover, grow: true);
             card.MouseLeftButtonDown += (_, e) =>
             {
                 e.Handled = true;
@@ -571,10 +603,22 @@ public partial class ControlCenterView : UserControl, IDisposable
         Grid.SetColumn(card, column);
         grid.Children.Add(card);
         return tile;
+
+        TextBlock Arrow(string glyph, double size, Brush ink)
+        {
+            var arrow = MakeLabel(glyph, size, ink);
+            arrow.Margin = new Thickness(0, 0, 4, 0);
+            arrow.RenderTransform = new TranslateTransform();
+            return arrow;
+        }
     }
+
+    private static readonly Brush PeakBrush = Frozen("#C0FFFFFF");
 
     private void ApplyStats(SystemStats stats)
     {
+        RecordSample(stats);
+        SetMood(MoodLoad(stats));
         if (_statsTiles is not { } tiles || !IsExpanded("system")) return;
         SetLoad(tiles.Cpu, stats.CpuPercent);
         SetLoad(tiles.Gpu, stats.GpuPercent);
@@ -582,28 +626,29 @@ public partial class ControlCenterView : UserControl, IDisposable
         tiles.Ram.Value.ToolTip = $"{stats.RamUsedGb:0.0} / {stats.RamTotalGb:0.0} GB";
 
         tiles.Ping.Value.Text = stats.PingMs is { } ping ? $"{ping} ms" : "–";
-        tiles.Ping.Value.Foreground = stats.PingMs switch
-        {
-            null => Muted,
-            < 50 => Mint,
-            < 100 => StatWarm,
-            _ => WorkingOrange
-        };
         tiles.Ping.Detail!.Text = "1.1.1.1";
+        if (tiles.Ping.Ping != null) Ping(tiles.Ping.Ping, stats.PingMs);
 
-        tiles.Net.Value.Text = "↓ " + FormatRate(stats.DownBytesPerSecond);
-        tiles.Net.Detail!.Text = "↑ " + FormatRate(stats.UpBytesPerSecond);
+        tiles.Net.Value.Text = FormatRate(stats.DownBytesPerSecond);
+        tiles.Net.Detail!.Text = FormatRate(stats.UpBytesPerSecond);
+        if (tiles.Net.Down != null && stats.DownBytesPerSecond >= 256 * 1024) Nudge(tiles.Net.Down, 1);
+        if (tiles.Net.Up != null && stats.UpBytesPerSecond >= 64 * 1024) Nudge(tiles.Net.Up, -1);
     }
 
-    private static void SetLoad(StatTile tile, double? percent)
+    private void SetLoad(StatTile tile, double? percent)
     {
-        if (percent is { } p && tile.Roll != null) tile.Roll.To(p);
+        if (percent is { } p && tile.Roll != null)
+        {
+            if (!double.IsNaN(tile.Last) && Math.Abs(p - tile.Last) >= JumpToFlash && tile.ValueInk != null) Flash(tile.Value, tile.ValueInk);
+            tile.Last = p;
+            tile.Roll.To(p);
+        }
         else tile.Value.Text = "–";
-        if (tile.Fill == null || tile.FillBar == null) return;
+        if (tile.Spark != null) DrawSpark(tile.Spark);
+        if (tile.Fill == null) return;
         double target = Math.Clamp((percent ?? 0) / 100, 0, 1);
-        var hot = percent >= 90 ? Red : percent >= 75 ? StatWarm : tile.Tint;
-        if (tile.FillBar.Background is SolidColorBrush { IsFrozen: false } barFill && hot is SolidColorBrush hotFill)
-            WeatherMotion.Tint(barFill, hotFill.Color, 300);
+        if (percent is { } level) tile.PeakValue = double.IsNaN(tile.PeakValue) ? level : Math.Max(level, tile.PeakValue - PeakFall);
+        PlacePeak(tile, animate: IsVisible);
         if (AnimationConfig.ReduceMotion)
         {
             tile.Fill.ScaleX = target;
@@ -617,6 +662,49 @@ public partial class ControlCenterView : UserControl, IDisposable
         tile.Fill.BeginAnimation(ScaleTransform.ScaleXProperty, slide, HandoffBehavior.SnapshotAndReplace);
     }
 
+    private static void PlacePeak(StatTile tile, bool animate)
+    {
+        if (tile.Peak == null || tile.Bar == null || double.IsNaN(tile.PeakValue)) return;
+        double width = tile.Bar.ActualWidth;
+        if (width <= 0) return;
+        double x = Math.Clamp(tile.PeakValue / 100 * width - 1, 0, width - 2);
+        if (tile.Bar.Children[^1] is UIElement mark && mark.Opacity == 0) mark.Opacity = 1;
+        if (animate) WeatherMotion.Glide(tile.Peak, TranslateTransform.XProperty, x, 900);
+        else
+        {
+            tile.Peak.BeginAnimation(TranslateTransform.XProperty, null);
+            tile.Peak.X = x;
+        }
+    }
+
+    /// <summary>A Legion reports its temperatures: they sit next to the CPU and GPU labels.</summary>
+    private void ShowTemps(int cpu, int gpu)
+    {
+        _temps = (cpu, gpu);
+        if (_statsTiles is not { } tiles) return;
+        Set(tiles.Cpu.Temp, cpu);
+        Set(tiles.Gpu.Temp, gpu);
+
+        static void Set(TextBlock? label, int celsius)
+        {
+            if (label == null) return;
+            label.Visibility = celsius > 0 ? Visibility.Visible : Visibility.Collapsed;
+            label.Text = $" · {celsius}°";
+            label.Foreground = celsius >= 90 ? HotTemp : Muted;
+        }
+    }
+
+    private static readonly Brush HotTemp = Frozen("#D98A84");
+
+    /// <summary>Every opening draws the curves in again, the way the weather tab draws its charts.</summary>
+    private void DrawSparksIn()
+    {
+        if (_statsTiles is not { } tiles) return;
+        int i = 0;
+        foreach (var tile in new[] { tiles.Cpu, tiles.Gpu, tiles.Ram })
+            if (tile.Spark != null) DrawSparkIn(tile.Spark, 180 + i++ * 70);
+    }
+
     private enum TopMode
     {
         Off,
@@ -625,9 +713,14 @@ public partial class ControlCenterView : UserControl, IDisposable
     }
 
     private const int TopProcessCount = 5;
+    private const double TopRowHeight = 30;
     private static readonly TimeSpan EndConfirmWindow = TimeSpan.FromSeconds(3);
     private static readonly Brush EndConfirmBg = Frozen("#33FF453A");
     private readonly StackPanel _topList = new() { Margin = new Thickness(0, 8, 0, 0) };
+    // One row per app, kept across refreshes so a new order glides instead of jumping.
+    private readonly Dictionary<string, TopRowParts> _topRows = new(StringComparer.OrdinalIgnoreCase);
+    private Canvas? _topCanvas;
+    private TextBlock? _topHeader;
     private TopMode _topMode;
     // The app whose End button was pressed once; a second press within the window ends it.
     private string? _endArmed;
@@ -635,15 +728,26 @@ public partial class ControlCenterView : UserControl, IDisposable
     private bool _topListShown;
     private List<ProcessLoad>? _lastTop;
 
+    private sealed class TopRowParts
+    {
+        public required Grid Row;
+        public required TextBlock Title, Cpu, Memory;
+        public required TranslateTransform Slot;
+        public int Index = -1;
+    }
+
     /// <summary>CPU and RAM tiles open the apps that use the most of it; the same tile closes the list again.</summary>
     private void ToggleTop(TopMode mode)
     {
         _topMode = _topMode == mode ? TopMode.Off : mode;
         _endArmed = null;
+        // Another list (or none): its rows arrive fresh instead of gliding from the other order.
+        _topList.Children.Clear();
+        _topRows.Clear();
+        _topListShown = false;
         if (_topMode == TopMode.Off)
         {
             _processes.Reset();
-            UpdateTopList(null);
             return;
         }
         RefreshSoon(0);
@@ -653,65 +757,132 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         if (_topMode == TopMode.Off || top == null)
         {
-            if (_topMode == TopMode.Off)
+            if (_topMode == TopMode.Off && _topListShown)
             {
                 _topList.Children.Clear();
+                _topRows.Clear();
                 _topListShown = false;
             }
             return;
         }
 
         _lastTop = top;
-        _topList.Children.Clear();
-        var card = Card();
-        card.Padding = new Thickness(14, 8, 10, 8);
-        var rows = new StackPanel();
-        rows.Children.Add(TopRow(Loc.Get(_topMode == TopMode.Cpu ? "control.top.byCpu" : "control.top.byMemory"),
-            "CPU", "RAM", header: true, load: null));
-        foreach (var load in top) rows.Children.Add(TopRow(load.Title, $"{load.CpuPercent:0.0} %", FormatBytes(load.MemoryBytes), header: false, load));
-        card.Child = rows;
-        _topList.Children.Add(card);
-        // Falls in when it opens; later refreshes only change the numbers.
-        if (!_topListShown && IsVisible && !AnimationConfig.ReduceMotion) RevealElement(card, TimeSpan.Zero);
-        _topListShown = true;
+        if (!_topListShown || _topCanvas == null || _topHeader == null)
+        {
+            _topList.Children.Clear();
+            _topRows.Clear();
+            _topCanvas = new Canvas { Height = TopRowHeight * top.Count };
+            var header = TopRow("", "CPU", "RAM", header: true, out _topHeader, out _, out _);
+            var canvas = _topCanvas;
+            canvas.SizeChanged += (_, e) =>
+            {
+                foreach (var parts in _topRows.Values) parts.Row.Width = e.NewSize.Width;
+            };
+            var card = Card();
+            card.Padding = new Thickness(14, 8, 10, 8);
+            card.Child = new StackPanel { Children = { header, canvas } };
+            _topList.Children.Add(card);
+            // Falls in when it opens; later refreshes only change the numbers and the order.
+            if (IsVisible && !AnimationConfig.ReduceMotion) RevealElement(card, TimeSpan.Zero);
+            _topListShown = true;
+        }
+        _topHeader.Text = Loc.Get(_topMode == TopMode.Cpu ? "control.top.byCpu" : "control.top.byMemory");
+        _topCanvas.Height = TopRowHeight * top.Count;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < top.Count; i++)
+        {
+            var load = top[i];
+            seen.Add(load.Name);
+            if (!_topRows.TryGetValue(load.Name, out var parts))
+            {
+                var row = TopRow(load.Title, "", "", header: false, out var title, out var cpu, out var memory);
+                var slot = new TranslateTransform(0, i * TopRowHeight);
+                row.RenderTransform = slot;
+                if (_topCanvas.ActualWidth > 0) row.Width = _topCanvas.ActualWidth;
+                _topCanvas.Children.Add(row);
+                parts = new TopRowParts { Row = row, Title = title, Cpu = cpu, Memory = memory, Slot = slot, Index = i };
+                _topRows[load.Name] = parts;
+                if (IsVisible && !AnimationConfig.ReduceMotion)
+                    row.BeginAnimation(OpacityProperty, WeatherMotion.To(0, 1, 320, WeatherMotion.Out, i * 30));
+            }
+            parts.Title.Text = load.Title;
+            parts.Title.ToolTip = load.Instances > 1 ? $"{load.Name} × {load.Instances}" : null;
+            parts.Cpu.Text = $"{load.CpuPercent:0.0} %";
+            parts.Memory.Text = FormatBytes(load.MemoryBytes);
+            parts.Cpu.Foreground = _topMode == TopMode.Cpu ? VNotch.Services.UiPalette.PrimaryBrush : Muted;
+            parts.Memory.Foreground = _topMode == TopMode.Memory ? VNotch.Services.UiPalette.PrimaryBrush : Muted;
+            SetEndButton(parts, load);
+            if (parts.Index == i) continue;
+            // A new place in the order: glide there with a little overshoot.
+            double y = i * TopRowHeight;
+            if (IsVisible && !AnimationConfig.ReduceMotion)
+                parts.Slot.BeginAnimation(TranslateTransform.YProperty, WeatherMotion.To(parts.Slot.Y, y, 520, WeatherMotion.OutBack), HandoffBehavior.SnapshotAndReplace);
+            else
+            {
+                parts.Slot.BeginAnimation(TranslateTransform.YProperty, null);
+                parts.Slot.Y = y;
+            }
+            parts.Index = i;
+        }
+        // Apps that dropped out of the list fade away.
+        foreach (var name in new List<string>(_topRows.Keys))
+        {
+            if (seen.Contains(name)) continue;
+            var gone = _topRows[name];
+            _topRows.Remove(name);
+            var host = _topCanvas;
+            if (!IsVisible || AnimationConfig.ReduceMotion)
+            {
+                host.Children.Remove(gone.Row);
+                continue;
+            }
+            var fade = WeatherMotion.To(gone.Row.Opacity, 0, 220, WeatherMotion.Out);
+            fade.Completed += (_, _) => host.Children.Remove(gone.Row);
+            gone.Row.BeginAnimation(OpacityProperty, fade);
+        }
     }
 
-    private FrameworkElement TopRow(string name, string cpu, string memory, bool header, ProcessLoad? load)
+    private Grid TopRow(string name, string cpu, string memory, bool header,
+        out TextBlock title, out TextBlock cpuLabel, out TextBlock memoryLabel)
     {
-        var grid = new Grid { Height = header ? 22 : 30 };
+        var grid = new Grid { Height = header ? 22 : TopRowHeight };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(84) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        Brush emphasis = header ? Muted : VNotch.Services.UiPalette.PrimaryBrush;
-        var title = MakeLabel(name, header ? 11 : 12.5, emphasis);
-        if (load is { Instances: > 1 } many) title.ToolTip = $"{many.Name} × {many.Instances}";
+        title = MakeLabel(name, header ? 11 : 12.5, header ? Muted : VNotch.Services.UiPalette.PrimaryBrush);
         grid.Children.Add(title);
-        var cpuLabel = MakeLabel(cpu, header ? 11 : 12, header || _topMode != TopMode.Cpu ? Muted : emphasis);
+        cpuLabel = MakeLabel(cpu, header ? 11 : 12, Muted);
         cpuLabel.HorizontalAlignment = HorizontalAlignment.Right;
         Grid.SetColumn(cpuLabel, 1);
         grid.Children.Add(cpuLabel);
-        var memoryLabel = MakeLabel(memory, header ? 11 : 12, header || _topMode != TopMode.Memory ? Muted : emphasis);
+        memoryLabel = MakeLabel(memory, header ? 11 : 12, Muted);
         memoryLabel.HorizontalAlignment = HorizontalAlignment.Right;
         Grid.SetColumn(memoryLabel, 2);
         grid.Children.Add(memoryLabel);
-
-        if (load is { CanEnd: true } app)
-        {
-            bool armed = _endArmed == app.Name && DateTime.UtcNow < _endArmedUntil;
-            var end = TextButton(Loc.Get(armed ? "control.top.confirm" : "control.top.end"), accent: false, () => EndApp(app.Name));
-            end.Height = 24;
-            end.MinWidth = 76;
-            end.Margin = new Thickness(0);
-            if (armed)
-            {
-                end.Background = EndConfirmBg;
-                ((TextBlock)end.Child).Foreground = WorkingOrange;
-            }
-            Grid.SetColumn(end, 3);
-            grid.Children.Add(end);
-        }
         return grid;
+    }
+
+    /// <summary>The End button in its current state: "End", or "Sure?" in red once armed.</summary>
+    private void SetEndButton(TopRowParts parts, ProcessLoad load)
+    {
+        for (int i = parts.Row.Children.Count - 1; i >= 0; i--)
+            if (Grid.GetColumn(parts.Row.Children[i]) == 3) parts.Row.Children.RemoveAt(i);
+        if (!load.CanEnd) return;
+        bool armed = _endArmed == load.Name && DateTime.UtcNow < _endArmedUntil;
+        string name = load.Name;
+        var end = TextButton(Loc.Get(armed ? "control.top.confirm" : "control.top.end"), accent: false, () => EndApp(name));
+        end.Height = 24;
+        end.MinWidth = 76;
+        end.Margin = new Thickness(0);
+        if (armed)
+        {
+            end.Background = EndConfirmBg;
+            ((TextBlock)end.Child).Foreground = HotTemp;
+        }
+        Grid.SetColumn(end, 3);
+        parts.Row.Children.Add(end);
     }
 
     /// <summary>The first press arms the button ("Sure?"), the second within a few seconds ends the app.</summary>
@@ -764,8 +935,10 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void BuildNetworkSection(Snapshot s)
     {
-        _accent = Blue;
+        _accent = _mood;
         CloseMenu();
+        _wifiLoops.StopAll();
+        _wifiIcon = null;
         _networkSection.Children.Clear();
         _networkSection.Children.Add(BuildSectionHeader("network", Loc.Get("control.network"), Loc.Get("control.status"), null, topMargin: 14));
         if (!IsExpanded("network")) return;
@@ -779,11 +952,21 @@ public partial class ControlCenterView : UserControl, IDisposable
         string wiredStatus = wired == null ? Loc.Get("control.noAdapter")
             : wired.IsUp ? Loc.Get("control.connected") : Loc.Get("control.notConnected");
         var wiredRow = NewRow("\uE839", Loc.Get("control.wired"));
-        AddStatus(wiredRow, wiredStatus, wired?.IsUp == true ? Blue : Muted);
+        AddStatus(wiredRow, wiredStatus, wired?.IsUp == true ? _moodSoft : Muted);
         if (wired != null) AddAction(wiredRow, InfoChip("\uE839", wired.Description));
         _networkSection.Children.Add(wiredRow);
 
-        var wifiRow = NewRow("\uE701", Loc.Get("control.wifi"));
+        WifiNetwork? current = null;
+        foreach (var n in s.Networks)
+            if (n.IsConnected) { current = n; break; }
+
+        // The arcs light up to the signal and pop in from the dot outwards.
+        var wifiRow = NewRow("", Loc.Get("control.wifi"));
+        var icon = NewWifiIcon(current == null ? 0 : WifiBars(current.Signal), connected: current != null && s.WifiOn != false);
+        SetRowIcon(wifiRow, icon.Host);
+        _wifiIcon = icon;
+        if (IsVisible) ArcsArrive(icon, 120);
+        if (current == null && IsWifiSearching) ArcsSearch(icon);
         if (s.WifiOn is bool on && _wifiRadio != null)
         {
             var radio = _wifiRadio;
@@ -794,10 +977,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             AddStatus(wifiRow, Loc.Get("control.noAdapter"), Muted);
         }
-
-        WifiNetwork? current = null;
-        foreach (var n in s.Networks)
-            if (n.IsConnected) { current = n; break; }
 
         FrameworkElement picker = s.WifiOn == false
             ? Combo("\uE701", Loc.Get("control.wifiOff"), interactive: false, null)
@@ -846,7 +1025,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             break;
         }
         items.Add(new MenuItemSpec(Loc.Get("control.moreNetworks"), false, "\uE712", NetworkControl.OpenNetworkFlyout));
-        ShowMenu(anchor, items, Blue);
+        ShowMenu(anchor, items, _mood);
     }
 
     private void ConnectWifi(WifiNetwork network)
@@ -859,92 +1038,16 @@ public partial class ControlCenterView : UserControl, IDisposable
             return;
         }
         Task.Run(() => NetworkControl.Connect(profile));
+        // A wave runs through the arcs until Windows has connected (or gives up).
+        _wifiSearchUntil = DateTime.UtcNow + WifiSearchTime;
+        if (_wifiIcon != null && IsVisible) ArcsSearch(_wifiIcon);
         RefreshSoon(2500);
         RefreshSoon(6000);
     }
 
     #endregion
 
-    #region Notifications
-
-    private Func<NotificationPrefs>? _notificationPrefs;
-    private Action<bool>? _setNotificationsEnabled;
-    private Action<string, bool>? _setNotificationAppMuted;
-
-    /// <summary>The shell owns the watcher and the settings; this tab shows and flips them.</summary>
-    internal void AttachNotifications(Func<NotificationPrefs> prefs, Action<bool> setEnabled, Action<string, bool> setMuted)
-    {
-        _notificationPrefs = prefs;
-        _setNotificationsEnabled = setEnabled;
-        _setNotificationAppMuted = setMuted;
-        _notificationKey = "";
-    }
-
-    /// <summary>A new app sent something: show it in the list if the tab is open.</summary>
-    internal void NotificationAppsChanged()
-    {
-        if (IsVisible) BuildNotificationSectionIfChanged();
-    }
-
-    private void BuildNotificationSectionIfChanged()
-    {
-        if (_notificationPrefs == null) return;
-        var prefs = _notificationPrefs();
-        var key = new StringBuilder().Append(IsExpanded("notifications")).Append(prefs.Allowed).Append(prefs.Enabled).Append('|');
-        foreach (var app in prefs.Apps) key.Append(app.Key).Append(app.Muted).Append(';');
-        if (key.ToString() == _notificationKey) return;
-        _notificationKey = key.ToString();
-        BuildNotificationSection(prefs);
-    }
-
-    private void BuildNotificationSection(NotificationPrefs prefs)
-    {
-        _accent = Indigo;
-        _notificationSection.Children.Clear();
-        _notificationSection.Children.Add(BuildSectionHeader("notifications", Loc.Get("control.notifications"), Loc.Get("control.status"), null, topMargin: 14));
-        if (!IsExpanded("notifications")) return;
-
-        var main = NewRow("\uEA8F", Loc.Get("control.notifications.inNotch"));
-        if (prefs.Allowed)
-        {
-            AddStatus(main, prefs.Enabled ? Loc.Get("control.on") : Loc.Get("control.off"), Muted,
-                Toggle(prefs.Enabled, on =>
-                {
-                    _setNotificationsEnabled?.Invoke(on);
-                    _notificationKey = "";
-                    BuildNotificationSectionIfChanged();
-                }));
-        }
-        else
-        {
-            // Windows' privacy switch for notification access is off: only Windows can turn it on.
-            AddStatus(main, Loc.Get("control.notifications.denied"), Muted);
-            AddAction(main, TextButton(Loc.Get("control.notifications.openSettings"), accent: false, OpenNotificationPrivacySettings));
-        }
-        _notificationSection.Children.Add(main);
-        if (!prefs.Allowed || !prefs.Enabled) return;
-
-        if (prefs.Apps.Count == 0)
-        {
-            _notificationSection.Children.Add(NewRow("\uE946", Loc.Get("control.notifications.empty"), muted: true));
-            return;
-        }
-        foreach (var app in prefs.Apps)
-        {
-            var row = NewRow("\uE737", app.Name);
-            string key = app.Key;
-            AddStatus(row, app.Muted ? Loc.Get("control.notifications.muted") : Loc.Get("control.notifications.shown"), Muted,
-                Toggle(!app.Muted, on =>
-                {
-                    _setNotificationAppMuted?.Invoke(key, !on);
-                    _notificationKey = "";
-                    BuildNotificationSectionIfChanged();
-                }));
-            _notificationSection.Children.Add(row);
-        }
-    }
-
-    private static void OpenNotificationPrivacySettings() => Launch("ms-settings:privacy-notifications");
+    #region Launching
 
     /// <summary>Opens a program or a settings page the way the Start menu would.</summary>
     private static void Launch(string target)
@@ -961,102 +1064,12 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     #endregion
 
-    #region Audio output
-
-    private void BuildAudioSection(Snapshot s)
-    {
-        _accent = Orange; // the microphone switch: orange like the system's mic dot
-        CloseMenu();
-        _audioSection.Children.Clear();
-        _audioSection.Children.Add(BuildSectionHeader("audio", Loc.Get("control.audio"), Loc.Get("control.status"), null, topMargin: 14));
-        if (!IsExpanded("audio")) return;
-
-        AudioDeviceInfo? current = null;
-        foreach (var device in s.Outputs)
-        {
-            if (device.IsDefault)
-            {
-                current = device;
-                break;
-            }
-        }
-        var row = NewRow("\uE7F5", Loc.Get("control.audioOutput"));
-        if (s.Outputs.Count > 1 && SwapTarget(s.Outputs, current) is { } other)
-        {
-            // One click between the two outputs in use, e.g. headset and speakers.
-            var swap = IconButton("\uE8AB", other.FriendlyName, () => SelectOutput(other, current));
-            AddStatus(row, other.FriendlyName, Muted, swap);
-        }
-        else
-        {
-            AddStatus(row, s.Outputs.Count == 0 ? Loc.Get("control.noAdapter") : "", Muted);
-        }
-        var outputs = s.Outputs;
-        AddAction(row, Combo("\uE7F5", current?.FriendlyName ?? Loc.Get("control.noAdapter"), interactive: outputs.Count > 0,
-            anchor => ShowOutputMenu(anchor, outputs, current)));
-        _audioSection.Children.Add(row);
-
-        // The default microphone, muted for every app at once, e.g. before a voice call goes live.
-        var mic = NewRow(s.MicMuted == true ? "\uEC54" : "\uE720", Loc.Get("control.microphone"));
-        if (s.MicMuted is bool muted)
-        {
-            AddStatus(mic, muted ? Loc.Get("control.microphone.muted") : Loc.Get("control.on"), muted ? WorkingOrange : Muted,
-                Toggle(!muted, on => SetMicrophoneMuted(!on)));
-            if (s.MicName is { Length: > 0 } micName) AddAction(mic, InfoChip("\uE720", micName));
-        }
-        else
-        {
-            AddStatus(mic, Loc.Get("control.noAdapter"), Muted);
-        }
-        _audioSection.Children.Add(mic);
-    }
-
-    private async void SetMicrophoneMuted(bool mute)
-    {
-        await Task.Run(() => MicrophoneControl.SetMuted(mute));
-        RefreshSoon(300);
-    }
-
-    /// <summary>The output to swap to: the one used before this one, else the next in the list.</summary>
-    private AudioDeviceInfo? SwapTarget(List<AudioDeviceInfo> outputs, AudioDeviceInfo? current)
-    {
-        AudioDeviceInfo? next = null;
-        for (int i = 0; i < outputs.Count; i++)
-        {
-            var device = outputs[i];
-            if (device == current) continue;
-            if (device.Id == _previousOutputId) return device;
-            next ??= device;
-        }
-        return next;
-    }
-
-    private void ShowOutputMenu(Border anchor, List<AudioDeviceInfo> outputs, AudioDeviceInfo? current)
-    {
-        var items = new List<MenuItemSpec>(outputs.Count);
-        foreach (var device in outputs)
-        {
-            var target = device;
-            items.Add(new MenuItemSpec(device.FriendlyName, device.IsDefault, "\uE7F5", () => SelectOutput(target, current)));
-        }
-        ShowMenu(anchor, items, MediaAccent);
-    }
-
-    private void SelectOutput(AudioDeviceInfo target, AudioDeviceInfo? current)
-    {
-        if (target.IsDefault) return;
-        _previousOutputId = current?.Id;
-        OutputDeviceSelected?.Invoke(target.Id);
-        RefreshSoon(500);
-    }
-
-    #endregion
-
     #region Bluetooth
 
     private void BuildBluetoothSection(Snapshot s)
     {
-        _accent = Blue;
+        _accent = _mood;
+        _bluetoothLoops.StopAll();
         _bluetoothSection.Children.Clear();
         _bluetoothSection.Children.Add(BuildSectionHeader("bluetooth", "Bluetooth", Loc.Get("control.status"), null, topMargin: 14));
         if (!IsExpanded("bluetooth")) return;
@@ -1090,87 +1103,63 @@ public partial class ControlCenterView : UserControl, IDisposable
             return string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase);
         });
 
+        int ringIndex = 0;
         foreach (var d in devices)
         {
             var device = d;
             var row = NewRow(d.Glyph, d.Name);
             string status = d.IsConnected ? Loc.Get("control.connected") : Loc.Get("control.notConnected");
             if (d.Battery >= 0) status += $" · {d.Battery} %";
-            AddStatus(row, status, d.IsConnected ? Blue : Muted);
+            AddStatus(row, status, d.IsConnected ? _moodSoft : Muted);
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+            // The battery as a ring that fills up, next to the button.
+            if (d.IsConnected && d.Battery >= 0) actions.Children.Add(BatteryRing(d.Battery, 200 + ringIndex++ * 80));
             if (d.CanConnect)
             {
-                AddAction(row, TextButton(d.IsConnected ? Loc.Get("control.disconnect") : Loc.Get("control.connect"),
-                    accent: !d.IsConnected, () => SetBluetoothConnected(device, !device.IsConnected)));
+                var button = TextButton(d.IsConnected ? Loc.Get("control.disconnect") : Loc.Get("control.connect"),
+                    accent: false, () => SetBluetoothConnected(device, !device.IsConnected));
+                // Asked to connect: the button breathes in the tab's colour until the device is there.
+                if (IsConnecting(d)) Breathe(button);
+                actions.Children.Add(button);
             }
+            if (actions.Children.Count > 0) AddAction(row, actions);
             _bluetoothSection.Children.Add(row);
         }
+    }
+
+    private void Breathe(Border button)
+    {
+        var rest = ((SolidColorBrush)ComboBorder).Color;
+        var edge = new SolidColorBrush(rest);
+        button.BorderBrush = edge;
+        _bluetoothLoops.Run(edge, SolidColorBrush.ColorProperty, new ColorAnimation(rest, _mood.Color, TimeSpan.FromMilliseconds(700))
+        {
+            AutoReverse = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = WeatherMotion.Sine
+        });
+    }
+
+    private bool IsConnecting(BluetoothDevice device)
+    {
+        if (!_bluetoothConnecting.TryGetValue(device.Address, out var until)) return false;
+        if (!device.IsConnected && DateTime.UtcNow < until) return true;
+        _bluetoothConnecting.Remove(device.Address);
+        return false;
     }
 
     private void SetBluetoothConnected(BluetoothDevice device, bool connect)
     {
         Task.Run(() => BluetoothControl.SetConnected(device, connect));
+        if (connect && _snapshot != null)
+        {
+            _bluetoothConnecting[device.Address] = DateTime.UtcNow + BluetoothConnectTime;
+            _bluetoothKey = BluetoothKey(_snapshot);
+            BuildBluetoothSection(_snapshot);
+        }
         // The device answers a moment later, if it's on and in reach.
         RefreshSoon(1500);
         RefreshSoon(5000);
-    }
-
-    #endregion
-
-    #region Wallpaper Engine
-
-    private void BuildWallpaperSection(Snapshot s)
-    {
-        _accent = Teal;
-        _wallpaperSection.Children.Clear();
-        _wallpaperSection.Children.Add(BuildSectionHeader("wallpaper", "Wallpaper Engine", Loc.Get("control.actions"), null, topMargin: 14));
-        if (!IsExpanded("wallpaper")) return;
-
-        var row = NewRow("\uE771", "Wallpaper Engine");
-        string status = s.Wallpaper switch
-        {
-            WallpaperEngineState.Running => Loc.Get("control.wallpaper.running"),
-            WallpaperEngineState.Paused => Loc.Get("control.wallpaper.paused"),
-            WallpaperEngineState.Stopped => Loc.Get("control.wallpaper.stopped"),
-            WallpaperEngineState.NotRunning => Loc.Get("control.wallpaper.notRunning"),
-            _ => Loc.Get("control.wallpaper.notInstalled")
-        };
-        AddStatus(row, status, s.Wallpaper == WallpaperEngineState.Running ? Teal : Muted);
-
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 6, 0) };
-        switch (s.Wallpaper)
-        {
-            case WallpaperEngineState.Running:
-            case WallpaperEngineState.Paused:
-            case WallpaperEngineState.Stopped:
-                bool playing = s.Wallpaper == WallpaperEngineState.Running;
-                buttons.Children.Add(IconButton(playing ? "\uE769" : "\uE768",
-                    playing ? Loc.Get("control.wallpaper.pause") : Loc.Get("control.wallpaper.play"),
-                    () => WallpaperAction(playing ? _wallpaper.Pause : _wallpaper.Play)));
-                buttons.Children.Add(IconButton(s.WallpaperMuted ? "\uE74F" : "\uE767",
-                    s.WallpaperMuted ? Loc.Get("control.wallpaper.unmute") : Loc.Get("control.wallpaper.mute"),
-                    () => WallpaperAction(_wallpaper.ToggleMute)));
-                buttons.Children.Add(IconButton("\uE893", Loc.Get("control.wallpaper.next"), () => WallpaperAction(_wallpaper.NextWallpaper)));
-                buttons.Children.Add(IconButton("\uE71A", Loc.Get("control.wallpaper.stop"), () => WallpaperAction(_wallpaper.Stop)));
-                buttons.Children.Add(IconButton("\uE711", Loc.Get("control.wallpaper.quit"), QuitWallpaperEngine));
-                break;
-            case WallpaperEngineState.NotRunning:
-                buttons.Children.Add(TextButton(Loc.Get("control.wallpaper.start"), accent: true, () => WallpaperAction(_wallpaper.Start)));
-                break;
-        }
-        AddAction(row, buttons);
-        _wallpaperSection.Children.Add(row);
-    }
-
-    private void WallpaperAction(Func<bool> action)
-    {
-        Task.Run(action);
-        RefreshSoon(400);
-    }
-
-    private async void QuitWallpaperEngine()
-    {
-        await _wallpaper.QuitAsync();
-        Refresh();
     }
 
     #endregion
@@ -2295,7 +2284,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         titlePanel.Children.Add(new System.Windows.Shapes.Path
         {
             Data = Geometry.Parse("M0,0 L8,0 L4,5 Z"),
-            Fill = HeaderText,
+            // On the system, home and school tabs the arrows wear the tab's colour too.
+            Fill = Page != ControlCenterPage.Claude ? _moodInk : HeaderText,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 1, 8, 0),
             RenderTransformOrigin = new Point(0.5, 0.5),
@@ -2367,15 +2357,17 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             case "network": _networkKey = ""; break;
             case "bluetooth": _bluetoothKey = ""; break;
-            case "wallpaper": _wallpaperKey = ""; break;
             case "laptop": _laptopKey = ""; break;
-            case "audio": _audioKey = ""; break;
-            case "notifications": _notificationKey = ""; break;
-            case "pi.home":
             case "pi.school":
+            case "pi.exams":
             case "pi.todos": _piKey = ""; BuildPiPage(); return;
+            case "home.lights":
+            case "home.climate":
+            case "home.plugs":
+            case "home.scenes":
+            case "home.pi": _homeKey = ""; BuildPiPage(); return;
             case "legion.mode":
-            case "control.system": ToggleLegionSection(section); return;
+            case "legion.keys": ToggleLegionSection(section); return;
             case "system": _statsTiles = null; break;
             case "claude": _claudeKey = ""; BuildClaudeSection(); return;
         }

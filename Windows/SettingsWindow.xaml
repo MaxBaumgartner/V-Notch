@@ -2810,10 +2810,10 @@
                                                             <RotateTransform x:Name="StarRotateTransform" Angle="0"/>
                                                         </TransformGroup>
                                                     </Path.RenderTransform>
-                                                    <Path.Triggers>
-                                                        <EventTrigger RoutedEvent="FrameworkElement.Loaded">
-                                                            <BeginStoryboard>
-                                                                <Storyboard RepeatBehavior="Forever">
+                                                    <!-- Started and stopped from code while the star is on screen: the window is prepared hidden at start-up,
+                                                         and a Forever storyboard there would keep WPF drawing at the display's full rate all the time. -->
+                                                    <Path.Resources>
+                                                        <Storyboard x:Key="StarPulse" RepeatBehavior="Forever">
                                                                     <DoubleAnimation Storyboard.TargetName="StarScaleTransform"
                                                                                      Storyboard.TargetProperty="ScaleX"
                                                                                      From="0.92" To="1.14"
@@ -2851,9 +2851,7 @@
                                                                         </DoubleAnimation.EasingFunction>
                                                                     </DoubleAnimation>
                                                                 </Storyboard>
-                                                            </BeginStoryboard>
-                                                        </EventTrigger>
-                                                    </Path.Triggers>
+                                                    </Path.Resources>
                                                 </Path>
                                             </Grid>
 

@@ -10,8 +10,8 @@ namespace VNotch.Controls;
 
 /// <summary>
 /// Colour and motion shared by the control center pages. Every section has its own tint (Wi-Fi blue, the
-/// microphone orange like the system's mic dot, Claude terracotta, the Legion page its power mode), so
-/// nothing is green by default. Presses squish and spring back, switches stretch their knob while held,
+/// microphone orange like the system's mic dot, Claude terracotta; the system tab one muted colour from the
+/// PC's load), so nothing is green by default. Presses squish and spring back, switches stretch their knob while held,
 /// state changes fade their colour instead of jumping.
 /// </summary>
 public partial class ControlCenterView
@@ -20,7 +20,6 @@ public partial class ControlCenterView
 
     // Apple's dark-mode system colours.
     private static readonly Brush Blue = Frozen("#0A84FF");
-    private static readonly Brush Indigo = Frozen("#5E5CE6");
     private static readonly Brush Purple = Frozen("#BF5AF2");
     private static readonly Brush Pink = Frozen("#FF375F");
     private static readonly Brush Teal = Frozen("#64D2FF");
@@ -30,11 +29,6 @@ public partial class ControlCenterView
 
     /// <summary>The tint of the section being built; switches and accent buttons take it.</summary>
     private Brush _accent = Blue;
-
-    /// <summary>The colour of the album art that plays, for the audio parts (follows each new cover).</summary>
-    internal static SolidColorBrush MediaAccent { get; } = new(Color.FromRgb(0x0A, 0x84, 0xFF));
-
-    internal static void SetMediaAccent(Color color) => WeatherMotion.Tint(MediaAccent, Color.FromRgb(color.R, color.G, color.B), 420);
 
     /// <summary>Black on bright tints (yellow, mint), white on the rest.</summary>
     private static Brush InkOn(Brush tint)
@@ -67,11 +61,15 @@ public partial class ControlCenterView
         return ease;
     }
 
+    // How much a tile that grows under the pointer grows.
+    private const double HoverGrow = 1.035;
+
     /// <summary>
     /// Makes a card feel physical: its background fades to <paramref name="hover"/> under the pointer, a press
-    /// squishes it a little (wider than tall, like a soft key) and letting go springs it back.
+    /// squishes it a little (wider than tall, like a soft key) and letting go springs it back. With
+    /// <paramref name="grow"/> it also rises a little toward the pointer, with a spring.
     /// </summary>
-    private static void Pressable(Border card, Func<Brush> rest, Brush hover, bool gentle = false)
+    private static void Pressable(Border card, Func<Brush> rest, Brush hover, bool gentle = false, bool grow = false)
     {
         var scale = card.RenderTransform as ScaleTransform ?? new ScaleTransform(1, 1);
         card.RenderTransform = scale;
@@ -80,7 +78,11 @@ public partial class ControlCenterView
         card.Background = fill;
         Color HoverColor() => Blend(((SolidColorBrush)rest()).Color, ((SolidColorBrush)hover).Color);
 
-        card.MouseEnter += (_, _) => WeatherMotion.Tint(fill, HoverColor(), 140);
+        card.MouseEnter += (_, _) =>
+        {
+            WeatherMotion.Tint(fill, HoverColor(), 140);
+            if (grow) Release(scale, gentle, HoverGrow);
+        };
         card.MouseLeave += (_, _) =>
         {
             WeatherMotion.Tint(fill, ((SolidColorBrush)rest()).Color, 220);
@@ -93,7 +95,7 @@ public partial class ControlCenterView
             scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, gentle ? 0.975 : 0.965, 110, PressEase));
             scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, gentle ? 0.945 : 0.93, 110, PressEase));
         };
-        card.PreviewMouseLeftButtonUp += (_, _) => Release(scale, gentle);
+        card.PreviewMouseLeftButtonUp += (_, _) => Release(scale, gentle, grow && card.IsMouseOver ? HoverGrow : 1);
     }
 
     /// <summary>A button sinks a little while pressed and springs back on release.</summary>
@@ -112,12 +114,12 @@ public partial class ControlCenterView
         button.MouseLeave += (_, _) => Release(scale);
     }
 
-    private static void Release(ScaleTransform scale, bool gentle = false)
+    private static void Release(ScaleTransform scale, bool gentle = false, double to = 1)
     {
         if (AnimationConfig.ReduceMotion) return;
         var ease = gentle ? SoftSpring : ReleaseSpring;
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, 1, 520, ease));
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, 1, 520, ease));
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, to, 520, ease));
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, to, 520, ease));
     }
 
     // A lit tile keeps its tint under the pointer, just a touch brighter.
@@ -231,10 +233,12 @@ public partial class ControlCenterView
 
     /// <summary>
     /// A pill switch: the knob springs across with a slight overshoot and stretches while it is held, like
-    /// iOS; the track fades between grey and the section's tint.
+    /// iOS; the track fades between grey and the section's tint. On the system tab a lit track wears the tab's
+    /// own brush, so it keeps following the colour as the load changes.
     /// </summary>
     private FrameworkElement Toggle(bool isOn, Action<bool> onChanged)
     {
+        var live = AccentIsMood ? _mood : null;
         var tint = ((SolidColorBrush)_accent).Color;
         var offColor = ((SolidColorBrush)Track).Color;
         var knobShift = new TranslateTransform(isOn ? 14 : 0, 0);
@@ -255,7 +259,7 @@ public partial class ControlCenterView
             Width = 34,
             Height = 20,
             CornerRadius = new CornerRadius(10),
-            Background = trackFill,
+            Background = isOn && live != null ? live : trackFill,
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center,
             Child = knob
@@ -278,7 +282,24 @@ public partial class ControlCenterView
         {
             e.Handled = true;
             state = !state;
-            WeatherMotion.Tint(trackFill, state ? tint : offColor, 220);
+            if (live != null)
+            {
+                // Fade on a brush of its own, then hand the lit track back to the tab's colour.
+                trackFill.BeginAnimation(SolidColorBrush.ColorProperty, null);
+                trackFill.Color = state ? offColor : live.Color;
+                track.Background = trackFill;
+                if (state)
+                {
+                    var settle = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(260) };
+                    settle.Tick += (_, _) =>
+                    {
+                        settle.Stop();
+                        if (state) track.Background = live;
+                    };
+                    settle.Start();
+                }
+            }
+            WeatherMotion.Tint(trackFill, state ? live?.Color ?? tint : offColor, 220);
             Settle();
             onChanged(state);
         };

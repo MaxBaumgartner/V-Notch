@@ -466,8 +466,8 @@ public partial class MainWindow
         if (_navDragItem != AudioIconButton) AnimateNavIconOpacity(AudioIconButton, 0.45, animate: false);
         if (_navDragItem != ClaudeIconButton) AnimateNavIconOpacity(ClaudeIconButton, 0.45, animate: false);
         if (_navDragItem != PiIconButton) AnimateNavIconOpacity(PiIconButton, 0.45, animate: false);
+        if (_navDragItem != SchoolIconButton) AnimateNavIconOpacity(SchoolIconButton, 0.45, animate: false);
         if (_navDragItem != WeatherIconButton) AnimateNavIconOpacity(WeatherIconButton, 0.45, animate: false);
-        if (_navDragItem != LegionIconButton) AnimateNavIconOpacity(LegionIconButton, 0.45, animate: false);
     }
 
     #endregion

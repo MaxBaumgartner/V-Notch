@@ -78,12 +78,14 @@ public partial class MainWindow
                 NotchBackground.Opacity = 1;
                 ExpandedContent.Background = (System.Windows.Media.Brush)FindResource("NotchGradient");
                 RestoreNotchShadowDefaults();
+                UseNotchShadowEffect(false);
                 UpdateEarVisibility();
                 return;
             }
 
             if (needsInitialFrame)
                 GlassBackdropHost.Opacity = 0;
+            UseNotchShadowEffect(true);
             GlassMaterialClipHost.Visibility = Visibility.Visible;
             GlassBackdropHost.Visibility = Visibility.Visible;
             GlassTintOverlay.Visibility = Visibility.Visible;
@@ -166,8 +168,19 @@ public partial class MainWindow
             NotchBackground.Opacity = 1;
             ExpandedContent.Background = (System.Windows.Media.Brush)FindResource("NotchGradient");
             RestoreNotchShadowDefaults();
+            UseNotchShadowEffect(false);
             UpdateEarVisibility();
         }
+    }
+
+    /// <summary>
+    /// Liquid Glass tunes a real DropShadowEffect per frame. The plain notch paints the same shadow instead,
+    /// because the effect re-blurs on every frame the notch changes size.
+    /// </summary>
+    private void UseNotchShadowEffect(bool effect)
+    {
+        NotchShadowWrapper.Effect = effect ? (System.Windows.Media.Effects.Effect)FindResource("NotchShadow") : null;
+        NotchSoftShadow.Visibility = effect ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void ApplyLiquidGlassConfig()

@@ -17,6 +17,7 @@ using VNotch.Models;
 using VNotch.Modules;
 using VNotch.Presenters;
 using VNotch.Services;
+using VNotch.Services.ControlCenter;
 
 namespace VNotch;
 
@@ -44,7 +45,7 @@ public partial class SettingsWindow : Window
     }
 
     private const string LogCategory = "SETTINGS";
-    private const string DefaultNavTabs = "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera";
+    private const string DefaultNavTabs = "Media,Secondary,Timer,Claude,Pi,School,Weather,AudioMixer,Camera";
     private const string SubtitlePriorityDataFormat = "SubtitlePriorityItem";
     private const string NavTabMedia = "Media";
     private const string WidgetClock = "clock";
@@ -107,10 +108,12 @@ public partial class SettingsWindow : Window
         IUpdateService? updateService = null,
         bool prepareForFirstShow = false,
         Func<string?>? clipboardHotkeyError = null,
-        Func<bool>? invisibleHotkeyRegistered = null)
+        Func<bool>? invisibleHotkeyRegistered = null,
+        Func<AppNotificationState>? appNotificationState = null)
     {
         _clipboardHotkeyError = clipboardHotkeyError;
         _invisibleHotkeyRegistered = invisibleHotkeyRegistered;
+        _appNotificationState = appNotificationState;
         _firstShowState = prepareForFirstShow ? FirstShowState.StandbyPrewarm : FirstShowState.ReadyForRealShow;
         IsVisibleChanged += OnFirstShowVisibilityChanged;
         var firstOpenProbe = System.Diagnostics.Stopwatch.StartNew();
@@ -120,6 +123,7 @@ public partial class SettingsWindow : Window
         AnimationPrimitives.ApplyFpsToTree(this);
         FirstOpenProbe?.Invoke($"DEBUG-FIRST-OPEN Settings FPS tree {firstOpenProbe.Elapsed.TotalMilliseconds:F1} ms");
         firstOpenProbe.Restart();
+        PulseStarWhileShown();
 
         _settings = settings.Clone();
         _editSession = new SettingsEditSession(settings);
@@ -170,9 +174,10 @@ public partial class SettingsWindow : Window
         IUpdateService? updateService = null,
         bool prepareForFirstShow = false,
         Func<string?>? clipboardHotkeyError = null,
-        Func<bool>? invisibleHotkeyRegistered = null)
+        Func<bool>? invisibleHotkeyRegistered = null,
+        Func<AppNotificationState>? appNotificationState = null)
         : this(settings, new SettingsApplicationService(settingsService), isSpotlightHotkeyRegistered, updateService,
-            prepareForFirstShow, clipboardHotkeyError, invisibleHotkeyRegistered)
+            prepareForFirstShow, clipboardHotkeyError, invisibleHotkeyRegistered, appNotificationState)
     {
     }
 
@@ -220,7 +225,7 @@ public partial class SettingsWindow : Window
                     return true;
 
                 if (fe.Tag is string tag &&
-                    (tag is "NavTabRow" or NavTabMedia or "Secondary" or "Timer" or "Claude" or "Pi" or "Weather" or "Legion" or "AudioMixer" ||
+                    (tag is "NavTabRow" or NavTabMedia or "Secondary" or "Timer" or "Claude" or "Pi" or "School" or "Weather" or "AudioMixer" ||
                      Array.IndexOf(_navOrder, tag) >= 0))
                 {
                     return true;
@@ -316,6 +321,7 @@ public partial class SettingsWindow : Window
         IdleAutoHideDelaySlider.Opacity = _settings.EnableIdleAutoHide ? 1.0 : 0.4;
         MusicNotifyCheck.IsChecked = _settings.ShowMusicNotifications;
         SystemNotifyCheck.IsChecked = _settings.ShowSystemNotifications;
+        LoadAppNotifications(_settings);
         EnableSpotlightCheck.IsChecked = _settings.EnableSpotlight;
         LoadSpotlightAiSettings(_settings);
         LoadTranslationSettings();
@@ -668,6 +674,7 @@ public partial class SettingsWindow : Window
         MusicNotifyHint.Text = Loc.Get("settings.musicNotify.hint");
         SystemNotifyCheck.Content = Loc.Get("settings.systemNotify");
         SystemNotifyHint.Text = Loc.Get("settings.systemNotify.hint");
+        LocalizeAppNotifications();
         ShowBatteryCheck.Content = Loc.Get("settings.showBattery");
         ShowBatteryHint.Text = Loc.Get("settings.showBattery.hint");
         LanguageLabel.Text = Loc.Get("settings.language");

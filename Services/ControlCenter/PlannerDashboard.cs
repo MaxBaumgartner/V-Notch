@@ -176,12 +176,29 @@ internal static class PlannerDashboard
     #region Overview tiles
 
     /// <summary>
-    /// The start page as readings: the weather, when to leave for school, each Roblox game and the Pi's own
-    /// checks. They show as tiles where a Home Assistant dashboard shows its sensors.
+    /// The home tab from the start page: the weather, when to leave for school and each Roblox game as tiles, the
+    /// Pi's own checks in its line. There is no room to switch, so lights, heating and sockets stay empty.
     /// </summary>
-    public static List<PiEntity> Overview(JsonObject? home, JsonObject? health, DateTime now)
+    public static PiHome Home(JsonObject? home, JsonObject? health, DateTime now) =>
+        new([], [], null, [], [], [], Checks(health), Readings(home, now));
+
+    /// <summary>The Pi's checks: one issue per check that is not green, none when all are.</summary>
+    public static HomePi? Checks(JsonObject? health)
     {
-        var tiles = new List<PiEntity>(6);
+        if (health?["checks"] is not JsonArray checks) return null;
+        var issues = new List<HomePiIssue>();
+        foreach (var node in checks)
+        {
+            if (node is not JsonObject check || Str(check, "state") != "bad") continue;
+            issues.Add(new HomePiIssue(Str(check, "label"), Str(check, "detail"), "error", null, null));
+        }
+        return new HomePi(null, null, issues);
+    }
+
+    /// <summary>The start page as readings: the weather, when to leave for school and each Roblox game.</summary>
+    public static List<HomeReading> Readings(JsonObject? home, DateTime now)
+    {
+        var tiles = new List<HomeReading>(5);
         if (home?["weather"] is JsonObject weather)
         {
             if (weather["now"] is JsonObject current && Num(current, "temp") is { } temp)
@@ -209,22 +226,10 @@ internal static class PlannerDashboard
                 tiles.Add(Reading($"planner.roblox{index}", Str(game, "name"), display));
             }
         }
-        if (health?["checks"] is JsonArray checks)
-        {
-            int bad = 0;
-            string first = "";
-            foreach (var node in checks)
-            {
-                if (node is not JsonObject check || Str(check, "state") != "bad") continue;
-                if (bad++ == 0) first = Str(check, "label");
-            }
-            string display = bad == 0 ? Loc.Get("pi.health.ok") : bad == 1 ? first : Loc.Get("pi.health.problems", bad);
-            tiles.Add(Reading("planner.health", "Pi", display));
-        }
         return tiles;
     }
 
-    private static PiEntity Reading(string id, string label, string display) => new(id, label, "", "on", display, "sensor");
+    private static HomeReading Reading(string id, string label, string display) => new(id, label, display);
 
     /// <summary>The way to school from the start page; null without a next school day.</summary>
     public static PiCommute? Commute(JsonObject? home)

@@ -458,9 +458,9 @@ public partial class MainWindow
             (_isCameraView && item == CameraIconButton) ||
             (_isClaudeView && item == ClaudeIconButton) ||
             (_isPiView && item == PiIconButton) ||
+            (_isSchoolView && item == SchoolIconButton) ||
             (_isWeatherView && item == WeatherIconButton) ||
-            (_isLegionView && item == LegionIconButton) ||
-            (!_isAudioView && !_isTimerView && !_isSecondaryView && !_isClaudeView && !_isPiView && !_isWeatherView && !_isLegionView && item == HomeIconButton))
+            (!_isAudioView && !_isTimerView && !_isSecondaryView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isWeatherView && item == HomeIconButton))
         {
             targetOpacity = 1.0;
         }
@@ -610,7 +610,7 @@ public partial class MainWindow
         }
 
         // Determine configured order
-        var rawTokens = (_settings.NavTabOrder ?? "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera")
+        var rawTokens = (_settings.NavTabOrder ?? "Media,Secondary,Timer,Claude,Pi,School,Weather,AudioMixer,Camera")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var orderTokens = new List<string>(elementsByTag.Count);
         var seenTokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -650,7 +650,7 @@ public partial class MainWindow
 
         // Apply visibility from VisibleNavTabs
         var visibleTokens = new HashSet<string>(
-            (_settings.VisibleNavTabs ?? "Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera")
+            (_settings.VisibleNavTabs ?? "Media,Secondary,Timer,Claude,Pi,School,Weather,AudioMixer,Camera")
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             StringComparer.OrdinalIgnoreCase);
 
@@ -658,7 +658,6 @@ public partial class MainWindow
         visibleTokens.Add("Media");
         if (_settings.HideCamera) visibleTokens.Remove("Camera");
         else visibleTokens.Add("Camera");
-        if (!LegionService.IsSupported) visibleTokens.Remove("Legion");
 
         for (int i = 0; i < children.Count; i++)
         {
@@ -674,8 +673,8 @@ public partial class MainWindow
             (_isSecondaryView && !visibleTokens.Contains("Secondary")) || (_isCameraView && !visibleTokens.Contains("Camera")) ||
             (_isClaudeView && !visibleTokens.Contains("Claude")) ||
             (_isPiView && !visibleTokens.Contains("Pi")) ||
-            (_isWeatherView && !visibleTokens.Contains("Weather")) ||
-            (_isLegionView && !visibleTokens.Contains("Legion")))
+            (_isSchoolView && !visibleTokens.Contains("School")) ||
+            (_isWeatherView && !visibleTokens.Contains("Weather")))
         {
             NavigateToNotchView(NotchView.Media);
         }

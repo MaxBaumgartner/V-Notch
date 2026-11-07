@@ -1,5 +1,4 @@
 using System.Reflection;
-using VNotch.Controllers;
 using VNotch.Models;
 using VNotch.Services;
 using VNotch.Windows;
@@ -11,16 +10,6 @@ namespace VNotch.Tests;
 public sealed class SpotlightWinTapTests
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
-
-    [Theory]
-    [InlineData(0, "GameClient", false)] // not fullscreen: Win always works
-    [InlineData(1, "GameClient", true)]  // a fullscreen game keeps its focus
-    [InlineData(2, "SomeGame", true)]
-    [InlineData(1, "chrome", false)]     // a film in fullscreen Chrome
-    [InlineData(2, "msedge", false)]
-    [InlineData(1, "", true)]            // unknown process: treated as a game
-    public void WinIsIgnoredOnlyInFullscreenGames(int fullscreen, string process, bool ignored) =>
-        Assert.Equal(ignored, SpotlightController.IgnoresWinTap((FullscreenType)fullscreen, process));
 
     [Fact]
     public void ToggleWhileClosingFromAFocusLossClosesInsteadOfReopening() => WithOpenSpotlight(async (window, ct) =>

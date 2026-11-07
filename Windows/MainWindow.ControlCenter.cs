@@ -44,8 +44,7 @@ public partial class MainWindow
         // Settings load after this runs, and anything that pumps messages meanwhile can let the views build:
         // until then they are plain-skinned and offline.
         ControlCenter.Attach(() => _settings != null && IsLiquidGlassEnabled);
-        // The mixer owns switching outputs (write queue, master volume, media volume cache).
-        ControlCenter.OutputDeviceSelected += AudioContent.SelectDefaultOutputDevice;
+        ControlCenter.AttachBackdrop(SystemBackdrop);
         ClaudeCenter.AttachClaude(_claudeTracker, _claudeHookServer, _claudeUsage,
             () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled);
         ClaudeCenter.AttentionRequested += OpenClaudeTabForAttention;
@@ -66,8 +65,8 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(DispatcherPriority.Background, InitializeAppNotifications);
         InitializePi();
         InitializeWeather();
-        InitializeLegion();
         InitializeMicMuted();
+        InitializeDownloads();
     }
 
     private void DisposeControlCenter()
@@ -78,9 +77,8 @@ public partial class MainWindow
         DisposeAppNotifications();
         DisposePi();
         DisposeWeather();
-        DisposeLegion();
         DisposeMicMuted();
-        ControlCenter.OutputDeviceSelected -= AudioContent.SelectDefaultOutputDevice;
+        DisposeDownloads();
         ClaudeCenter.AttentionRequested -= OpenClaudeTabForAttention;
         ClaudeCenter.ContentHeightChanged -= OnClaudeContentHeightChanged;
         ClaudeCenter.SessionOpened -= OnClaudeSessionOpened;

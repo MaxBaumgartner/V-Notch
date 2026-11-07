@@ -245,6 +245,8 @@ public partial class MainWindow
         InteractionSounds.Configure(_settings.EnableInteractionSounds, _settings.InteractionSoundVolume);
         if (oldSettings == null || oldSettings.EnablePrivacyIndicators != _settings.EnablePrivacyIndicators)
             ApplyPrivacyIndicatorSettings();
+        if (oldSettings == null || oldSettings.ShowAppNotifications != _settings.ShowAppNotifications)
+            ApplyAppNotificationSetting();
         _mediaService.KeepPinnedOnTrackChange = _settings.KeepMediaPinnedOnTrackChange;
         if (oldSettings == null || oldSettings.AnimationFps != _settings.AnimationFps ||
             oldSettings.AutoAnimationFps != _settings.AutoAnimationFps)

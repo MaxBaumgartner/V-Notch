@@ -110,8 +110,6 @@ public partial class MainWindow
 
         var liftedSub = LiftDarkColor(subColor);
         var vibrantTargetColor = Color.FromRgb(liftedSub.R, liftedSub.G, liftedSub.B);
-        // The control center's audio parts (output picker) wear the cover's colour too.
-        VNotch.Controls.ControlCenterView.SetMediaAccent(vibrantTargetColor);
         double dominantLuminance = (0.2126 * dominantColor.R + 0.7152 * dominantColor.G + 0.0722 * dominantColor.B) / 255.0;
 
         var uiColorAnim = new ColorAnimation

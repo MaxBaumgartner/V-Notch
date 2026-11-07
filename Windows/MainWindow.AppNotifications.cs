@@ -24,7 +24,7 @@ public partial class MainWindow
 
     private readonly WindowsNotificationWatcher _appNotifications = new();
     private readonly Dictionary<string, ImageSource?> _appLogos = new(StringComparer.OrdinalIgnoreCase);
-    // Apps that sent something lately, newest first, so the controls tab can offer to mute them.
+    // Apps that sent something lately, newest first, so the settings window can offer to mute them.
     private readonly List<NotificationApp> _recentNotificationApps = new();
     private DispatcherTimer? _appNotificationTimer;
     private bool _appNotificationPolling;
@@ -36,7 +36,6 @@ public partial class MainWindow
         _appNotificationsAllowed = WindowsNotificationWatcher.IsAllowed;
         if (!_appNotificationsAllowed)
             RuntimeLog.Warn("NOTIFICATIONS", "Windows notification access is off; app notifications stay hidden.");
-        ControlCenter.AttachNotifications(ReadNotificationPrefs, SetAppNotificationsEnabled, SetNotificationAppMuted);
         _appNotificationTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = AppNotificationPoll };
         _appNotificationTimer.Tick += async (_, _) => await PollAppNotificationsAsync();
         // Settings are not loaded yet while the window attaches its parts: the first tick reads the switch.
@@ -45,28 +44,16 @@ public partial class MainWindow
 
     private void DisposeAppNotifications() => _appNotificationTimer?.Stop();
 
-    private NotificationPrefs ReadNotificationPrefs()
-    {
-        var muted = MutedNotificationApps();
-        var apps = new List<NotificationApp>(_recentNotificationApps.Count);
-        foreach (var app in _recentNotificationApps) apps.Add(app with { Muted = muted.Contains(app.Key) });
-        return new NotificationPrefs(_appNotificationsAllowed, _settings.ShowAppNotifications, apps);
-    }
+    /// <summary>For the settings window: whether Windows grants access, and who notified lately.</summary>
+    private AppNotificationState ReadAppNotificationState() =>
+        new(_appNotificationsAllowed, _recentNotificationApps.ToArray());
 
-    private void SetAppNotificationsEnabled(bool enabled)
+    /// <summary>The settings window flipped the main switch: start or stop looking for notifications.</summary>
+    private void ApplyAppNotificationSetting()
     {
-        _settings.ShowAppNotifications = enabled;
-        _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
-        if (enabled && _appNotificationsAllowed) _appNotificationTimer?.Start();
-        else _appNotificationTimer?.Stop();
-    }
-
-    private void SetNotificationAppMuted(string appKey, bool mute)
-    {
-        var muted = MutedNotificationApps();
-        if (mute ? !muted.Add(appKey) : !muted.Remove(appKey)) return;
-        _settings.MutedNotificationApps = string.Join('|', muted);
-        _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
+        if (_appNotificationTimer == null) return;
+        if (_settings.ShowAppNotifications && _appNotificationsAllowed) _appNotificationTimer.Start();
+        else _appNotificationTimer.Stop();
     }
 
     private HashSet<string> MutedNotificationApps() =>
@@ -85,7 +72,7 @@ public partial class MainWindow
             _recentNotificationApps.RemoveAt(i);
             break;
         }
-        _recentNotificationApps.Insert(0, new NotificationApp(key, notification.AppName.Length > 0 ? notification.AppName : key, false));
+        _recentNotificationApps.Insert(0, new NotificationApp(key, notification.AppName.Length > 0 ? notification.AppName : key));
         if (_recentNotificationApps.Count > RecentNotificationAppCount) _recentNotificationApps.RemoveAt(_recentNotificationApps.Count - 1);
     }
 
@@ -114,7 +101,7 @@ public partial class MainWindow
                 latest = notification;
                 shown++;
             }
-            if (fresh.Count > 0) ControlCenter.NotificationAppsChanged();
+            if (fresh.Count > 0) _activeSettingsWindow?.AppNotificationAppsChanged();
             if (!canShow || latest == null) return;
 
             // Several at once: the newest speaks for all of them.

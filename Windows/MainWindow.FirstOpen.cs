@@ -15,7 +15,8 @@ public partial class MainWindow
         _settings, _settingsService, _spotlightController.IsHotkeyRegistered,
         _updateService, prepareForFirstShow,
         clipboardHotkeyError: () => ClipboardHotkeyRegistrationError,
-        invisibleHotkeyRegistered: () => IsInvisibleHotkeyRegistered)
+        invisibleHotkeyRegistered: () => IsInvisibleHotkeyRegistered,
+        appNotificationState: ReadAppNotificationState)
     { Owner = this };
 
     private void PrepareFirstOpenUi()

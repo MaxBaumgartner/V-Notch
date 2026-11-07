@@ -46,13 +46,13 @@ internal sealed partial class PiDashboardClient
         }
     }
 
-    private async Task<List<PiEntity>?> PlannerOverviewAsync()
+    private async Task<PiHome?> PlannerHomeAsync()
     {
         var home = GetAsync("/api/home");
         var health = GetAsync("/api/health");
         await Task.WhenAll(home, health).ConfigureAwait(false);
         if (home.Result == null && health.Result == null) return null;
-        return PlannerDashboard.Overview(home.Result as JsonObject, health.Result as JsonObject, DateTime.Now);
+        return PlannerDashboard.Home(home.Result as JsonObject, health.Result as JsonObject, DateTime.Now);
     }
 
     private async Task<PiSchool?> PlannerSchoolAsync()

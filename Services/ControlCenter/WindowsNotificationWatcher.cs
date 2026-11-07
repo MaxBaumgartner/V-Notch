@@ -8,11 +8,11 @@ using Windows.UI.Notifications.Management;
 
 namespace VNotch.Services.ControlCenter;
 
-/// <summary>An app that sent notifications lately, and whether the notch leaves it out.</summary>
-internal sealed record NotificationApp(string Key, string Name, bool Muted);
+/// <summary>An app that sent notifications lately: the key mutes are stored by, and its name.</summary>
+public sealed record NotificationApp(string Key, string Name);
 
-/// <summary>What the controls tab shows about notifications: access, the main switch, recent apps.</summary>
-internal sealed record NotificationPrefs(bool Allowed, bool Enabled, IReadOnlyList<NotificationApp> Apps);
+/// <summary>What the settings window lists: whether Windows grants access, and the apps that notified lately.</summary>
+public sealed record AppNotificationState(bool Allowed, IReadOnlyList<NotificationApp> Recent);
 
 /// <summary>A toast another app showed: who sent it and its first two lines.</summary>
 internal sealed record WindowsNotification(uint Id, string AppName, string? AppUserModelId, string Title, string? Body,

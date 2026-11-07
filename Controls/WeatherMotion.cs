@@ -17,10 +17,11 @@ internal sealed class LoopSet
 
     public bool IsEmpty => _running.Count == 0;
 
-    public void Run(IAnimatable target, DependencyProperty property, AnimationTimeline animation)
+    /// <param name="fps">A lower rate for slow, ambient loops (a breathing glow), so the notch repaints less often.</param>
+    public void Run(IAnimatable target, DependencyProperty property, AnimationTimeline animation, int? fps = null)
     {
         if (AnimationConfig.ReduceMotion) return;
-        Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);
+        Timeline.SetDesiredFrameRate(animation, fps ?? AnimationConfig.TargetFps);
         target.BeginAnimation(property, animation);
         _running.Add((target, property));
     }

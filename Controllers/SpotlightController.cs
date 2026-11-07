@@ -324,25 +324,16 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private void OnWinTap(int generation)
     {
         if (_disposed || generation != _hostGeneration) return;
+        // Everywhere, fullscreen games included: Win opens Spotlight, a second Win closes it and the game gets the
+        // focus back. (Telling a game from a frameless app such as Discord is guesswork anyway.)
         IntPtr foreground = GetForegroundWindow();
-        FullscreenType fullscreen = FullscreenDetector.DetectFullscreenType(foreground, _hwnd);
-        bool ignored = fullscreen != FullscreenType.None
-            && IgnoresWinTap(fullscreen, FullscreenDetector.TryGetProcessName(foreground));
-        string action = ignored ? "ignored" : _window?.IsSpotlightOpen == true ? "close" : "open";
-        RuntimeLog.Log(LogTag, $"Win tap ({action}, fullscreen {fullscreen}), foreground {TaskbarReveal.Describe(foreground)}");
-        if (ignored) return;
+        string action = _window?.IsSpotlightOpen == true ? "close" : "open";
+        RuntimeLog.Log(LogTag, $"Win tap ({action}), foreground {TaskbarReveal.Describe(foreground)}");
         // Like the Start menu, a Win tap brings an auto-hidden taskbar up while Spotlight is open.
         _winTapToggle = true;
         try { ToggleSpotlight(); }
         finally { _winTapToggle = false; }
     }
-
-    /// <summary>
-    /// A Win tap in a fullscreen game does nothing: no Start menu, no Spotlight, no lost focus. A fullscreen browser
-    /// (a film or video in fullscreen) is no game, so there Win opens Spotlight as everywhere else.
-    /// </summary>
-    internal static bool IgnoresWinTap(FullscreenType fullscreen, string processName) =>
-        fullscreen != FullscreenType.None && !MediaWindowActivator.IsBrowserProcess(processName);
 
     private void DetachHost()
     {

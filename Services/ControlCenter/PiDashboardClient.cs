@@ -6,17 +6,41 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
+using System.Windows.Media;
 
 namespace VNotch.Services.ControlCenter;
 
-/// <summary>A Home Assistant entity as the dashboard lists it: a switch to flip or a reading to show.</summary>
-internal sealed record PiEntity(string Id, string Label, string Icon, string State, string Display, string Type)
+/// <summary>A lamp in the room; the strip (<paramref name="Rgb"/>) also has a colour and a brightness in percent.</summary>
+internal sealed record HomeLight(string Id, string Name, bool Rgb, bool Available, bool On, Color? Color, int? Brightness);
+
+internal sealed record HomeColor(string Name, Color Color);
+
+/// <summary>The heating: its target, the room's own thermometer, and the window it pauses for.</summary>
+internal sealed record HomeClimate(string Mode, string? Action, double? Target, double Min, double Max, double? Current, double? Humidity, bool WindowOpen)
 {
-    public bool IsOn => State == "on";
-    /// <summary>The dashboard's toggle endpoint takes these domains only.</summary>
-    public bool CanToggle => Type == "switch" && (Id.StartsWith("switch.", StringComparison.Ordinal) ||
-        Id.StartsWith("light.", StringComparison.Ordinal) || Id.StartsWith("input_boolean.", StringComparison.Ordinal));
+    public bool IsHeating => Action == "heating";
 }
+
+/// <summary>A button of the air conditioner's IR remote, or one of the dashboard's own scenes.</summary>
+internal sealed record HomeAction(string Id, string Name, string Icon);
+
+/// <summary>A switched socket with its draw; <paramref name="Guard"/> ones (PC, Pi) ask before they switch off.</summary>
+internal sealed record HomePlug(string Id, string Name, bool Available, bool On, bool Guard, double? Watts, double? TodayKwh);
+
+internal sealed record HomePiIssue(string Title, string Detail, string Status, string? FixId, string? FixLabel);
+
+internal sealed record HomePi(double? Temp, long? UptimeSeconds, IReadOnlyList<HomePiIssue> Issues);
+
+/// <summary>A reading a planner dashboard's start page offers (the weather, when to leave, a game's players), as a tile.</summary>
+internal sealed record HomeReading(string Id, string Label, string Display);
+
+/// <summary>
+/// Everything the home tab shows, in one read of the dashboard's /api/notch/zuhause. A planner dashboard has no room
+/// to switch: it brings <paramref name="Readings"/> and its checks as <paramref name="Pi"/> instead.
+/// </summary>
+internal sealed record PiHome(IReadOnlyList<HomeLight> Lights, IReadOnlyList<HomeColor> StripColors, HomeClimate? Climate,
+    IReadOnlyList<HomeAction> AirConditioner, IReadOnlyList<HomePlug> Plugs, IReadOnlyList<HomeAction> Scenes, HomePi? Pi,
+    IReadOnlyList<HomeReading>? Readings = null);
 
 internal sealed record PiLesson(string Start, string End, string Subject, string Room, bool Cancelled, string Change, int StartMinutes, int EndMinutes);
 
@@ -36,7 +60,7 @@ internal sealed record PiAttachment(string Name, long Size);
 
 internal sealed record PiSubmitResult(bool Ok, string? SubmittedName, string? Error);
 
-internal sealed record PiExam(DateTime Date, string Start, string Kind, string Title);
+internal sealed record PiExam(DateTime Date, string Start, string Kind, string Title, string Subject = "");
 
 internal sealed record PiSchool(string Date, bool IsToday, IReadOnlyList<PiLesson> Lessons, IReadOnlyList<PiDeadline> Deadlines,
     IReadOnlyList<PiExam> Exams, string? Break);
@@ -73,21 +97,53 @@ internal sealed partial class PiDashboardClient : IDisposable
         _transfer.Dispose();
     }
 
-    public async Task<List<PiEntity>?> GetHomeAsync()
+    public async Task<PiHome?> GetHomeAsync()
     {
-        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerOverviewAsync().ConfigureAwait(false);
-        if (await GetAsync("/api/homeassistant") is not JsonObject home || home["entities"] is not JsonArray entities) return null;
-        var list = new List<PiEntity>(entities.Count);
-        foreach (var node in entities)
-        {
-            if (node is not JsonObject e) continue;
-            list.Add(new PiEntity(Str(e, "id"), Str(e, "label"), Str(e, "icon"), Str(e, "state"), Str(e, "display"), Str(e, "type")));
-        }
-        return list;
+        if (await IsPlannerAsync().ConfigureAwait(false)) return await PlannerHomeAsync().ConfigureAwait(false);
+        return await GetAsync("/api/notch/zuhause").ConfigureAwait(false) is JsonObject home ? ParseHome(home) : null;
     }
 
-    public Task<bool> ToggleAsync(string entityId) =>
-        PostAsync("/api/homeassistant/toggle", new JsonObject { ["entity_id"] = entityId });
+    internal static PiHome ParseHome(JsonObject home)
+    {
+        var lights = new List<HomeLight>();
+        foreach (var l in Objects(home["lights"]))
+            lights.Add(new HomeLight(Str(l, "id"), Str(l, "name"), Bool(l, "rgb"), Bool(l, "available"), Bool(l, "on"), Rgb(l["color"]),
+                Num(l, "brightness") is { } b ? (int)Math.Round(b) : null));
+        var colors = new List<HomeColor>();
+        foreach (var c in Objects(home["stripColors"]))
+            if (Rgb(c["rgb"]) is { } rgb) colors.Add(new HomeColor(Str(c, "name"), rgb));
+        HomeClimate? climate = home["climate"] is JsonObject k
+            ? new HomeClimate(Str(k, "mode"), k["action"] is JsonValue ? Str(k, "action") : null, Num(k, "target"), Num(k, "min") ?? 5, Num(k, "max") ?? 30,
+                Num(k, "current"), Num(k, "humidity"), Bool(k, "windowOpen"))
+            : null;
+        var plugs = new List<HomePlug>();
+        foreach (var p in Objects(home["plugs"]))
+            plugs.Add(new HomePlug(Str(p, "id"), Str(p, "name"), Bool(p, "available"), Bool(p, "on"), Bool(p, "guard"), Num(p, "watts"), Num(p, "todayKwh")));
+        HomePi? pi = null;
+        if (home["pi"] is JsonObject piNode)
+        {
+            var issues = new List<HomePiIssue>();
+            foreach (var i in Objects(piNode["issues"]))
+                issues.Add(new HomePiIssue(Str(i, "title"), Str(i, "detail"), Str(i, "status"),
+                    Str(i, "fixId") is { Length: > 0 } fix ? fix : null, Str(i, "fixLabel") is { Length: > 0 } label ? label : null));
+            pi = new HomePi(Num(piNode, "temp"), Num(piNode, "uptimeS") is { } up ? (long)up : null, issues);
+        }
+        return new PiHome(lights, colors, climate, Actions(home["ac"]), plugs, Actions(home["scenes"]), pi);
+
+        static List<HomeAction> Actions(JsonNode? node)
+        {
+            var list = new List<HomeAction>();
+            foreach (var a in Objects(node)) list.Add(new HomeAction(Str(a, "id"), Str(a, "name"), Str(a, "icon")));
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// Switches something in the room through the dashboard (which only takes what its list allows): "light"
+    /// (on/off, or the strip's colour), "temp", "ac", "plug", "scene" or "fix".
+    /// </summary>
+    public Task<bool> SendHomeAsync(string action, string? id, JsonNode? value = null) =>
+        PostAsync("/api/notch/zuhause", new JsonObject { ["action"] = action, ["id"] = id, ["value"] = value });
 
     public async Task<PiSchool?> GetSchoolAsync()
     {
@@ -125,7 +181,7 @@ internal sealed partial class PiDashboardClient : IDisposable
             {
                 if (node is not JsonObject x) continue;
                 if (!DateTime.TryParseExact(Str(x, "date"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) continue;
-                exams.Add(new PiExam(date, Str(x, "startTime"), Str(x, "kind"), Str(x, "title")));
+                exams.Add(new PiExam(date, Str(x, "startTime"), Str(x, "kind"), Str(x, "title"), Str(x, "subjectShort")));
             }
         }
         string? holiday = school["breaks"] is JsonObject b ? Str(b, "name") : null;
@@ -342,6 +398,22 @@ internal sealed partial class PiDashboardClient : IDisposable
     }
 
     private Uri Url(string path) => new(new Uri(_baseUrl().Trim().TrimEnd('/') + "/"), path.TrimStart('/'));
+
+    private static IEnumerable<JsonObject> Objects(JsonNode? node)
+    {
+        if (node is not JsonArray array) yield break;
+        foreach (var item in array)
+            if (item is JsonObject obj) yield return obj;
+    }
+
+    private static double? Num(JsonObject obj, string key) =>
+        obj[key] is JsonValue value && value.TryGetValue(out double number) ? number : null;
+
+    private static Color? Rgb(JsonNode? node) =>
+        node is JsonArray { Count: 3 } rgb && rgb[0] is JsonValue r && r.TryGetValue(out int red) && rgb[1] is JsonValue g && g.TryGetValue(out int green)
+            && rgb[2] is JsonValue b && b.TryGetValue(out int blue)
+            ? Color.FromRgb((byte)Math.Clamp(red, 0, 255), (byte)Math.Clamp(green, 0, 255), (byte)Math.Clamp(blue, 0, 255))
+            : null;
 
     private static string Str(JsonObject obj, string key) =>
         obj[key] is JsonValue value && value.TryGetValue(out string? text) ? text : "";

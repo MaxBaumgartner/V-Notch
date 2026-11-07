@@ -97,15 +97,18 @@ public sealed class PlannerDashboardTests
             { "checks": [ { "id": "untis", "label": "WebUntis", "state": "bad" }, { "id": "push", "label": "Push", "state": "ok" } ] }
             """)!;
 
-        var tiles = PlannerDashboard.Overview(home, health, Today.AddHours(20));
+        var page = PlannerDashboard.Home(home, health, Today.AddHours(20));
+        var tiles = page.Readings!;
 
-        Assert.Equal(new[] { "planner.weather", "planner.leave", "planner.roblox1", "planner.roblox2", "planner.health" }, tiles.Select(t => t.Id));
-        Assert.All(tiles, t => Assert.Equal("sensor", t.Type));
+        Assert.Equal(new[] { "planner.weather", "planner.leave", "planner.roblox1", "planner.roblox2" }, tiles.Select(t => t.Id));
         Assert.Equal("Springfield", tiles[0].Label);
         Assert.StartsWith("6", tiles[0].Display);
         Assert.Contains("07:30", tiles[1].Display);
         Assert.Contains("2", tiles[2].Display);
-        Assert.Equal("WebUntis", tiles[4].Display);
+        // The Pi's checks go into its line: only the red one is an issue. No room to switch.
+        Assert.Equal("WebUntis", Assert.Single(page.Pi!.Issues).Title);
+        Assert.Empty(page.Lights);
+        Assert.Empty(page.Plugs);
     }
 
     [Fact]

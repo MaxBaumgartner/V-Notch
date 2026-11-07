@@ -195,6 +195,8 @@ public sealed class MainWindowGlassPresentationTests
             settings.NotchStyle = "default";
             Invoke(window, "ApplyLiquidGlassSkin");
             Assert.Equal(Visibility.Collapsed, window.GlassMaterialClipHost.Visibility);
+            Assert.Null(window.NotchShadowWrapper.Effect);
+            Assert.Equal(Visibility.Visible, window.NotchSoftShadow.Visibility);
             Assert.Null(window.GlassBackdropImage.Effect);
             Assert.True(double.IsNaN(window.GlassBackdropImage.Width));
         }

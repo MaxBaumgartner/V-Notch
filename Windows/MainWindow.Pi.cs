@@ -25,15 +25,22 @@ public partial class MainWindow
     private readonly HashSet<string> _seenPiReminders = new(StringComparer.Ordinal);
     private bool _piRemindersPrimed;
     private bool _isPiView;
+    // The school half of the old Pi tab: deadlines, tests and to-dos, from the same dashboard.
+    private bool _isSchoolView;
     private static readonly ImageSource PiPillIcon = CreatePiPillIcon();
 
     private void InitializePi()
     {
         // Settings load after the window attaches its parts: read the address when it is asked for.
         _piClient = new PiDashboardClient(() => _settings?.PiDashboardUrl ?? "");
-        PiCenter.AttachPi(_piClient, () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled,
-            () => _settings?.SchoolMoodleUrl ?? "", () => _settings?.SchoolUntisUrl ?? "");
-        PiCenter.KeyboardInputRequested += OnClaudeKeyboardInputRequested;
+        foreach (var center in new[] { PiCenter, SchoolCenter })
+        {
+            center.AttachPi(_piClient, () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled,
+                () => _settings?.SchoolMoodleUrl ?? "", () => _settings?.SchoolUntisUrl ?? "");
+            center.KeyboardInputRequested += OnClaudeKeyboardInputRequested;
+        }
+        PiCenter.AttachBackdrop(HomeBackdrop);
+        SchoolCenter.AttachBackdrop(SchoolBackdrop);
         _piReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = PiReminderPoll };
         _piReminderTimer.Tick += async (_, _) => await PollPiRemindersAsync();
         _piReminderTimer.Start();
@@ -45,7 +52,9 @@ public partial class MainWindow
         _piReminderTimer?.Stop();
         DisposeLessonTimer();
         PiCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
+        SchoolCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
         PiCenter.Dispose();
+        SchoolCenter.Dispose();
         _piClient?.Dispose();
     }
 
@@ -53,6 +62,12 @@ public partial class MainWindow
     {
         e.Handled = true;
         if (!_isPiView) NavigateToNotchView(NotchView.Pi);
+    }
+
+    private void SchoolIconButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (!_isSchoolView) NavigateToNotchView(NotchView.School);
     }
 
     /// <summary>
@@ -88,7 +103,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tap on a reminder goes where it points: the assignment to hand in, or Untis; the rest opens the Pi tab.
+    /// A tap on a reminder goes where it points: the assignment to hand in, or Untis; the rest opens the school tab.
     /// </summary>
     private async Task OpenPiReminderAsync(PiReminder reminder)
     {
@@ -100,7 +115,7 @@ public partial class MainWindow
         if (url != null && _piClient != null) url = await _piClient.SignedInSchoolLinkAsync(url, moodle, untis);
         if (_cleanedUp) return;
         if (url == null || !SafeLauncher.TryOpenUrl(url))
-            _transitionCoordinator.RequestView(NotchView.Pi, "PiReminder");
+            _transitionCoordinator.RequestView(NotchView.School, "PiReminder");
     }
 
     private static ImageSource CreatePiPillIcon()
