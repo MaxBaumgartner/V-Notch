@@ -16,13 +16,18 @@ internal static class GoveeSync
     private const int StateRunning = 4;
 
     /// <summary>True or false while the task exists; null when it is not set up on this PC.</summary>
-    public static Task<bool?> IsRunningAsync() => Task.Run(() =>
+    public static Task<bool?> IsRunningAsync() => IsRunningAsync(TaskName);
+
+    // Any failure means "not here": the COM binder turns a missing task (0x80070002) into a FileNotFoundException,
+    // a refused one into UnauthorizedAccessException, and so on. On a PC without the task the home tab asks this
+    // on every refresh, so it must never throw.
+    internal static Task<bool?> IsRunningAsync(string taskName) => Task.Run(() =>
     {
         try
         {
-            return WithTask(task => (bool?)((int)task.State == StateRunning));
+            return WithTask(taskName, task => (bool?)((int)task.State == StateRunning));
         }
-        catch (Exception ex) when (ex is COMException or InvalidCastException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+        catch (Exception)
         {
             return null;
         }
@@ -32,28 +37,28 @@ internal static class GoveeSync
     {
         try
         {
-            return WithTask(task =>
+            return WithTask(TaskName, task =>
             {
                 if (run) task.Run(null);
                 else task.Stop(0);
                 return true;
             });
         }
-        catch (Exception ex) when (ex is COMException or InvalidCastException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+        catch (Exception ex)
         {
             RuntimeLog.Warn("GOVEE", $"Music sync could not be {(run ? "started" : "stopped")}: {ex.Message}");
             return false;
         }
     });
 
-    private static T WithTask<T>(Func<dynamic, T> use)
+    private static T WithTask<T>(string taskName, Func<dynamic, T> use)
     {
         var type = Type.GetTypeFromProgID("Schedule.Service") ?? throw new COMException("Task Scheduler is not available");
         dynamic scheduler = Activator.CreateInstance(type)!;
         try
         {
             scheduler.Connect();
-            dynamic task = scheduler.GetFolder("\\").GetTask(TaskName);
+            dynamic task = scheduler.GetFolder("\\").GetTask(taskName);
             return use(task);
         }
         finally

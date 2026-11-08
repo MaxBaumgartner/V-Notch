@@ -48,7 +48,8 @@ public partial class App : Application
         catch (Exception ex) { RuntimeLog.Error("APP-SHUTDOWN", ex, "Cleanup failed"); }
         finally
         {
-            RuntimeLog.Log("SYSTEM", "Application exit");
+            // Watch-VNotch.ps1 leaves the app closed after a plain "Application exit" (quit on purpose) and restarts it otherwise.
+            RuntimeLog.Log("SYSTEM", exitCode == 0 ? "Application exit" : $"Application exit after an error (code {exitCode})");
             await RuntimeLog.ShutdownAsync(TimeSpan.FromSeconds(2));
             Shutdown(exitCode);
         }

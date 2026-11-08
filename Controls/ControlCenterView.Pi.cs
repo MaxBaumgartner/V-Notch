@@ -131,6 +131,11 @@ public partial class ControlCenterView
             }
             BuildPiPage();
         }
+        catch (Exception ex)
+        {
+            // An async void: anything that escapes here would end the whole app, not just this refresh.
+            RuntimeLog.Error("PI-DASHBOARD", ex, "Home/school refresh failed");
+        }
         finally
         {
             _piRefreshing = false;
