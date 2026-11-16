@@ -15,6 +15,8 @@ namespace VNotch;
 public partial class MainWindow
 {
     private readonly LyricsService _lyricsService = new();
+    private readonly KaraokeLyricsPresenter _lyricWords = new();
+    private (string Track, string Artist, int Duration, string Priority)? _lyricsPrefetchKey;
     private readonly YouTubeSubtitleService _youtubeSubtitleService = new();
 
     private SpotifyCanvasPresenter? _spotifyCanvasPresenter;
@@ -67,12 +69,14 @@ public partial class MainWindow
     private int _lyricsSearchTransitionVersion;
     private Brush? _lyricsLayerFadeMask;
     private int _lyricsLineTransitionVersion;
+    private TextBlock? _activeLyricText;
     private int _lyricsPlaceholderTransitionVersion;
     private bool _isLyricsPlaceholderActive;
     private int _lyricsFetchGeneration;
     private readonly SubtitleSearchController _subtitleSearchController = new();
     private bool _isLyricsActive;
     private string _lastKnownYouTubeVideoId = "";
+    private string _resolvedSubtitleTrackIdentity = "";
 
     private bool IsSpotifyCanvasSurfaceVisible =>
         _isExpanded &&
@@ -88,6 +92,20 @@ public partial class MainWindow
     private bool CanFetchSyncedText => _isExpanded && !_cleanedUp &&
         !_isTimerView && !_isAudioView && !_isSecondaryView && !_isCameraView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isWeatherView;
 
+    private void PrefetchSpotifyLyrics(MediaInfo info)
+    {
+        if (_cleanedUp || CanFetchSyncedText || info.Platform != MediaPlatform.Spotify || !info.IsPlaying ||
+            !_settings.EnableSpotifyLyrics || !_settings.EnableOnlineLyrics || _settings.EnableLocalOnlyMode ||
+            string.IsNullOrWhiteSpace(info.CurrentTrack) || string.IsNullOrWhiteSpace(info.CurrentArtist) || info.Duration <= TimeSpan.Zero)
+            return;
+        var key = (Track: info.CurrentTrack, Artist: info.CurrentArtist, Duration: (int)info.Duration.TotalSeconds, Priority: _settings.LyricsProviderPriority);
+        if (_lyricsPrefetchKey == key) return;
+        _lyricsPrefetchKey = key;
+        // Start the selected provider on track changes; expansion shares this exact request/cache.
+        _lyricsService.FetchSyncedLyricsAsync(key.Track, key.Artist, key.Duration, key.Priority)
+            .SafeFireAndForget("LYRICS-PREFETCH");
+    }
+
     private async Task FetchLyricsForTrack(MediaInfo info)
     {
         if (!CanFetchSyncedText) return;
@@ -98,6 +116,7 @@ public partial class MainWindow
             HideLyricsWidget();
             return;
         }
+        if (info.Duration <= TimeSpan.Zero) return;
 
         string trackKey = $"{info.CurrentTrack}|{info.CurrentArtist}";
 
@@ -105,6 +124,7 @@ public partial class MainWindow
         int generation = ++_lyricsFetchGeneration;
         _lyricsTrackKey = trackKey;
         _syncedTextSource = SyncedTextSource.SpotifyLyrics;
+        _subtitleRequestKey = null;
 
         if (info.Platform != MediaPlatform.Spotify)
         {
@@ -124,14 +144,30 @@ public partial class MainWindow
         }
 
         int durationSec = (int)info.Duration.TotalSeconds;
-        if (durationSec <= 0) durationSec = 240;
+
+        LyricsResult? presented = null;
+        bool IsCurrentRequest() => generation == _lyricsFetchGeneration && trackKey == _lyricsTrackKey &&
+            _settings.EnableSpotifyLyrics && _settings.EnableOnlineLyrics && !_settings.EnableLocalOnlyMode && CanFetchSyncedText;
+        void PresentAvailable(LyricsResult result)
+        {
+            if (!IsCurrentRequest() || ReferenceEquals(presented, result)) return;
+            // A queued line preview must never replace a completed word result.
+            if (presented?.Lines.Any(line => line.Words is { Length: > 0 }) == true &&
+                !result.Lines.Any(line => line.Words is { Length: > 0 })) return;
+            presented = result;
+            ApplySyncedLines(result.Lines, info, provider: result.Provider);
+        }
 
         LyricsResult? lyrics = await _lyricsService.FetchSyncedLyricsAsync(
-            info.CurrentTrack, info.CurrentArtist, durationSec);
+            info.CurrentTrack, info.CurrentArtist, durationSec, _settings.LyricsProviderPriority,
+            onLyricsAvailable: result => Dispatcher.BeginInvoke(new Action(() => PresentAvailable(result))));
 
-        if (generation != _lyricsFetchGeneration || trackKey != _lyricsTrackKey) return;
+        if (generation != _lyricsFetchGeneration || trackKey != _lyricsTrackKey ||
+            !_settings.EnableSpotifyLyrics || !_settings.EnableOnlineLyrics || _settings.EnableLocalOnlyMode) return;
+        if (!CanFetchSyncedText) { _lyricsTrackKey = ""; return; }
 
-        ApplySyncedLines(lyrics?.Lines, info, provider: lyrics?.Provider);
+        if (lyrics != null) PresentAvailable(lyrics);
+        else if (presented == null) ApplySyncedLines(null, info);
     }
 
     private void StartSpotifyCanvasFetch(MediaInfo info, string trackKey)
@@ -215,6 +251,16 @@ public partial class MainWindow
         }
 
         string videoId = info.YouTubeVideoId ?? "";
+        string rawTrackIdentity = $"{info.CurrentTrack}|{info.CurrentArtist}";
+        if (string.IsNullOrEmpty(videoId) &&
+            !string.IsNullOrEmpty(info.CurrentTrack) &&
+            !force &&
+            string.Equals(rawTrackIdentity, _resolvedSubtitleTrackIdentity, StringComparison.Ordinal) &&
+            !string.IsNullOrEmpty(_lastKnownYouTubeVideoId))
+        {
+            videoId = _lastKnownYouTubeVideoId;
+            info.YouTubeVideoId = videoId;
+        }
 
         // Preserve resolved "yt:{id}" key and avoid overwriting with unresolved
         // fallback when MediaChanged fires with empty videoId while subtitles are already loaded.
@@ -267,7 +313,11 @@ public partial class MainWindow
             id => _youtubeSubtitleService.FetchSubtitlesAsync(id, force: force),
             id =>
             {
+                _lastKnownYouTubeVideoId = id;
+                _resolvedSubtitleTrackIdentity = rawTrackIdentity;
                 info.YouTubeVideoId = id;
+                if (_currentMediaInfo != null && MediaUpdateQueue.SameTrack(info, _currentMediaInfo))
+                    _currentMediaInfo.YouTubeVideoId = id;
                 trackKey = $"yt:{id}";
                 _lyricsTrackKey = trackKey;
                 _subtitleRequestKey = trackKey;
@@ -351,7 +401,10 @@ public partial class MainWindow
 
         bool transitionFromSearch =
             _isLyricsSearchVisible && LyricsSearchPanel.Visibility == Visibility.Visible;
-        HideLyricsSearchState(immediate: true);
+        if (!transitionFromSearch)
+        {
+            HideLyricsSearchState(immediate: true);
+        }
 
         int idx = FindCurrentLyricIndex();
         if (idx >= 0)
@@ -405,6 +458,7 @@ public partial class MainWindow
             LyricTextB.Opacity = 0;
             LyricTextA.Text = "";
             LyricTextB.Text = "";
+            _lyricWords.Clear();
 
             HideLyricsPlaceholder(immediate: true);
 
@@ -412,43 +466,11 @@ public partial class MainWindow
             _isLyricsSearchVisible = true;
             int transitionVersion = ++_lyricsSearchTransitionVersion;
             TranslateTransform searchTranslate = GetLyricsSearchTransform();
-            LyricsSearchPanel.BeginAnimation(OpacityProperty, null);
-            searchTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            // A search panel still going out turns round where it is; a hidden one rises in on Tile.
+            bool returning = LyricsSearchPanel.Visibility == Visibility.Visible;
             LyricsSearchPanel.Visibility = Visibility.Visible;
-
-            if (AnimationConfig.ReduceMotion)
-            {
-                LyricsSearchPanel.Opacity = 1;
-                searchTranslate.Y = 0;
-            }
-            else
-            {
-                LyricsSearchPanel.Opacity = 0;
-                searchTranslate.Y = 8;
-
-                var dur = new Duration(TimeSpan.FromMilliseconds(240));
-                var easeOut = new CubicEase { EasingMode = EasingMode.EaseOut };
-                var fadeIn = new DoubleAnimation(0, 1, dur) { EasingFunction = easeOut };
-                var slideIn = new DoubleAnimation(8, 0, dur) { EasingFunction = easeOut };
-                Timeline.SetDesiredFrameRate(fadeIn, AnimationConfig.TargetFps);
-                Timeline.SetDesiredFrameRate(slideIn, AnimationConfig.TargetFps);
-                fadeIn.Completed += (s, e) =>
-                {
-                    if (!_isLyricsSearchVisible || transitionVersion != _lyricsSearchTransitionVersion)
-                        return;
-                    LyricsSearchPanel.BeginAnimation(OpacityProperty, null);
-                    LyricsSearchPanel.Opacity = 1;
-                };
-                slideIn.Completed += (s, e) =>
-                {
-                    if (!_isLyricsSearchVisible || transitionVersion != _lyricsSearchTransitionVersion)
-                        return;
-                    searchTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-                    searchTranslate.Y = 0;
-                };
-                LyricsSearchPanel.BeginAnimation(OpacityProperty, fadeIn);
-                searchTranslate.BeginAnimation(TranslateTransform.YProperty, slideIn);
-            }
+            Motion.To(LyricsSearchPanel, OpacityProperty, 1, Motion.Tile, from: returning ? null : 0);
+            Motion.To(searchTranslate, TranslateTransform.YProperty, 0, Motion.Tile, from: returning ? null : 8);
 
             StartLyricsSearchShimmer();
         }
@@ -473,10 +495,8 @@ public partial class MainWindow
             StopLyricsSearchShimmer();
             if (LyricsSearchPanel != null)
             {
-                LyricsSearchPanel.BeginAnimation(OpacityProperty, null);
-                searchTranslate?.BeginAnimation(TranslateTransform.YProperty, null);
-                LyricsSearchPanel.Opacity = 0;
-                if (searchTranslate != null) searchTranslate.Y = 0;
+                Motion.Stop(LyricsSearchPanel, OpacityProperty, 0);
+                if (searchTranslate != null) Motion.Stop(searchTranslate, TranslateTransform.YProperty, 0);
                 LyricsSearchPanel.Visibility = Visibility.Collapsed;
             }
         }
@@ -487,21 +507,9 @@ public partial class MainWindow
             return;
         }
 
-        var duration = new Duration(TimeSpan.FromMilliseconds(160));
-        var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
-        var fadeOut = new DoubleAnimation(LyricsSearchPanel.Opacity, 0, duration)
-        {
-            EasingFunction = ease
-        };
-        var slideOut = new DoubleAnimation(searchTranslate.Y, -8, duration)
-        {
-            EasingFunction = ease
-        };
-        fadeOut.Completed += (s, e) => FinishHide();
-        Timeline.SetDesiredFrameRate(fadeOut, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(slideOut, AnimationConfig.TargetFps);
-        LyricsSearchPanel.BeginAnimation(OpacityProperty, fadeOut);
-        searchTranslate.BeginAnimation(TranslateTransform.YProperty, slideOut);
+        // Leaves from wherever its arrival got to, with the speed it had.
+        Motion.To(LyricsSearchPanel, OpacityProperty, 0, Motion.Exit, done: FinishHide);
+        Motion.To(searchTranslate, TranslateTransform.YProperty, -8, Motion.Exit);
     }
 
     private TranslateTransform GetLyricsSearchTransform()
@@ -582,34 +590,7 @@ public partial class MainWindow
         _lyricsSearchShimmerStoryboard = null;
     }
 
-    private int FindCurrentLyricIndex()
-    {
-        if (_currentLyrics == null || _currentLyrics.Count == 0) return -1;
-        if (_currentMediaInfo == null) return -1;
-
-        TimeSpan position;
-        if (_currentMediaInfo.IsPlaying && _currentMediaInfo.Duration.TotalSeconds > 0)
-        {
-            var frame = _progressEngine.GetUiFrame();
-            if (frame.Duration.TotalSeconds > 0 && frame.State == ProgressState.Playing)
-            {
-                position = frame.Position;
-            }
-            else
-            {
-                var elapsed = DateTimeOffset.UtcNow - _currentMediaInfo.LastUpdated.ToUniversalTime();
-                if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-                if (elapsed > TimeSpan.FromMinutes(10)) elapsed = TimeSpan.FromMinutes(10);
-                position = _currentMediaInfo.Position + elapsed;
-            }
-        }
-        else
-        {
-            position = _currentMediaInfo.Position;
-        }
-
-        return FindLyricIndex(position);
-    }
+    private int FindCurrentLyricIndex() => _currentMediaInfo == null ? -1 : FindLyricIndex(GetLyricsPosition());
 
     private TranslateTransform GetLyricsPlaceholderTransform()
     {
@@ -633,8 +614,8 @@ public partial class MainWindow
     {
         if (LyricsPlaceholderPanel == null) return;
 
-        // Ensure search panel is immediately collapsed so it cannot overlap placeholder text
-        HideLyricsSearchState(immediate: true);
+        // Ensure search panel smoothly fades out when transitioning from search, or collapses immediately otherwise
+        HideLyricsSearchState(immediate: !transitionFromSearch);
 
         bool isAlreadyShowing = _isLyricsPlaceholderActive &&
                                 LyricsPlaceholderPanel.Visibility == Visibility.Visible;
@@ -659,46 +640,30 @@ public partial class MainWindow
         if (hasActiveLyrics && !AnimationConfig.ReduceMotion)
         {
             int lineVersion = ++_lyricsLineTransitionVersion;
-            var lyricEase = new CubicEase { EasingMode = EasingMode.EaseIn };
-            var lyricDur = new Duration(TimeSpan.FromMilliseconds(220));
 
-            if (hasActiveLyricA)
+            // Each visible line leaves on Exit from where it is, with the speed of an exit already under way.
+            void ExitLine(TextBlock text, TranslateTransform? translate)
             {
-                LyricTextA!.BeginAnimation(OpacityProperty, null);
-                LyricTranslateA?.BeginAnimation(TranslateTransform.YProperty, null);
-                var fadeOutA = new DoubleAnimation(LyricTextA.Opacity, 0, lyricDur) { EasingFunction = lyricEase };
-                var slideOutA = new DoubleAnimation(LyricTranslateA?.Y ?? 0, -10, lyricDur) { EasingFunction = lyricEase };
-                Timeline.SetDesiredFrameRate(fadeOutA, AnimationConfig.TargetFps);
-                Timeline.SetDesiredFrameRate(slideOutA, AnimationConfig.TargetFps);
-                fadeOutA.Completed += (s, e) =>
+                double opacity = text.Opacity;
+                double y = translate?.Y ?? 0;
+                text.BeginAnimation(OpacityProperty, null);
+                translate?.BeginAnimation(TranslateTransform.YProperty, null);
+                text.Opacity = opacity;
+                if (translate != null)
+                {
+                    translate.Y = y;
+                    Motion.To(translate, TranslateTransform.YProperty, -10, Motion.Exit);
+                }
+                Motion.To(text, OpacityProperty, 0, Motion.Exit, done: () =>
                 {
                     if (lineVersion != _lyricsLineTransitionVersion || !_isLyricsPlaceholderActive) return;
-                    LyricTextA.BeginAnimation(OpacityProperty, null);
-                    LyricTextA.Opacity = 0;
-                    LyricTextA.Text = "";
-                };
-                LyricTextA.BeginAnimation(OpacityProperty, fadeOutA);
-                LyricTranslateA?.BeginAnimation(TranslateTransform.YProperty, slideOutA);
+                    Motion.Stop(text, OpacityProperty, 0);
+                    text.Text = "";
+                });
             }
 
-            if (hasActiveLyricB)
-            {
-                LyricTextB!.BeginAnimation(OpacityProperty, null);
-                LyricTranslateB?.BeginAnimation(TranslateTransform.YProperty, null);
-                var fadeOutB = new DoubleAnimation(LyricTextB.Opacity, 0, lyricDur) { EasingFunction = lyricEase };
-                var slideOutB = new DoubleAnimation(LyricTranslateB?.Y ?? 0, -10, lyricDur) { EasingFunction = lyricEase };
-                Timeline.SetDesiredFrameRate(fadeOutB, AnimationConfig.TargetFps);
-                Timeline.SetDesiredFrameRate(slideOutB, AnimationConfig.TargetFps);
-                fadeOutB.Completed += (s, e) =>
-                {
-                    if (lineVersion != _lyricsLineTransitionVersion || !_isLyricsPlaceholderActive) return;
-                    LyricTextB.BeginAnimation(OpacityProperty, null);
-                    LyricTextB.Opacity = 0;
-                    LyricTextB.Text = "";
-                };
-                LyricTextB.BeginAnimation(OpacityProperty, fadeOutB);
-                LyricTranslateB?.BeginAnimation(TranslateTransform.YProperty, slideOutB);
-            }
+            if (hasActiveLyricA) ExitLine(LyricTextA!, LyricTranslateA);
+            if (hasActiveLyricB) ExitLine(LyricTextB!, LyricTranslateB);
         }
         else
         {
@@ -822,32 +787,31 @@ public partial class MainWindow
             return;
         }
 
-        var duration = new Duration(TimeSpan.FromMilliseconds(220));
-        var easeIn = new CubicEase { EasingMode = EasingMode.EaseIn };
-
-        double currentOpacity = LyricsPlaceholderPanel.Opacity;
-        if (currentOpacity <= 0.01)
+        if (LyricsPlaceholderPanel.Opacity <= 0.01)
         {
             FinishHide();
             return;
         }
 
-        var fadeOut = new DoubleAnimation(currentOpacity, 0, duration)
-        {
-            EasingFunction = easeIn
-        };
-        var slideOut = new DoubleAnimation(transform.Y, -8, duration)
-        {
-            EasingFunction = easeIn
-        };
+        // Leaves on Exit from wherever its entrance got to.
+        Motion.To(LyricsPlaceholderPanel, OpacityProperty, 0, Motion.Exit, done: FinishHide);
+        Motion.To(transform, TranslateTransform.YProperty, -8, Motion.Exit);
+    }
 
-        fadeOut.Completed += (s, e) => FinishHide();
+    private TimeSpan GetLyricsPosition() => GetLyricsPlayback().Position;
 
-        Timeline.SetDesiredFrameRate(fadeOut, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(slideOut, AnimationConfig.TargetFps);
-
-        LyricsPlaceholderPanel.BeginAnimation(OpacityProperty, fadeOut);
-        transform.BeginAnimation(TranslateTransform.YProperty, slideOut);
+    private (TimeSpan Position, bool Playing) GetLyricsPlayback()
+    {
+        var frame = _progressEngine.GetUiFrame();
+        if (frame.Duration > TimeSpan.Zero)
+            return (frame.Position, frame.State is ProgressState.Playing or ProgressState.Seeking);
+        if (_currentMediaInfo == null) return (TimeSpan.Zero, false);
+        var info = _currentMediaInfo;
+        TimeSpan position = info.Position;
+        if (info.IsPlaying)
+            position += TimeSpan.FromSeconds(Math.Clamp((DateTimeOffset.UtcNow - info.LastUpdated.ToUniversalTime()).TotalSeconds, 0, 600));
+        if (info.Duration > TimeSpan.Zero && position > info.Duration) position = info.Duration;
+        return (position, info.IsPlaying);
     }
 
     private void UpdateLyricsDisplay()
@@ -855,33 +819,8 @@ public partial class MainWindow
         if (!_isLyricsActive || _isLyricsSearchVisible || _currentLyrics == null || _currentLyrics.Count == 0)
             return;
 
-        TimeSpan position;
-        if (_currentMediaInfo != null && _currentMediaInfo.IsPlaying && _currentMediaInfo.Duration.TotalSeconds > 0)
-        {
-            var frame = _progressEngine.GetUiFrame();
-            if (frame.Duration.TotalSeconds > 0 && frame.State == ProgressState.Playing)
-            {
-                position = frame.Position;
-            }
-            else
-            {
-                var elapsed = DateTimeOffset.UtcNow - _currentMediaInfo.LastUpdated.ToUniversalTime();
-                if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
-                if (elapsed > TimeSpan.FromMinutes(10)) elapsed = TimeSpan.FromMinutes(10);
-                position = _currentMediaInfo.Position + elapsed;
-            }
-            if (position > _currentMediaInfo.Duration) position = _currentMediaInfo.Duration;
-        }
-        else if (_currentMediaInfo != null)
-        {
-            position = _currentMediaInfo.Position;
-        }
-        else
-        {
-            var frame = _progressEngine.GetUiFrame();
-            if (frame.Duration.TotalSeconds <= 0) return;
-            position = frame.Position;
-        }
+        var playback = GetLyricsPlayback();
+        TimeSpan position = playback.Position;
 
         int newIndex = FindLyricIndex(position);
 
@@ -899,6 +838,7 @@ public partial class MainWindow
         }
         else if (newIndex < 0)
         {
+            _lyricWords.Clear();
             bool wasLyricActive = _currentLyricIndex >= 0;
             _currentLyricIndex = -1;
 
@@ -928,6 +868,7 @@ public partial class MainWindow
                 ShowLyricsPlaceholder(gapTitle, gapArtist, _lyricsProvider);
             }
         }
+        _lyricWords.Update(position, playback.Playing);
     }
 
     private int FindLyricIndex(TimeSpan position)
@@ -963,7 +904,7 @@ public partial class MainWindow
     {
         if (LyricTextA == null || LyricTextB == null) return;
 
-        HideLyricsSearchState(immediate: true);
+        HideLyricsSearchState(immediate: !transitionFromSearch);
         if (!transitionFromPlaceholder)
         {
             HideLyricsPlaceholder(immediate: true);
@@ -974,23 +915,42 @@ public partial class MainWindow
         _lyricsLayerFadeMask ??= AnimatedLyricsLayer.OpacityMask;
         int transitionVersion = ++_lyricsLineTransitionVersion;
 
-        bool useA = LyricTextA.Opacity > 0.5;
+        // Track the incoming layer explicitly: a fast next line can arrive before
+        // its entrance reaches half opacity.
+        bool useA = ReferenceEquals(_activeLyricText, LyricTextA);
         TextBlock outgoing = useA ? LyricTextA : LyricTextB;
         TextBlock incoming = useA ? LyricTextB : LyricTextA;
         TranslateTransform outTransform = useA ? LyricTranslateA : LyricTranslateB;
         TranslateTransform inTransform = useA ? LyricTranslateB : LyricTranslateA;
+        _activeLyricText = incoming;
 
+        // Capture the displayed values before removing the previous clocks.
+        double outgoingOpacity = outgoing.Opacity;
+        double outgoingY = outTransform.Y;
+
+        // Clearing a clock leaves Motion's record of it, so an outgoing line still on its exit spring hands
+        // that speed on below. The incoming line enters on a tween: forget its old exit so a stale speed
+        // never reaches its next one.
         outgoing.BeginAnimation(OpacityProperty, null);
         outTransform.BeginAnimation(TranslateTransform.YProperty, null);
         incoming.BeginAnimation(OpacityProperty, null);
         inTransform.BeginAnimation(TranslateTransform.YProperty, null);
+        Motion.Forget(incoming, OpacityProperty);
+        Motion.Forget(inTransform, TranslateTransform.YProperty);
 
         double startY = (transitionFromSearch || transitionFromPlaceholder) ? 10 : 14;
         bool hasOutgoingText = !string.IsNullOrWhiteSpace(outgoing.Text);
-        outgoing.Opacity = hasOutgoingText ? 1 : 0;
-        outTransform.Y = 0;
+        outgoing.Opacity = hasOutgoingText ? outgoingOpacity : 0;
+        outTransform.Y = outgoingY;
         incoming.Opacity = 0;
         incoming.Text = newText;
+        var line = _currentLyrics != null && _currentLyricIndex >= 0 && _currentLyricIndex < _currentLyrics.Count
+            ? _currentLyrics[_currentLyricIndex] : new LyricLine(TimeSpan.Zero, newText);
+        bool hasWordTiming = line.Words is { Length: > 0 } && line.Text == newText;
+        if (hasWordTiming) startY = 6;
+        _lyricWords.SetLine(incoming, line.Text == newText ? line : new LyricLine(TimeSpan.Zero, newText));
+        var playback = GetLyricsPlayback();
+        _lyricWords.Update(playback.Position, playback.Playing);
         // WPF arranges the new text before rendering. The entrance delay keeps
         // it invisible during that pass without flushing the entire layout queue.
         // Keep the base position identical to the animation endpoint. The
@@ -1010,8 +970,7 @@ public partial class MainWindow
         AnimatedLyricsLayer.OpacityMask = _lyricsLayerFadeMask;
 
         int fps = VNotch.Services.AnimationConfig.TargetFps;
-        var outDur = new Duration(TimeSpan.FromMilliseconds(300));
-        var inDur = new Duration(TimeSpan.FromMilliseconds(450));
+        var inDur = new Duration(TimeSpan.FromMilliseconds(hasWordTiming ? 220 : 450));
         double delayMs = 80;
         if (transitionFromSearch)
         {
@@ -1021,20 +980,16 @@ public partial class MainWindow
         {
             delayMs = 110;
         }
+        if (hasWordTiming) delayMs = 0;
 
         var inDelay = TimeSpan.FromMilliseconds(delayMs);
         var easeOut = _easeExpOut5;
-        var easeIn = _easeCubicIn;
-
-        var fadeOut = new DoubleAnimation(1, 0, outDur) { EasingFunction = easeIn };
-        var slideOut = new DoubleAnimation(0, -14, outDur) { EasingFunction = easeIn };
-        Timeline.SetDesiredFrameRate(fadeOut, fps);
-        Timeline.SetDesiredFrameRate(slideOut, fps);
 
         if (hasOutgoingText)
         {
-            outgoing.BeginAnimation(OpacityProperty, fadeOut);
-            outTransform.BeginAnimation(TranslateTransform.YProperty, slideOut);
+            // The old line leaves on Exit from wherever it was, even halfway through its own entrance.
+            Motion.To(outgoing, OpacityProperty, 0, Motion.Exit);
+            Motion.To(outTransform, TranslateTransform.YProperty, hasWordTiming ? -6 : -14, Motion.Exit);
         }
 
         var fadeIn = new DoubleAnimation(0, 1, inDur)
@@ -1119,45 +1074,73 @@ public partial class MainWindow
             }
 
             // Always make LyricsWidget visible
-            if (LyricsWidget.Visibility != Visibility.Visible)
+            if (MediaRightColumn != null) MediaRightColumn.Visibility = Visibility.Visible;
+            if (LyricsWidget.Visibility != Visibility.Visible || !alreadyActive)
             {
+                double startOpacity = LyricsWidget.Visibility == Visibility.Visible ? LyricsWidget.Opacity : 0;
                 LyricsWidget.Visibility = Visibility.Visible;
 
-                if (!alreadyActive)
+                if (!alreadyActive && !AnimationConfig.ReduceMotion)
                 {
                     LyricsWidget.BeginAnimation(OpacityProperty, null);
-                    LyricsWidget.Opacity = 0;
-                    var fadeIn = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(300)))
-                    {
-                        EasingFunction = new ExponentialEase { Exponent = 6, EasingMode = EasingMode.EaseOut }
-                    };
+                    LyricsWidget.Opacity = startOpacity;
+                    var dur = new Duration(TimeSpan.FromMilliseconds(420));
+                    var easeOut = new ExponentialEase { Exponent = 6, EasingMode = EasingMode.EaseOut };
+                    var fadeIn = new DoubleAnimation(startOpacity, 1, dur) { EasingFunction = easeOut };
                     fadeIn.Completed += (s, e) =>
                     {
+                        if (!_isLyricsActive) return;
                         LyricsWidget.BeginAnimation(OpacityProperty, null);
                         LyricsWidget.Opacity = 1.0;
                     };
                     System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(fadeIn, VNotch.Services.AnimationConfig.TargetFps);
                     LyricsWidget.BeginAnimation(OpacityProperty, fadeIn);
+
+                    if (LyricsWidgetTranslate != null && LyricsWidgetScale != null)
+                    {
+                        LyricsWidgetTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                        LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                        LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                        LyricsWidgetTranslate.Y = 10;
+                        LyricsWidgetScale.ScaleX = 0.96;
+                        LyricsWidgetScale.ScaleY = 0.96;
+
+                        var slideIn = new DoubleAnimation(10, 0, dur) { EasingFunction = easeOut };
+                        var scaleIn = new DoubleAnimation(0.96, 1.0, dur) { EasingFunction = easeOut };
+                        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(slideIn, VNotch.Services.AnimationConfig.TargetFps);
+                        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(scaleIn, VNotch.Services.AnimationConfig.TargetFps);
+                        slideIn.Completed += (s, e) =>
+                        {
+                            if (!_isLyricsActive) return;
+                            LyricsWidgetTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                            LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                            LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                            LyricsWidgetTranslate.Y = 0;
+                            LyricsWidgetScale.ScaleX = 1.0;
+                            LyricsWidgetScale.ScaleY = 1.0;
+                        };
+                        LyricsWidgetTranslate.BeginAnimation(TranslateTransform.YProperty, slideIn);
+                        LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleIn);
+                        LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleIn);
+                    }
                 }
                 else
                 {
-                    LyricsWidget.Opacity = 1.0;
-                }
-            }
-            else if (!alreadyActive)
-            {
-                // Visibility is already Visible, but transitioning from an inactive state
-                var fadeIn = new DoubleAnimation(LyricsWidget.Opacity, 1, new Duration(TimeSpan.FromMilliseconds(250)))
-                {
-                    EasingFunction = new ExponentialEase { Exponent = 6, EasingMode = EasingMode.EaseOut }
-                };
-                fadeIn.Completed += (s, e) =>
-                {
                     LyricsWidget.BeginAnimation(OpacityProperty, null);
                     LyricsWidget.Opacity = 1.0;
-                };
-                System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(fadeIn, VNotch.Services.AnimationConfig.TargetFps);
-                LyricsWidget.BeginAnimation(OpacityProperty, fadeIn);
+                    if (LyricsWidgetTranslate != null)
+                    {
+                        LyricsWidgetTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                        LyricsWidgetTranslate.Y = 0;
+                    }
+                    if (LyricsWidgetScale != null)
+                    {
+                        LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                        LyricsWidgetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                        LyricsWidgetScale.ScaleX = 1.0;
+                        LyricsWidgetScale.ScaleY = 1.0;
+                    }
+                }
             }
 
             UpdateSpotifyCanvasPresentationContext();
@@ -1166,15 +1149,21 @@ public partial class MainWindow
             ShowSpotifyCanvasBackgroundIfAvailable();
 
             FadeInLyricsBlurBackgroundIfActive();
+            SyncExpandedMediaWidth(animate: !alreadyActive);
         });
     }
 
     private void HideLyricsWidget()
     {
+        _lyricWords.Clear();
         _subtitleSearchController.Invalidate();
         if (!_isLyricsActive)
         {
-            if (!IsNoWidgetMode) Dispatcher.Invoke(HideLyricsBlurBackgroundImmediately);
+            Dispatcher.Invoke(() =>
+            {
+                HideLyricsBlurBackgroundImmediately();
+                SyncExpandedMediaWidth(animate: false);
+            });
             return;
         }
         _isLyricsActive = false;
@@ -1220,10 +1209,13 @@ public partial class MainWindow
             LyricsWidget.BeginAnimation(OpacityProperty, fadeOutLyrics);
 
             // The returning widget must never inherit the lyrics backdrop.
-            if (!IsNoWidgetMode) HideLyricsBlurBackgroundImmediately();
+            HideLyricsBlurBackgroundImmediately();
+            SyncExpandedMediaWidth(animate: true);
 
             SuspendSpotifyCanvasLifecycle();
 
+            if (MediaRightColumn != null)
+                MediaRightColumn.Visibility = IsNoWidgetMode && !_isLyricsActive ? Visibility.Collapsed : Visibility.Visible;
             CalendarWidget.Visibility = IsNoWidgetMode ? Visibility.Collapsed : Visibility.Visible;
             CalendarWidget.Opacity = 0;
             var fadeInCalendar = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(350)))
@@ -1233,7 +1225,7 @@ public partial class MainWindow
             };
             System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(fadeInCalendar, VNotch.Services.AnimationConfig.TargetFps);
             CalendarWidget.BeginAnimation(OpacityProperty, fadeInCalendar);
-            if (IsNoWidgetMode) FadeInLyricsBlurBackgroundIfActive();
+
 
             if (ShouldShowGreetingSection)
             {
@@ -1282,6 +1274,8 @@ public partial class MainWindow
     {
         ++_lyricsFetchGeneration;
         _subtitleRequestKey = null;
+        _resolvedSubtitleTrackIdentity = "";
+        _lastKnownYouTubeVideoId = "";
         _lyricsTrackKey = "";
         _currentLyrics = null;
         _currentLyricIndex = -1;
@@ -1289,9 +1283,30 @@ public partial class MainWindow
         _lastSubtitleFetchFailureTime = DateTime.MinValue;
         _syncedTextSource = SyncedTextSource.None;
         _lyricsService.Reset();
+        _lyricsPrefetchKey = null;
         _youtubeSubtitleService.Reset();
         ResetSpotifyCanvas();
         HideLyricsSearchState(immediate: true);
         HideLyricsWidget();
+
+        void ClearLyricsBlurImages()
+        {
+            if (LyricsBlurImage != null)
+            {
+                LyricsBlurImage.BeginAnimation(OpacityProperty, null);
+                LyricsBlurImage.Source = null;
+            }
+            if (LyricsBlurImageNext != null)
+            {
+                LyricsBlurImageNext.BeginAnimation(OpacityProperty, null);
+                LyricsBlurImageNext.Opacity = 0.0;
+                LyricsBlurImageNext.Source = null;
+            }
+        }
+
+        if (Dispatcher.CheckAccess())
+            ClearLyricsBlurImages();
+        else
+            Dispatcher.Invoke(ClearLyricsBlurImages);
     }
 }

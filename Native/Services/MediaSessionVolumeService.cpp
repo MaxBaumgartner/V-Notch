@@ -229,6 +229,15 @@ static std::vector<uint32_t> ResolveProcessIds(std::u16string_view source) {
             auto exe = std::u16string_view(reinterpret_cast<const char16_t*>(entry.szExeFile));
             bool matches = MediaSessionVolumeService::MatchesExecutable(exe, candidates);
             if (!matches && !window_source.images.empty()) {
+                // Only siblings of the actual window owner can have the same
+                // executable path. Do not OpenProcess for every OS process.
+                bool sameName = false;
+                for (const auto& owner_image : window_source.images) {
+                    const auto separator = owner_image.find_last_of(L"\\/");
+                    const wchar_t* name = owner_image.c_str() + (separator == std::wstring::npos ? 0 : separator + 1);
+                    if (_wcsicmp(entry.szExeFile, name) == 0) { sameName = true; break; }
+                }
+                if (!sameName) continue;
                 auto image = ProcessImage(entry.th32ProcessID);
                 for (const auto& owner_image : window_source.images)
                     if (!image.empty() && _wcsicmp(image.c_str(), owner_image.c_str()) == 0) { matches = true; break; }
@@ -258,26 +267,6 @@ VN_EXPORT int32_t vn_media_session_volume_matches_source(
         vnotch::make_u16_view(source_app_ptr, source_app_len)) ? 1u : 0u;
     return VN_OK;
     } catch (...) { *out_matches = 0; return VN_ERR_FAIL; }
-}
-
-VN_EXPORT int32_t vn_media_session_volume_compute_base_score(
-    uint8_t matched_by_process,
-    uint8_t matched_by_metadata,
-    uint8_t source_matches_last,
-    uint32_t process_id,
-    uint32_t last_process_id,
-    uint8_t session_id_matches_last,
-    double* out_score) noexcept
-{
-    if (out_score == nullptr) return VN_ERR_INVALID_ARG;
-    *out_score = vnotch::services::MediaSessionVolumeService::ComputeBaseSessionScore(
-        matched_by_process != 0u,
-        matched_by_metadata != 0u,
-        source_matches_last != 0u,
-        process_id,
-        last_process_id,
-        session_id_matches_last != 0u);
-    return VN_OK;
 }
 
 VN_EXPORT int32_t vn_media_session_volume_extract_candidates(

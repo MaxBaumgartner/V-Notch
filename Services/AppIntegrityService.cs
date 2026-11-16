@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using VNotch.Models;
 using VNotch.Windows;
 
 namespace VNotch.Services;
@@ -88,6 +89,22 @@ public static partial class AppIntegrityService
         byte isInstaller,
         out byte outApplicable);
 
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_app_integrity_is_valid_release_tag(
+        ReadOnlySpan<char> tagPtr,
+        int tagLen,
+        out byte outValid);
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_app_integrity_matches_checksum_manifest(
+        ReadOnlySpan<char> manifestPtr,
+        int manifestLen,
+        ReadOnlySpan<char> actualHashPtr,
+        int actualHashLen,
+        ReadOnlySpan<char> targetFilePtr,
+        int targetFileLen,
+        out byte outMatches);
+
     private const string LogCategory = "INTEGRITY";
     private const string OfficialRepoOwner = "w0otdev";
     private const string OfficialRepoName = "V-Notch";
@@ -95,6 +112,7 @@ public static partial class AppIntegrityService
     public const string OfficialReleasesUrl = "https://github.com/w0otdev/V-Notch/releases";
 #pragma warning restore S1075
     private const string UserAgent = "V-Notch-Integrity-Checker";
+    internal const int MaxResponseBytes = 1024 * 1024;
 
     private static readonly HttpClient HttpClientInstance = CreateHttpClient();
 
@@ -102,7 +120,8 @@ public static partial class AppIntegrityService
     {
         var client = new HttpClient(NetworkPrivacy.Handler(NetworkFeature.Updates, new NativeWinHttpHandler { AllowAutoRedirect = true }))
         {
-            Timeout = TimeSpan.FromSeconds(15)
+            Timeout = TimeSpan.FromSeconds(15),
+            MaxResponseContentBufferSize = MaxResponseBytes
         };
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
         return client;
@@ -255,7 +274,19 @@ public static partial class AppIntegrityService
     /// </summary>
     public static async Task<string> ComputeFileSha256Async(string filePath, CancellationToken cancellationToken = default)
     {
-        await using var stream = File.OpenRead(filePath);
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 81920, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await ComputeFileSha256Async(stream, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Computes the SHA-256 hash of a stream as a lowercase hex string, resetting stream position to 0 when seekable.
+    /// </summary>
+    public static async Task<string> ComputeFileSha256Async(Stream stream, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (stream.CanSeek)
+            stream.Position = 0;
         byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
@@ -276,14 +307,97 @@ public static partial class AppIntegrityService
     }
 
     /// <summary>
+    /// Builds candidate GitHub release tags for a version string, ordering "v{version}" before "{version}".
+    /// </summary>
+    public static string[] BuildCandidateReleaseTags(string version)
+    {
+        if (string.IsNullOrWhiteSpace(version))
+            return [];
+
+        string cleanVersion = version.Trim().TrimStart('v', 'V');
+        if (string.IsNullOrEmpty(cleanVersion) || !IsValidReleaseTag(cleanVersion))
+            return [];
+
+        return [$"v{cleanVersion}", cleanVersion];
+    }
+
+    internal static bool IsValidReleaseTag(string tag)
+    {
+        if (string.IsNullOrEmpty(tag))
+            return false;
+
+        ReadOnlySpan<char> span = tag.AsSpan();
+        return vn_app_integrity_is_valid_release_tag(span, span.Length, out byte valid) == 0 && valid != 0;
+    }
+
+    internal static bool MatchesChecksumManifest(string checksumData, string actualHash, string targetFileName = "V-Notch.exe")
+    {
+        if (string.IsNullOrWhiteSpace(checksumData) || string.IsNullOrWhiteSpace(actualHash))
+            return false;
+
+        ReadOnlySpan<char> manifestSpan = checksumData.AsSpan();
+        ReadOnlySpan<char> hashSpan = actualHash.AsSpan();
+        ReadOnlySpan<char> targetSpan = (targetFileName ?? string.Empty).AsSpan();
+        return vn_app_integrity_matches_checksum_manifest(
+            manifestSpan, manifestSpan.Length,
+            hashSpan, hashSpan.Length,
+            targetSpan, targetSpan.Length,
+            out byte matches) == 0 && matches != 0;
+    }
+
+    private static async Task<string> ReadBoundedStringAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
+    {
+        if (response.Content.Headers.ContentLength is > 0 and var contentLength && contentLength > maxBytes)
+            throw new InvalidDataException($"Response content length {contentLength} exceeds maximum allowed {maxBytes} bytes.");
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var ms = new MemoryStream();
+        byte[] buffer = new byte[8192];
+        int totalRead = 0;
+        while (true)
+        {
+            int read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                break;
+            totalRead += read;
+            if (totalRead > maxBytes)
+                throw new InvalidDataException($"Response exceeded maximum allowed {maxBytes} bytes.");
+            ms.Write(buffer, 0, read);
+        }
+
+        ms.Position = 0;
+        using var reader = new StreamReader(ms, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Determines whether automatic background integrity network checks are permitted under current settings.
+    /// </summary>
+    public static bool IsBackgroundCheckAllowed(NotchSettings? settings = null, bool autoCheckUpdates = true)
+    {
+        if (!autoCheckUpdates)
+            return false;
+
+        if (settings is not null)
+            return settings.AutoCheckUpdates && !settings.EnableLocalOnlyMode;
+
+        return NetworkPrivacy.Current.IsAllowed(NetworkFeature.Updates);
+    }
+
+    /// <summary>
     /// Verifies the running binary's SHA-256 hash against official checksum assets on GitHub Releases.
     /// </summary>
     public static async Task<IntegrityCheckStatus> VerifyChecksumAsync(
         string filePath,
         string version,
         HttpClient? customClient = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        NotchSettings? settings = null,
+        bool autoCheckUpdates = true)
     {
+        if (!autoCheckUpdates || (settings is not null && (!settings.AutoCheckUpdates || settings.EnableLocalOnlyMode)))
+            return IntegrityCheckStatus.Skipped;
+
         if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
             return IntegrityCheckStatus.Skipped;
 
@@ -292,16 +406,17 @@ public static partial class AppIntegrityService
         try
         {
             string actualHash = await ComputeFileSha256Async(filePath, cancellationToken).ConfigureAwait(false);
-            string tagWithoutV = version.TrimStart('v');
-            string tagWithV = $"v{tagWithoutV}";
 
             HttpResponseMessage? response = null;
-            foreach (var tag in new[] { tagWithoutV, tagWithV })
+            foreach (var tag in BuildCandidateReleaseTags(version))
             {
-                var apiUrl = $"https://api.github.com/repos/{OfficialRepoOwner}/{OfficialRepoName}/releases/tags/{tag}";
-                using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
+                if (tag.Contains('/') || tag.Contains('\\') || tag.Contains("..", StringComparison.Ordinal))
+                    continue;
+
+                var releaseUrl = $"https://api.github.com/repos/{OfficialRepoOwner}/{OfficialRepoName}/releases/tags/{Uri.EscapeDataString(tag)}";
+                using var req = new HttpRequestMessage(HttpMethod.Get, releaseUrl);
                 req.Headers.TryAddWithoutValidation("Accept", "application/vnd.github+json");
-                var resp = await client.SendAsync(req, cancellationToken).ConfigureAwait(false);
+                var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 if (resp.IsSuccessStatusCode)
                 {
                     response?.Dispose();
@@ -329,8 +444,16 @@ public static partial class AppIntegrityService
                 return IntegrityCheckStatus.NetworkError;
             }
 
-            var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            response.Dispose(); response = null;
+            string content;
+            try
+            {
+                content = await ReadBoundedStringAsync(response, MaxResponseBytes, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                response.Dispose();
+                response = null;
+            }
             using var doc = JsonDocument.Parse(content);
             if (!doc.RootElement.TryGetProperty("assets", out var assets) || assets.GetArrayLength() == 0)
             {
@@ -339,6 +462,9 @@ public static partial class AppIntegrityService
 
             string targetFileName = Path.GetFileName(filePath);
             bool isInstaller = targetFileName.Contains("Setup", StringComparison.OrdinalIgnoreCase);
+            string manifestTargetName = targetFileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+                ? "V-Notch.exe"
+                : targetFileName;
 
             bool foundAnyChecksumAsset = false;
             bool readAnyChecksumAsset = false;
@@ -356,9 +482,13 @@ public static partial class AppIntegrityService
                     foundAnyChecksumAsset = true;
                     try
                     {
-                        var checksumData = await client.GetStringAsync(downloadUrl, cancellationToken).ConfigureAwait(false);
+                        using var checksumResp = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                        checksumResp.EnsureSuccessStatusCode();
+                        var checksumData = await ReadBoundedStringAsync(checksumResp, MaxResponseBytes, cancellationToken).ConfigureAwait(false);
                         readAnyChecksumAsset = true;
-                        if (checksumData.Contains(actualHash, StringComparison.OrdinalIgnoreCase))
+                        if (MatchesChecksumManifest(checksumData, actualHash, manifestTargetName) ||
+                            (!isInstaller && !string.Equals(manifestTargetName, "V-Notch.exe", StringComparison.OrdinalIgnoreCase) &&
+                             MatchesChecksumManifest(checksumData, actualHash, "V-Notch.exe")))
                         {
                             return IntegrityCheckStatus.Verified;
                         }
@@ -402,18 +532,34 @@ public static partial class AppIntegrityService
     /// <summary>
     /// Executes the integrity check in the background after startup.
     /// </summary>
-    public static async Task StartBackgroundCheckAsync(TimeSpan? delay = null)
+    public static async Task<IntegrityCheckStatus> StartBackgroundCheckAsync(
+        TimeSpan? delay = null,
+        NotchSettings? settings = null,
+        bool autoCheckUpdates = true,
+        HttpClient? customClient = null,
+        string? executablePath = null,
+        bool ignoreDevEnvironment = false,
+        CancellationToken cancellationToken = default)
     {
-        if (IsDevOrTestEnvironment())
-            return;
+        if (!IsBackgroundCheckAllowed(settings, autoCheckUpdates))
+            return IntegrityCheckStatus.Skipped;
+
+        if (!ignoreDevEnvironment && IsDevOrTestEnvironment())
+            return IntegrityCheckStatus.Skipped;
 
         try
         {
-            await Task.Delay(delay ?? TimeSpan.FromSeconds(5));
+            await Task.Delay(delay ?? TimeSpan.FromSeconds(5), cancellationToken);
 
-            string? exePath = Environment.ProcessPath;
+            if (!IsBackgroundCheckAllowed(settings, autoCheckUpdates) ||
+                (customClient is null && !NetworkPrivacy.Current.IsAllowed(NetworkFeature.Updates)))
+            {
+                return IntegrityCheckStatus.Skipped;
+            }
+
+            string? exePath = executablePath ?? Environment.ProcessPath;
             if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
-                return;
+                return IntegrityCheckStatus.Skipped;
 
             // 1. Check MOTW (Zone.Identifier)
             var (isTrustedOrigin, untrustedUrl) = CheckDownloadOrigin(exePath);
@@ -423,12 +569,12 @@ public static partial class AppIntegrityService
                 ShowIntegrityAlert(
                     Loc.Get("integrity.warningTitle"),
                     Loc.Get("integrity.untrustedSource", untrustedUrl));
-                return;
+                return IntegrityCheckStatus.Skipped;
             }
 
             // 2. Check GitHub Release Checksum
             string version = GetAppVersion();
-            var status = await VerifyChecksumAsync(exePath, version);
+            var status = await VerifyChecksumAsync(exePath, version, customClient, cancellationToken, settings, autoCheckUpdates);
             if (status == IntegrityCheckStatus.HashMismatch)
             {
                 RuntimeLog.Warn(LogCategory, $"Application hash mismatch with official release v{version}");
@@ -436,10 +582,17 @@ public static partial class AppIntegrityService
                     Loc.Get("integrity.warningTitle"),
                     Loc.Get("integrity.hashMismatch", version));
             }
+
+            return status;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return IntegrityCheckStatus.Skipped;
         }
         catch (Exception ex)
         {
             RuntimeLog.Error(LogCategory, ex, "Background integrity verification encountered an error");
+            return IntegrityCheckStatus.NetworkError;
         }
     }
 

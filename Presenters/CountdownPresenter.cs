@@ -15,7 +15,7 @@ public sealed class CountdownPresenter : IDisposable
     private static readonly Geometry _pauseGeometry = CreateFrozenGeometry(
         "M224,320a16,16,0,0,1-32,0V192a16,16,0,0,1,32,0Zm96,0a16,16,0,0,1-32,0V192a16,16,0,0,1,32,0Z");
 
-    private static readonly Brush _startIdleBrush = CreateFrozenGradient(Color.FromRgb(0xFF, 0xA0, 0x33), Color.FromRgb(0xFF, 0x7A, 0x00));
+    private static readonly Brush _startIdleBrush = CreateFrozenBrush(Color.FromRgb(0xFF, 0xA0, 0x33));
     private static readonly Brush _startRunningBrush = CreateFrozenBrush(Color.FromArgb(0xFF, 0xE3, 0x56, 0x49));
 
     private static readonly Color _borderIdleColor = Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF);
@@ -24,7 +24,8 @@ public sealed class CountdownPresenter : IDisposable
     private static readonly Color _digitsFlashColor = Color.FromRgb(0xFF, 0xC9, 0x85);
 
     private static readonly Duration _dur200 = new(TimeSpan.FromMilliseconds(200));
-    private static readonly IEasingFunction _easeQuadOut = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+    private static readonly IEasingFunction _easeQuadOut = CreateFrozenQuadOut();
+    private static QuadraticEase CreateFrozenQuadOut() { var e = new QuadraticEase { EasingMode = EasingMode.EaseOut }; e.Freeze(); return e; }
 
     private const int RepeatInitialDelayMs = 400;
     private const int RepeatFastIntervalMs = 80;
@@ -177,13 +178,6 @@ public sealed class CountdownPresenter : IDisposable
         var flash = MakeAnim(0.20, new Duration(TimeSpan.FromMilliseconds(80)), _easeQuadOut);
         flash.Completed += (_, _) => AnimateStepHighlightOpacity(highlight, 0.08, 260);
         highlight.BeginAnimation(UIElement.OpacityProperty, flash);
-    }
-
-    private static Brush CreateFrozenGradient(Color top, Color bottom)
-    {
-        var brush = new LinearGradientBrush(top, bottom, new Point(0, 0), new Point(0, 1));
-        brush.Freeze();
-        return brush;
     }
 
     private static Geometry CreateFrozenGeometry(string data)

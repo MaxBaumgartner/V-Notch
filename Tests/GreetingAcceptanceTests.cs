@@ -22,6 +22,43 @@ public sealed class GreetingAcceptanceTests
             .Select(code => new object?[] { code, code?.Trim().Equals("vi", StringComparison.OrdinalIgnoreCase) == true });
 
     [Fact]
+    public void GreetingCloseTakesOverLiveShellPositionAndVelocity() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        try
+        {
+            await using var fixture = new MainWindowFixture("en", greeting: false,
+                settings => { settings.EnableLocalOnlyMode = true; settings.SlimIdleNotch = false; },
+                services => services.AddSingleton<IMediaDetectionService>(new Fakes.FakeMediaDetectionService()));
+            var window = fixture.Window;
+            window.Left = -20000;
+            window.Top = -20000;
+            window.Show();
+            await WpfFrameWaiter.UntilAsync(() => window.NotchBorder.Opacity == 1, "initial appearance finishes", ct);
+            AnimationConfig.SetReduceMotion(false);
+            double closedWidth = window.NotchBorder.Width, closedHeight = window.NotchBorder.Height;
+            Invoke(window, "PlayGreetingAnimation");
+            await WpfFrameWaiter.UntilAsync(() => window.NotchBorder.Width > closedWidth + 10
+                && window.NotchBorder.Height > closedHeight + 5,
+                "greeting shell starts opening", ct);
+            double width = window.NotchBorder.Width;
+            double height = window.NotchBorder.Height;
+            double widthVelocity = Motion.VelocityOf(window.NotchBorder, FrameworkElement.WidthProperty);
+            double heightVelocity = Motion.VelocityOf(window.NotchBorder, FrameworkElement.HeightProperty);
+            Assert.True(widthVelocity > 0);
+            Assert.True(heightVelocity > 0);
+            Invoke(window, "DismissGreeting");
+            Assert.Equal(width, window.NotchBorder.Width, 4);
+            Assert.Equal(height, window.NotchBorder.Height, 4);
+            Assert.InRange(Motion.VelocityOf(window.NotchBorder, FrameworkElement.WidthProperty), widthVelocity * .8, widthVelocity * 1.2);
+            Assert.InRange(Motion.VelocityOf(window.NotchBorder, FrameworkElement.HeightProperty), heightVelocity * .8, heightVelocity * 1.2);
+            await WpfFrameWaiter.UntilAsync(() => !window.IsGreetingInteractionBlocked, "greeting reversal finishes", ct);
+            Assert.Equal(Visibility.Collapsed, window.GreetingOverlay.Visibility);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
     public void SpotlightHandoffRetiresHoverScaleAndBlocksNewHoverClocks() => SharedStaTestRunner.Run(() =>
     {
         using var fixture = new MainWindowFixture("en", greeting: false);
@@ -168,16 +205,18 @@ public sealed class GreetingAcceptanceTests
         using var fixture = new MainWindowFixture(language);
         var window = fixture.Window;
         Invoke(window, "PlayGreetingAnimation");
+        Motion.Stop(window.GreetingOverlay, UIElement.OpacityProperty, 1);
         Assert.Equal(language == "ar" ? FlowDirection.RightToLeft : FlowDirection.LeftToRight, window.FlowDirection);
         Assert.Equal(language != "vi" ? Visibility.Visible : Visibility.Collapsed, window.HelloPathContainer.Visibility);
         foreach (var path in Paths(window))
         {
             path.BeginAnimation(Shape.StrokeDashOffsetProperty, null);
+            path.BeginAnimation(UIElement.OpacityProperty, null);
             path.StrokeDashOffset = 0;
             path.Opacity = 1;
         }
         window.ViDotI.Visibility = Visibility.Visible;
-        window.ViDotI.Opacity = 1;
+        Motion.Stop(window.ViDotI, UIElement.OpacityProperty, 1);
         const int width = 320, height = 147;
         window.GreetingOverlay.Measure(new Size(width, height));
         window.GreetingOverlay.Arrange(new Rect(0, 0, width, height));

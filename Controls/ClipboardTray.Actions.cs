@@ -39,7 +39,10 @@ public sealed partial class ClipboardTray
                     else await card.RevealAsync(_controller.Store);
                     break;
                 case "details": await ShowDetailsAsync(card); break;
-                case "pin": await _controller.Store.UpdateAsync(card.Entry.Id, pinned: !card.Entry.IsPinned); break;
+                case "pin":
+                    if (((Button)sender).Content is FrameworkElement pin) PinHop(pin, pinning: !card.Entry.IsPinned);
+                    await _controller.Store.UpdateAsync(card.Entry.Id, pinned: !card.Entry.IsPinned);
+                    break;
                 case "archive": await _controller.Store.UpdateAsync(card.Entry.Id, archived: !card.Entry.IsArchived); break;
                 case "delete": await ConfirmDeleteAsync([card]); break;
                 case "movePersonal":
@@ -49,6 +52,24 @@ public sealed partial class ClipboardTray
                 case "groups": await ShowGroupChoicesAsync(card); break;
             }
         });
+    }
+
+    /// <summary>
+    /// The pin reacts where the eye is: it pops in a little large when it pins and dips when it lets go, then
+    /// settles on Press.
+    /// </summary>
+    private static void PinHop(FrameworkElement pin, bool pinning)
+    {
+        if (AnimationConfig.ReduceMotion) return;
+        if (pin.RenderTransform is not ScaleTransform scale || scale.IsFrozen)
+        {
+            scale = new ScaleTransform(1, 1);
+            pin.RenderTransform = scale;
+        }
+        pin.RenderTransformOrigin = new Point(0.5, 0.5);
+        double from = pinning ? 1.3 : 0.8;
+        Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Press, from: from);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Press, from: from);
     }
 
     private async Task ShowGroupChoicesAsync(ClipboardCardViewModel card)

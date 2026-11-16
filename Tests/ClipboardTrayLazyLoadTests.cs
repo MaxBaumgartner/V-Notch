@@ -236,7 +236,9 @@ public sealed class ClipboardTrayLazyLoadTests
             scroll.ScrollToHorizontalOffset(0);
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             await WpfFrameWaiter.UntilAsync(() => visible.All(card => card.Image != null), "returning previews reload");
-            Assert.NotSame(firstImage, visible[0].Image);
+            // Viewport references are released, but the bounded public-preview
+            // cache avoids decoding the original again when scrolling back.
+            Assert.Same(firstImage, visible[0].Image);
             tray.Visibility = Visibility.Collapsed;
             Assert.All(cards, card => { Assert.Null(card.Image); Assert.Null(card.SourceIcon); });
             Assert.Empty(Field<IDictionary>(tray, "_cardViewportStates"));
@@ -250,6 +252,41 @@ public sealed class ClipboardTrayLazyLoadTests
             store.Dispose();
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ViewportMotionStopsOnHideOrDisposeAndCanRestart(bool dispose) => SharedStaTestRunner.RunAsync(async () =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        using var tray = new ClipboardTray();
+        var card = new ClipboardCardViewModel(new ClipboardEntry { Kind = ClipboardKind.File, Title = "document.txt" });
+        Field<ObservableCollection<ClipboardCardViewModel>>(tray, "_cards").Add(card);
+        var window = new BackgroundWindow { Content = tray, Width = 780, Height = 300 };
+        try
+        {
+            window.Show();
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            var border = Field<HashSet<FrameworkElement>>(tray, "_realizedCardElements").Single();
+            Invoke(tray, "RefreshCardViewportVisibility", border, false);
+            Assert.True(Field<bool>(tray, "_viewportMotionHooked"));
+            Assert.NotEmpty(Field<System.Collections.IList>(tray, "_viewportMotions"));
+            if (dispose) tray.Dispose();
+            else tray.Visibility = Visibility.Collapsed;
+            Assert.False(Field<bool>(tray, "_viewportMotionHooked"));
+            Assert.Empty(Field<System.Collections.IList>(tray, "_viewportMotions"));
+            if (!dispose)
+            {
+                tray.Visibility = Visibility.Visible;
+                Invoke(tray, "RefreshCardViewportVisibility", border, true);
+                Assert.True(Field<bool>(tray, "_viewportMotionHooked"));
+                await WpfFrameWaiter.UntilAsync(() => !Field<bool>(tray, "_viewportMotionHooked"), "reopened viewport motion settles");
+                Assert.Equal(1, ((Border)border).Child.Opacity);
+            }
+        }
+        finally { window.Close(); AnimationConfig.SetReduceMotion(previous); }
     });
 
     [Theory]
@@ -286,12 +323,21 @@ public sealed class ClipboardTrayLazyLoadTests
             }
             else
             {
-                await WpfFrameWaiter.UntilAsync(() => visual.Opacity > 0 && visual.Opacity < .9, "card fades out");
-                double opacity = visual.Opacity;
-                Assert.Same(image, card.Image);
-                container.RenderTransform = Transform.Identity;
-                container.UpdateLayout();
-                Invoke(tray, "RefreshCardViewport", border);
+                double opacity = 0;
+                bool reversed = false;
+                // Reverse in the frame that observes the active fade. An async
+                // continuation may resume after the exit has legitimately finished.
+                await WpfFrameWaiter.UntilAsync(() =>
+                {
+                    if (reversed) return true;
+                    if (visual.Opacity <= 0 || visual.Opacity >= .9) return false;
+                    opacity = visual.Opacity;
+                    Assert.Same(image, card.Image);
+                    container.RenderTransform = Transform.Identity;
+                    container.UpdateLayout();
+                    Invoke(tray, "RefreshCardViewport", border);
+                    return reversed = true;
+                }, "card reverses while fading out");
                 await WpfFrameWaiter.NextAsync();
                 Assert.InRange(visual.Opacity, opacity - .1, 1);
                 await WpfFrameWaiter.UntilAsync(() => Math.Abs(visual.Opacity - 1) < 1e-6, "reversed entrance settles");
@@ -303,6 +349,7 @@ public sealed class ClipboardTrayLazyLoadTests
                 await WpfFrameWaiter.UntilAsync(() => card.Image == null, "exit releases its preview");
                 Assert.Equal(0, visual.Opacity);
                 Assert.Null(card.SourceIcon);
+                Assert.False(Field<bool>(tray, "_viewportMotionHooked"));
             }
         }
         finally { window.Close(); AnimationConfig.SetReduceMotion(previous); }
@@ -338,6 +385,51 @@ public sealed class ClipboardTrayLazyLoadTests
             tray.Dispose();
             controller.Dispose();
             store.Dispose();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    });
+
+    [Fact]
+    public void UnloadingDuringInFlightThumbnailLoadAndReloadingDoesNotThrowObjectDisposed() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        string root = Path.Combine(Path.GetTempPath(), "vnotch-unload-reload-preview-" + Guid.NewGuid().ToString("N"));
+        using var store = new ClipboardHistoryStore(root);
+        using var controller = new ClipboardHistoryController(Dispatcher.CurrentDispatcher, store);
+        using var tray = new ClipboardTray();
+        var window = new BackgroundWindow { Content = tray, Width = 780, Height = 300 };
+        try
+        {
+            await store.InitializeAsync();
+            var entry = (await store.ImportAsync(new ClipboardCapture { ImagePng = ImageBytes(200, 64, 64) })).Entry!;
+            tray.Attach(controller);
+            Field<UiScheduledTimer>(tray, "_searchTimer").Stop();
+            SetField(tray, "_queryDirty", false);
+            Invoke(tray, "ReconcilePreparedCards", (object)new[] { entry }, null);
+            window.Show();
+            var cards = Field<ObservableCollection<ClipboardCardViewModel>>(tray, "_cards");
+            await WpfFrameWaiter.UntilAsync(() => cards.Single().Image != null, "initial preview loads");
+
+            var element = Field<HashSet<FrameworkElement>>(tray, "_realizedCardElements").Single();
+            cards.Single().Image = null;
+            Invoke(tray, "CancelThumbnailLoads", false);
+
+            var inFlightLoad = (Task)Invoke(tray, "LoadCardContentAsync", element)!;
+            Assert.False(inFlightLoad.IsCompleted);
+
+            window.Content = null;
+            window.UpdateLayout();
+            Invoke(tray, "Tray_Unloaded", tray, new RoutedEventArgs(FrameworkElement.UnloadedEvent));
+            await inFlightLoad;
+
+            window.Content = tray;
+            window.UpdateLayout();
+            await WpfFrameWaiter.UntilAsync(() => cards.SingleOrDefault()?.Image != null, "preview reloads after tray reload");
+        }
+        finally
+        {
+            window.Close();
+            tray.Dispose();
+            await controller.DisposeAsync();
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     });

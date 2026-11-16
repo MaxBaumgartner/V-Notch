@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
@@ -197,29 +197,8 @@ public partial class ConfirmationDialog : Window
         }
     }
 
-    private void Window_Loaded(object sender, RoutedEventArgs e)
-    {
-        if (AnimationConfig.ReduceMotion) return;
-
-        var easeOut = new ExponentialEase { EasingMode = EasingMode.EaseOut, Exponent = 6 };
-        var dur = TimeSpan.FromMilliseconds(280);
-        int fps = AnimationConfig.TargetFps;
-
-        var scaleX = new DoubleAnimation(0.9, 1.0, dur) { EasingFunction = easeOut };
-        var scaleY = new DoubleAnimation(0.9, 1.0, dur) { EasingFunction = easeOut };
-        var transY = new DoubleAnimation(12.0, 0.0, dur) { EasingFunction = easeOut };
-        var opacity = new DoubleAnimation(0.0, 1.0, TimeSpan.FromMilliseconds(220)) { EasingFunction = easeOut };
-
-        Timeline.SetDesiredFrameRate(scaleX, fps);
-        Timeline.SetDesiredFrameRate(scaleY, fps);
-        Timeline.SetDesiredFrameRate(transY, fps);
-        Timeline.SetDesiredFrameRate(opacity, fps);
-
-        CardScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
-        CardScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleY);
-        CardTranslate.BeginAnimation(TranslateTransform.YProperty, transY);
-        DialogCard.BeginAnimation(UIElement.OpacityProperty, opacity);
-    }
+    private void Window_Loaded(object sender, RoutedEventArgs e) =>
+        Motion.GrowFromNotch(this, DialogCard, CardScale, CardTranslate);
 
     private void CloseWithAnimation(bool confirmed)
     {
@@ -228,54 +207,7 @@ public partial class ConfirmationDialog : Window
 
         Confirmed = confirmed;
 
-        if (AnimationConfig.ReduceMotion)
-        {
-            Close();
-            return;
-        }
-
-        var easeIn = new ExponentialEase { EasingMode = EasingMode.EaseIn, Exponent = 6 };
-        var dur = TimeSpan.FromMilliseconds(180);
-        int fps = AnimationConfig.TargetFps;
-
-        var scaleX = new DoubleAnimation(1.0, 0.92, dur) { EasingFunction = easeIn };
-        var scaleY = new DoubleAnimation(1.0, 0.92, dur) { EasingFunction = easeIn };
-        var transY = new DoubleAnimation(0.0, 8.0, dur) { EasingFunction = easeIn };
-        var opacity = new DoubleAnimation(1.0, 0.0, TimeSpan.FromMilliseconds(160)) { EasingFunction = easeIn };
-
-        Timeline.SetDesiredFrameRate(scaleX, fps);
-        Timeline.SetDesiredFrameRate(scaleY, fps);
-        Timeline.SetDesiredFrameRate(transY, fps);
-        Timeline.SetDesiredFrameRate(opacity, fps);
-
-        var fallbackTimer = new UiScheduledTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(250)
-        };
-
-        bool closed = false;
-        void SafeClose()
-        {
-            if (closed) return;
-            closed = true;
-            fallbackTimer.Stop();
-            fallbackTimer.Dispose();
-            Close();
-        }
-
-        opacity.Completed += (s, e) => SafeClose();
-
-        // Safety fallback in case WPF animation clock doesn't tick (e.g. headless CI)
-        fallbackTimer.Tick += (_, _) =>
-        {
-            SafeClose();
-        };
-        fallbackTimer.Start();
-
-        CardScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
-        CardScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleY);
-        CardTranslate.BeginAnimation(TranslateTransform.YProperty, transY);
-        DialogCard.BeginAnimation(UIElement.OpacityProperty, opacity);
+        Motion.SquishIntoNotch(this, DialogCard, CardScale, CardTranslate, Close);
     }
 
     private void Window_Closing(object sender, CancelEventArgs e)
@@ -296,9 +228,35 @@ public partial class ConfirmationDialog : Window
         }
         else if (e.Key == Key.Enter)
         {
+            var focused = GetFocusedElement(e);
+            if (ReferenceEquals(focused, CancelButton))
+            {
+                CloseWithAnimation(false);
+                e.Handled = true;
+                return;
+            }
+
+            if (focused is System.Windows.Controls.Primitives.ButtonBase focusedBtn &&
+                !ReferenceEquals(focusedBtn, ConfirmButton))
+            {
+                return;
+            }
+
             e.Handled = true;
             CloseWithAnimation(true);
         }
+    }
+
+    private IInputElement? GetFocusedElement(KeyEventArgs e)
+    {
+        if (Keyboard.FocusedElement is DependencyObject kb && GetWindow(kb) == this)
+            return (IInputElement)kb;
+        var logicalFocus = FocusManager.GetFocusedElement(this);
+        if (!IsVisible && logicalFocus != null)
+            FocusManager.SetFocusedElement(this, null);
+        if (logicalFocus != null && !ReferenceEquals(logicalFocus, this))
+            return logicalFocus;
+        return Keyboard.FocusedElement ?? e.OriginalSource as IInputElement;
     }
 
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

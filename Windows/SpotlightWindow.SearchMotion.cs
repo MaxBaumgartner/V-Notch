@@ -17,16 +17,9 @@ public partial class SpotlightWindow
         if (_searchActivityActive == active) return;
         _searchActivityActive = active;
         SearchActivity.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
-        StatusPanel.BeginAnimation(OpacityProperty, null);
-        StatusPanel.Opacity = 1;
-        if (active && !AnimationConfig.ReduceMotion)
-        {
-            // Fade only on entering the waiting state, never on each keystroke.
-            var fade = CreateAnimation(0, 1, TimeSpan.FromMilliseconds(150),
-                CreateContentResizeEase());
-            fade.FillBehavior = FillBehavior.Stop;
-            StatusPanel.BeginAnimation(OpacityProperty, fade);
-        }
+        // Fade only on entering the waiting state, never on each keystroke.
+        if (active) Motion.To(StatusPanel, OpacityProperty, 1, Motion.Tile, from: 0);
+        else Motion.Stop(StatusPanel, OpacityProperty, 1);
         RefreshSearchActivityMotion();
     }
 
@@ -55,11 +48,7 @@ public partial class SpotlightWindow
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(OnSearchMotionPreferenceChanged);
             return;
         }
-        if (AnimationConfig.ReduceMotion)
-        {
-            StatusPanel.BeginAnimation(OpacityProperty, null);
-            StatusPanel.Opacity = 1;
-        }
+        if (AnimationConfig.ReduceMotion) Motion.Stop(StatusPanel, OpacityProperty, 1);
         RefreshSearchActivityMotion();
     }
 }

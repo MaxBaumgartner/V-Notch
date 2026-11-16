@@ -23,6 +23,7 @@ public partial class MainWindow
     private const int RecentNotificationAppCount = 6;
 
     private readonly WindowsNotificationWatcher _appNotifications = new();
+    private readonly NotificationBannerSwitch _notificationBanners = new(NotificationBannerSwitch.WindowsRoot);
     private readonly Dictionary<string, ImageSource?> _appLogos = new(StringComparer.OrdinalIgnoreCase);
     // Apps that sent something lately, newest first, so the settings window can offer to mute them.
     private readonly List<NotificationApp> _recentNotificationApps = new();
@@ -42,11 +43,25 @@ public partial class MainWindow
         if (_appNotificationsAllowed) _appNotificationTimer.Start();
     }
 
-    private void DisposeAppNotifications() => _appNotificationTimer?.Stop();
+    private void DisposeAppNotifications()
+    {
+        _appNotificationTimer?.Stop();
+        CancelAppPillImmediate();
+    }
 
     /// <summary>For the settings window: whether Windows grants access, and who notified lately.</summary>
     private AppNotificationState ReadAppNotificationState() =>
-        new(_appNotificationsAllowed, _recentNotificationApps.ToArray());
+        new(_appNotificationsAllowed, _recentNotificationApps.ToArray())
+        {
+            BannerRestore = new Dictionary<string, int?>(_settings.BannerRestore, StringComparer.OrdinalIgnoreCase)
+        };
+
+    private void ApplyNotificationBannerSetting()
+    {
+        if (_settings.HideWindowsBanners || _settings.BannerRestore.Count == 0) return;
+        _notificationBanners.RestoreAll(_settings.BannerRestore);
+        _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
+    }
 
     /// <summary>The settings window flipped the main switch: start or stop looking for notifications.</summary>
     private void ApplyAppNotificationSetting()
@@ -93,25 +108,26 @@ public partial class MainWindow
             var muted = MutedNotificationApps();
             WindowsNotification? latest = null;
             int shown = 0;
+            int restoreCount = _settings.BannerRestore.Count;
             foreach (var notification in fresh)
             {
                 if (string.Equals(notification.AppName, OwnAppName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (_settings.HideWindowsBanners && !string.IsNullOrWhiteSpace(notification.AppUserModelId))
+                    _notificationBanners.Hide(notification.AppUserModelId, _settings.BannerRestore);
                 RememberNotificationApp(notification);
                 if (muted.Contains(AppKey(notification))) continue;
                 latest = notification;
                 shown++;
             }
+            if (_settings.BannerRestore.Count != restoreCount)
+                _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
             if (fresh.Count > 0) _activeSettingsWindow?.AppNotificationAppsChanged();
             if (!canShow || latest == null) return;
 
             // Several at once: the newest speaks for all of them.
             int others = shown - 1;
             ImageSource? logo = await LoadAppLogoAsync(latest);
-            string title = latest.AppName.Length > 0 ? latest.AppName : latest.Title;
-            string status = latest.AppName.Length > 0 ? latest.Title : latest.Body ?? "";
-            if (others > 0) status = $"{status}  +{others}";
-            string? appId = latest.AppUserModelId;
-            ShowNotchPill(title, status, logo, isClaude: false, tap: appId == null ? null : () => LaunchApp(appId));
+            ShowAppNotificationPill(latest, logo, others);
         }
         catch (Exception ex)
         {

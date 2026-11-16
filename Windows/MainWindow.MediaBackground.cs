@@ -30,17 +30,12 @@ public partial class MainWindow
     {
         bool glass = IsLiquidGlassEnabled;
 
-        // In glass mode, skip backdrop image but derive accent colors from album
-        // art so themed UI controls remain styled over glass.
-        if (!glass && (!_settings.ShowMediaArtBackground || !_settings.EnableBlurEffects))
+        if (info == null || (!info.IsAnyMediaPlaying && string.IsNullOrEmpty(info.CurrentTrack)))
         {
+            _lastBackgroundThumbnail = null;
+            _lastTrackId = null;
             HideMediaBackground();
-            return;
-        }
-
-        if (info == null || !info.IsAnyMediaPlaying)
-        {
-            HideMediaBackground();
+            CoverColorsFile.Clear();
             return;
         }
 
@@ -49,11 +44,13 @@ public partial class MainWindow
             return;
         }
 
-        bool suppressBackdrop = glass;
+        bool suppressBackdrop = glass || !_settings.ShowMediaArtBackground || !_settings.EnableBlurEffects;
 
         var palette = DynamicIslandColorExtractor.GetDynamicIslandPalette(info.Thumbnail);
         var dominantColor = palette.Main;
         var subColor = palette.Sub;
+        // The Govee strip's music sync lights up in these.
+        CoverColorsFile.Publish(dominantColor, subColor);
 
         if (glass)
         {
@@ -71,7 +68,7 @@ public partial class MainWindow
             return;
         }
 
-        if (!forceRefresh && dominantColor == _lastDominantColor && !isNewTrack &&
+        if (!forceRefresh && _hasVolumeHudMediaTint && dominantColor == _lastDominantColor && !isNewTrack &&
             ReferenceEquals(info.Thumbnail, _lastBackgroundThumbnail) &&
             (suppressBackdrop || !_isExpanded || MediaBackground.Opacity > 0.49)) return;
 
@@ -328,7 +325,8 @@ public partial class MainWindow
         ClearGlassMediaTint();
         HideMediaBackgroundOverlay();
 
-        if (_isTimerView || _isAudioView) return;
+        if (_isTimerView || _isAudioView || _isSecondaryView || _isCameraView) return;
+        _lastDominantColor = Colors.Transparent;
 
         var defaultColorAnim = new ColorAnimation
         {
@@ -393,9 +391,17 @@ public partial class MainWindow
 
     private void HideMediaBackgroundOverlay()
     {
-        if (MediaBackground.Opacity == 0 && MediaBackground.Visibility != Visibility.Visible) return;
+        if (MediaBackground.Opacity == 0 && MediaBackground.Visibility != Visibility.Visible)
+        {
+            if (_currentMediaInfo?.IsAnyMediaPlaying != true &&
+                (MediaBackgroundImage.Source != null || MediaBackgroundImageBack.Source != null || _lastBlurThumbnailRef != null))
+            {
+                ClearBlurredBackgroundSources();
+            }
+            return;
+        }
 
-        _lastDominantColor = Colors.Transparent;
+
         int animationVersion = ++_mediaBackgroundAnimationVersion;
         var opacityAnim = new DoubleAnimation(0, TimeSpan.FromMilliseconds(400))
         {
@@ -413,6 +419,14 @@ public partial class MainWindow
             {
                 MediaBackground.Visibility = Visibility.Collapsed;
                 MediaBackground2.Visibility = Visibility.Collapsed;
+                if (_currentMediaInfo?.IsAnyMediaPlaying != true)
+                {
+                    ClearBlurredBackgroundSources();
+                }
+                if (_currentMediaInfo == null || !_currentMediaInfo.IsAnyMediaPlaying)
+                {
+                    _lastBackgroundThumbnail = null;
+                }
             }
         };
 

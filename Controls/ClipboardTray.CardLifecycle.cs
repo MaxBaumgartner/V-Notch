@@ -18,7 +18,7 @@ public sealed partial class ClipboardTray
             var bounds = new Rect(0, 0, border.ActualWidth, border.ActualHeight);
             if (border.Clip is not RectangleGeometry existing || existing.Rect != bounds)
             {
-                var clip = new RectangleGeometry(bounds, 16, 16);
+                var clip = new RectangleGeometry(bounds, 12, 12);
                 clip.Freeze();
                 border.Clip = clip;
             }
@@ -41,11 +41,30 @@ public sealed partial class ClipboardTray
         }
     }
 
+    private void OnClearingCardContainer(DependencyObject element, object item)
+    {
+        if (element is ListBoxItem container)
+            ResetCardMotion(container);
+        var card = item as ClipboardCardViewModel ?? (element as FrameworkElement)?.DataContext as ClipboardCardViewModel;
+        if (card != null)
+            ReleaseRemovedCard(card, removeSelection: false);
+    }
+
+    private static ListBoxItem? FindParentListBoxItem(DependencyObject? current)
+    {
+        while (current != null)
+        {
+            if (current is ListBoxItem item) return item;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
     private void Card_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         if (sender is not FrameworkElement element) return;
         CancelThumbnailLoad(element); ForgetCardViewport(element); ResetCardMotion(element);
-        if (ItemsControl.ContainerFromElement(Cards, element) is ListBoxItem container)
+        if ((ItemsControl.ContainerFromElement(Cards, element) as ListBoxItem ?? FindParentListBoxItem(element)) is ListBoxItem container)
         {
             ResetCardMotion(container);
             if (element.IsLoaded && e.NewValue is ClipboardCardViewModel current && _arrivingCards.Remove(current.Entry.Id))

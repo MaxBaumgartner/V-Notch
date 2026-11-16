@@ -158,14 +158,18 @@ public:
         } ctx{target_process_name, current_track, nullptr, {}};
 
         EnumWindows([](HWND hwnd, LPARAM lparam) -> BOOL {
-            auto* c = reinterpret_cast<SearchCtx*>(lparam);
-            std::u16string title;
-            if (PipDetector::IsPipWindow(hwnd, c->target_process_name, c->current_track, &title)) {
-                c->found_hwnd = hwnd;
-                c->found_title = std::move(title);
+            try {
+                auto* c = reinterpret_cast<SearchCtx*>(lparam);
+                std::u16string title;
+                if (PipDetector::IsPipWindow(hwnd, c->target_process_name, c->current_track, &title)) {
+                    c->found_hwnd = hwnd;
+                    c->found_title = std::move(title);
+                    return FALSE;
+                }
+                return TRUE;
+            } catch (...) {
                 return FALSE;
             }
-            return TRUE;
         }, reinterpret_cast<LPARAM>(&ctx));
 
         *out_hwnd = ctx.found_hwnd;
@@ -255,28 +259,6 @@ VN_EXPORT int32_t vn_pip_is_known_browser_process(
     try {
         *out_is_browser = vnotch::services::PipDetector::IsKnownBrowserProcess(
             std::u16string_view(proc_ptr, static_cast<size_t>(proc_len))) ? 1 : 0;
-        return VN_OK;
-    } catch (...) {
-        return VN_ERR_FAIL;
-    }
-}
-
-VN_EXPORT int32_t vn_pip_is_pip_window(
-    intptr_t hwnd,
-    const char16_t* target_proc_ptr, int32_t target_proc_len,
-    const char16_t* current_track_ptr, int32_t current_track_len,
-    uint8_t* out_is_pip) noexcept
-{
-    if (!out_is_pip) return VN_ERR_INVALID_ARG;
-    try {
-        std::u16string_view proc_v = (target_proc_ptr && target_proc_len > 0)
-            ? std::u16string_view(target_proc_ptr, static_cast<size_t>(target_proc_len))
-            : std::u16string_view{};
-        std::u16string_view track_v = (current_track_ptr && current_track_len > 0)
-            ? std::u16string_view(current_track_ptr, static_cast<size_t>(current_track_len))
-            : std::u16string_view{};
-        *out_is_pip = vnotch::services::PipDetector::IsPipWindow(
-            reinterpret_cast<HWND>(hwnd), proc_v, track_v, nullptr) ? 1 : 0;
         return VN_OK;
     } catch (...) {
         return VN_ERR_FAIL;

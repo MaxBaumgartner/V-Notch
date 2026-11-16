@@ -29,6 +29,7 @@ public class MediaInfo
 
     public string CurrentTrack { get; set; } = "";
     public string CurrentArtist { get; set; } = "";
+    public string CurrentAlbum { get; set; } = "";
     public string YouTubeTitle { get; set; } = "";
     private string _mediaSource = "";
     private MediaPlatform _platform = MediaPlatform.Unknown;
@@ -58,6 +59,8 @@ public class MediaInfo
     public bool IsSeekEnabled { get; set; }
     public bool IsThrottled { get; set; }
     public bool IsThumbnailOnlyUpdate { get; set; }
+    // Playback/session identity is current while complete display credits load.
+    public bool IsMetadataPending { get; set; }
 
     public bool IsTimelineIndeterminate => MediaTimelinePolicy.IsIndeterminate(Duration, IsIndeterminate);
     public double Progress => HasTimeline ? Position.TotalSeconds / Duration.TotalSeconds : 0;
@@ -72,5 +75,5 @@ public class MediaInfo
 
     public MediaInfo Clone() => (MediaInfo)MemberwiseClone();
 
-    public string GetSignature() => $"{CurrentTrack}|{CurrentArtist}|{MediaSource}";
+    public string GetSignature() => $"{CurrentTrack}|{CurrentArtist}|{MediaSource}" + (IsMetadataPending ? "|pending" : "");
 }

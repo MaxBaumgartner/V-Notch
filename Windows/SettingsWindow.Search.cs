@@ -1,6 +1,8 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -23,18 +25,77 @@ public partial class SettingsWindow
 {
     #region Search
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnSettingsSearchRowSpan
+    {
+        public int TitleOffset;
+        public int TitleLen;
+        public int ContentOffset;
+        public int ContentLen;
+        public int CombinedOffset;
+        public int CombinedLen;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnSettingsSearchMatchResult
+    {
+        public int RowIndex;
+        public int Score;
+    }
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_settings_search_normalize(
+        ReadOnlySpan<char> inputPtr,
+        int inputLen,
+        Span<char> outBuf,
+        int outCap,
+        out int outLen);
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_settings_search_score_row(
+        ReadOnlySpan<char> normTitlePtr,
+        int normTitleLen,
+        ReadOnlySpan<char> normContentPtr,
+        int normContentLen,
+        ReadOnlySpan<char> normCombinedPtr,
+        int normCombinedLen,
+        ReadOnlySpan<char> normQueryPtr,
+        int normQueryLen,
+        byte allowFuzzy,
+        out int outScore);
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_settings_search_normalize_row(
+        ReadOnlySpan<char> titlePtr,
+        int titleLen,
+        ReadOnlySpan<char> contentPtr,
+        int contentLen,
+        ReadOnlySpan<char> sectionPtr,
+        int sectionLen,
+        Span<char> outArenaBuf,
+        int arenaCap,
+        out VnSettingsSearchRowSpan outSpan,
+        out int outArenaLen);
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_settings_search_evaluate_batch(
+        ReadOnlySpan<char> arenaPtr,
+        int arenaLen,
+        ReadOnlySpan<VnSettingsSearchRowSpan> rowsPtr,
+        int rowCount,
+        ReadOnlySpan<char> queryPtr,
+        int queryLen,
+        Span<VnSettingsSearchMatchResult> outResults,
+        int resultsCap,
+        out int outMatchCount);
+
     private UiScheduledTimer? _searchDebounce;
     private bool _isSearchMode;
     private readonly List<SearchRowEntry> _searchRows = new();
-    private readonly List<(SearchRowEntry Row, int Score, int Order)> _scoredSearchMatchesBuffer = new(64);
     private readonly List<SearchRowEntry> _restoreRowsBuffer = new(64);
-
-    private static readonly Comparison<(SearchRowEntry Row, int Score, int Order)> s_scoredMatchComparison =
-        static (a, b) =>
-        {
-            int cmp = b.Score.CompareTo(a.Score);
-            return cmp != 0 ? cmp : a.Order.CompareTo(b.Order);
-        };
+    private char[] _searchArena = new char[16384];
+    private int _searchArenaLen;
+    private VnSettingsSearchRowSpan[] _searchRowSpans = new VnSettingsSearchRowSpan[128];
 
     private static readonly Comparison<SearchRowEntry> s_restoreOrderComparison =
         static (a, b) => a.OriginalIndex.CompareTo(b.OriginalIndex);
@@ -115,53 +176,33 @@ public partial class SettingsWindow
     {
         if (string.IsNullOrWhiteSpace(query)) return;
 
-        string normalizedQuery = SettingsSearchMatcher.Normalize(query);
         bool enteredSearchMode = EnterSearchMode();
-        SearchResultsStack.Children.Clear();
 
-        _scoredSearchMatchesBuffer.Clear();
-        for (int i = 0; i < _searchRows.Count; i++)
+        int rowCount = _searchRows.Count;
+        Span<VnSettingsSearchMatchResult> matchResults = rowCount <= 128
+            ? stackalloc VnSettingsSearchMatchResult[128]
+            : new VnSettingsSearchMatchResult[rowCount];
+
+        int matchCount = 0;
+        if (rowCount > 0)
         {
-            var row = _searchRows[i];
-            int score = GetSearchRowScore(row, normalizedQuery, allowFuzzy: false);
-            if (score > 0)
-            {
-                _scoredSearchMatchesBuffer.Add((row, score, i));
-            }
+            ReadOnlySpan<char> querySpan = query.AsSpan();
+            vn_settings_search_evaluate_batch(
+                _searchArena.AsSpan(0, _searchArenaLen),
+                _searchArenaLen,
+                _searchRowSpans.AsSpan(0, rowCount),
+                rowCount,
+                querySpan,
+                querySpan.Length,
+                matchResults,
+                matchResults.Length,
+                out matchCount);
         }
 
-        // Approximate spelling is a fallback when direct matches are absent.
-        if (_scoredSearchMatchesBuffer.Count == 0)
-        {
-            for (int i = 0; i < _searchRows.Count; i++)
-            {
-                var row = _searchRows[i];
-                int score = GetSearchRowScore(row, normalizedQuery, allowFuzzy: true);
-                if (score > 0)
-                {
-                    _scoredSearchMatchesBuffer.Add((row, score, i));
-                }
-            }
-        }
-
-        _scoredSearchMatchesBuffer.Sort(s_scoredMatchComparison);
-
-        for (int i = 0; i < _scoredSearchMatchesBuffer.Count; i++)
-        {
-            var match = _scoredSearchMatchesBuffer[i].Row;
-            match.OriginalVisibility = match.Row.Visibility;
-
-            if (match.Row.Parent is StackPanel currentParent)
-            {
-                currentParent.Children.Remove(match.Row);
-            }
-
-            match.Row.Visibility = Visibility.Visible;
-            SearchResultsStack.Children.Add(match.Row);
-        }
+        ApplySearchResultDiff(matchResults[..matchCount]);
 
         bool wasShowingEmptyState = SearchingEmptyState.Visibility == Visibility.Visible;
-        bool showEmptyState = _scoredSearchMatchesBuffer.Count == 0;
+        bool showEmptyState = matchCount == 0;
         SearchingEmptyQuery.Text = showEmptyState ? $"“{query}”" : string.Empty;
         SearchingEmptyState.Visibility = showEmptyState ? Visibility.Visible : Visibility.Collapsed;
         SettingsScrollViewer.ScrollToTop();
@@ -178,26 +219,33 @@ public partial class SettingsWindow
         SettingsSearchBox.Focus();
     }
 
-    private static int GetSearchRowScore(SearchRowEntry row, string query, bool allowFuzzy) =>
-        SettingsSearchMatcher.GetRowMatchScore(
-            row.NormalizedTitleText,
-            row.NormalizedSearchText,
-            row.NormalizedCombinedText,
-            query,
-            allowFuzzy);
+    private static int GetSearchRowScore(SearchRowEntry row, string query, bool allowFuzzy)
+    {
+        ReadOnlySpan<char> titleSpan = row.NormalizedTitleText.AsSpan();
+        ReadOnlySpan<char> contentSpan = row.NormalizedSearchText.AsSpan();
+        ReadOnlySpan<char> combinedSpan = row.NormalizedCombinedText.AsSpan();
+        ReadOnlySpan<char> querySpan = query.AsSpan();
+        vn_settings_search_score_row(
+            titleSpan, titleSpan.Length,
+            contentSpan, contentSpan.Length,
+            combinedSpan, combinedSpan.Length,
+            querySpan, querySpan.Length,
+            allowFuzzy ? (byte)1 : (byte)0,
+            out int score);
+        return score;
+    }
 
     private bool EnterSearchMode()
     {
         if (_isSearchMode)
         {
-            RestoreSearchRows();
-            RefreshSearchRows();
+            RefreshSearchRowsIfNeeded();
             return false;
         }
 
         _isSearchMode = true;
         IndexSearchRows();
-        RefreshSearchRows();
+        RefreshSearchRowsIfNeeded();
         _activeNav = NavSectionSearching;
         UpdateSectionHeader();
 
@@ -212,20 +260,22 @@ public partial class SettingsWindow
 
     private void UpdateNavButtonsForSearchMode()
     {
-        foreach (var kvp in _navButtons)
+        // Search itself shows the nav buttons (the Searching one starts collapsed). That is presentation, not a
+        // changed setting, so it must not mark every row dirty and rebuild the whole index on each search.
+        _updatingSearchPresentation = true;
+        try
         {
-            bool isSearching = kvp.Key == NavSectionSearching;
-            kvp.Value.Visibility = Visibility.Visible;
-            kvp.Value.IsHitTestVisible = isSearching;
-            kvp.Value.Opacity = isSearching ? 1.0 : 0.35;
-            kvp.Value.Background = isSearching
-                ? (SolidColorBrush)FindResource("NavItemActiveBg")
-                : _transparentBrush;
-
-            var stack = kvp.Value.Child as StackPanel;
-            if (stack?.Children.Count > 1 && stack.Children[1] is TextBlock txt)
-                txt.Foreground = isSearching ? _whiteBrush : _navInactiveBrush;
+            foreach (var kvp in _navButtons)
+            {
+                bool isSearching = kvp.Key == NavSectionSearching;
+                kvp.Value.Visibility = Visibility.Visible;
+                kvp.Value.IsHitTestVisible = isSearching;
+                kvp.Value.Opacity = isSearching ? 1.0 : 0.35;
+                UpdateNavButtonVisual(kvp.Value, isSearching, animate: false);
+            }
         }
+        finally { _updatingSearchPresentation = false; }
+        SyncNavIndicators(animate: true);
     }
 
     private void ExitSearchMode()
@@ -242,11 +292,16 @@ public partial class SettingsWindow
             UpdateSectionHeader();
         }
 
-        ShowAllNavItems();
-        if (_navButtons.TryGetValue(NavSectionSearching, out var searchButton))
+        _updatingSearchPresentation = true;
+        try
         {
-            searchButton.Visibility = Visibility.Collapsed;
+            ShowAllNavItems();
+            if (_navButtons.TryGetValue(NavSectionSearching, out var searchButton))
+            {
+                searchButton.Visibility = Visibility.Collapsed;
+            }
         }
+        finally { _updatingSearchPresentation = false; }
 
         foreach (var kvp in _navPanels)
         {
@@ -289,6 +344,11 @@ public partial class SettingsWindow
                     sectionText));
             }
         }
+        foreach (var row in _searchRows)
+            ObserveSearchRow(row);
+        foreach (var button in _navButtons.Values)
+            ObserveSearchInputs(button, null);
+        RebuildNativeSearchArena();
     }
 
     private void RestoreSearchRows()
@@ -296,23 +356,19 @@ public partial class SettingsWindow
         _restoreRowsBuffer.Clear();
         for (int i = 0; i < _searchRows.Count; i++)
         {
-            _restoreRowsBuffer.Add(_searchRows[i]);
+            if (!ReferenceEquals(_searchRows[i].Row.Parent, _searchRows[i].OriginalParent))
+                _restoreRowsBuffer.Add(_searchRows[i]);
         }
 
         _restoreRowsBuffer.Sort(s_restoreOrderComparison);
 
-        for (int i = 0; i < _restoreRowsBuffer.Count; i++)
+        _updatingSearchPresentation = true;
+        try
         {
-            var row = _restoreRowsBuffer[i];
-            if (row.Row.Parent is StackPanel currentParent)
-            {
-                currentParent.Children.Remove(row.Row);
-            }
-
-            int insertIndex = Math.Clamp(row.OriginalIndex, 0, row.OriginalParent.Children.Count);
-            row.OriginalParent.Children.Insert(insertIndex, row.Row);
-            row.Row.Visibility = row.OriginalVisibility;
+            foreach (var row in _restoreRowsBuffer)
+                RestoreSearchRow(row);
         }
+        finally { _updatingSearchPresentation = false; }
     }
 
     private string BuildSectionSearchText(string section)
@@ -376,11 +432,17 @@ public partial class SettingsWindow
 
     private void RefreshSearchRows()
     {
+        InvalidateSearchIndex();
+        RefreshSearchRowsIfNeeded();
+    }
+
+    private void RefreshSearchRowsIfNeeded()
+    {
+        if (_dirtySearchRows.Count == 0) return;
         var sectionTextCache = new Dictionary<string, string>(StringComparer.Ordinal);
-        for (int i = 0; i < _searchRows.Count; i++)
+        foreach (var row in _dirtySearchRows)
         {
-            var row = _searchRows[i];
-            row.OriginalVisibility = row.Row.Visibility;
+            ObserveSearchInputs(row.Row, row);
             if (!sectionTextCache.TryGetValue(row.Section, out string? sectionText))
             {
                 sectionText = BuildSectionSearchText(row.Section);
@@ -389,6 +451,62 @@ public partial class SettingsWindow
 
             row.UpdateSearchText(BuildPrimaryTitleText(row.Row), BuildSearchText(row.Row), sectionText);
         }
+        _dirtySearchRows.Clear();
+        RebuildNativeSearchArena();
+    }
+
+    private void RebuildNativeSearchArena()
+    {
+        int rowCount = _searchRows.Count;
+        if (_searchRowSpans.Length < rowCount)
+        {
+            _searchRowSpans = new VnSettingsSearchRowSpan[rowCount];
+        }
+
+        int totalChars = 0;
+        for (int i = 0; i < rowCount; i++)
+        {
+            var r = _searchRows[i];
+            totalChars += r.NormalizedTitleText.Length + r.NormalizedSearchText.Length + r.NormalizedCombinedText.Length;
+        }
+
+        if (_searchArena.Length < totalChars)
+        {
+            _searchArena = new char[Math.Max(totalChars, _searchArena.Length * 2)];
+        }
+
+        int cursor = 0;
+        Span<char> arenaSpan = _searchArena.AsSpan();
+        for (int i = 0; i < rowCount; i++)
+        {
+            var r = _searchRows[i];
+            int tLen = r.NormalizedTitleText.Length;
+            int cLen = r.NormalizedSearchText.Length;
+            int combLen = r.NormalizedCombinedText.Length;
+
+            r.NormalizedTitleText.AsSpan().CopyTo(arenaSpan.Slice(cursor, tLen));
+            int tOff = cursor;
+            cursor += tLen;
+
+            r.NormalizedSearchText.AsSpan().CopyTo(arenaSpan.Slice(cursor, cLen));
+            int cOff = cursor;
+            cursor += cLen;
+
+            r.NormalizedCombinedText.AsSpan().CopyTo(arenaSpan.Slice(cursor, combLen));
+            int combOff = cursor;
+            cursor += combLen;
+
+            _searchRowSpans[i] = new VnSettingsSearchRowSpan
+            {
+                TitleOffset = tOff,
+                TitleLen = tLen,
+                ContentOffset = cOff,
+                ContentLen = cLen,
+                CombinedOffset = combOff,
+                CombinedLen = combLen
+            };
+        }
+        _searchArenaLen = cursor;
     }
 
     private void CollectSearchText(DependencyObject current, ISet<string> parts)
@@ -460,26 +578,23 @@ public partial class SettingsWindow
         }
     }
 
-    private static void AddLanguageSearchTerms(ISet<string> parts)
+    internal static void AddLanguageSearchTerms(ISet<string> parts)
     {
         foreach (var (code, nativeName) in Loc.GetAvailableLanguages())
         {
             parts.Add(code);
             parts.Add(nativeName);
 
-            string cultureName = code switch
+            try
             {
-                "vi" => "vi-VN",
-                "es" => "es-ES",
-                "fr" => "fr-FR",
-                "de" => "de-DE",
-                "ja" => "ja-JP",
-                "hi" => "hi-IN",
-                _ => "en-US"
-            };
-            var culture = System.Globalization.CultureInfo.GetCultureInfo(cultureName);
-            parts.Add(culture.EnglishName);
-            parts.Add(culture.NativeName);
+                var culture = System.Globalization.CultureInfo.GetCultureInfo(code);
+                parts.Add(culture.EnglishName);
+                parts.Add(culture.NativeName);
+            }
+            catch (System.Globalization.CultureNotFoundException)
+            {
+                // Ignore invalid culture codes if any
+            }
         }
     }
 
@@ -548,10 +663,53 @@ public partial class SettingsWindow
 
         public void UpdateSearchText(string titleText, string searchText, string sectionText)
         {
-            NormalizedTitleText = SettingsSearchMatcher.Normalize(titleText);
-            NormalizedSearchText = SettingsSearchMatcher.Normalize(searchText);
-            NormalizedSectionText = SettingsSearchMatcher.Normalize(sectionText);
-            NormalizedCombinedText = string.Concat(NormalizedSectionText, " ", NormalizedSearchText);
+            ReadOnlySpan<char> tSpan = (titleText ?? string.Empty).AsSpan();
+            ReadOnlySpan<char> cSpan = (searchText ?? string.Empty).AsSpan();
+            ReadOnlySpan<char> sSpan = (sectionText ?? string.Empty).AsSpan();
+
+            Span<char> stackBuf = stackalloc char[2048];
+            char[]? rented = null;
+            Span<char> arenaBuf = stackBuf;
+
+            int rc = vn_settings_search_normalize_row(
+                tSpan, tSpan.Length,
+                cSpan, cSpan.Length,
+                sSpan, sSpan.Length,
+                arenaBuf, arenaBuf.Length,
+                out var span,
+                out int arenaLen);
+
+            if (rc == -2 && arenaLen > arenaBuf.Length)
+            {
+                rented = ArrayPool<char>.Shared.Rent(arenaLen);
+                arenaBuf = rented.AsSpan(0, arenaLen);
+                rc = vn_settings_search_normalize_row(
+                    tSpan, tSpan.Length,
+                    cSpan, cSpan.Length,
+                    sSpan, sSpan.Length,
+                    arenaBuf, arenaBuf.Length,
+                    out span,
+                    out arenaLen);
+            }
+
+            try
+            {
+                if (rc == 0)
+                {
+                    NormalizedTitleText = span.TitleLen > 0 ? new string(arenaBuf.Slice(span.TitleOffset, span.TitleLen)) : string.Empty;
+                    NormalizedSearchText = span.ContentLen > 0 ? new string(arenaBuf.Slice(span.ContentOffset, span.ContentLen)) : string.Empty;
+                    NormalizedCombinedText = span.CombinedLen > 0 ? new string(arenaBuf.Slice(span.CombinedOffset, span.CombinedLen)) : string.Empty;
+                    int sectionLen = Math.Max(0, span.CombinedLen - span.ContentLen - 1);
+                    NormalizedSectionText = sectionLen > 0 ? new string(arenaBuf.Slice(span.CombinedOffset, sectionLen)) : string.Empty;
+                }
+            }
+            finally
+            {
+                if (rented != null)
+                {
+                    ArrayPool<char>.Shared.Return(rented);
+                }
+            }
         }
     }
 
@@ -573,13 +731,9 @@ public partial class SettingsWindow
             kvp.Value.IsHitTestVisible = true;
             kvp.Value.Opacity = 1.0;
             bool isActive = kvp.Key == _activeNav;
-            kvp.Value.Background = isActive
-                ? (SolidColorBrush)FindResource("NavItemActiveBg")
-                : _transparentBrush;
-            var stack = kvp.Value.Child as StackPanel;
-            if (stack?.Children.Count > 1 && stack.Children[1] is TextBlock txt)
-                txt.Foreground = isActive ? _whiteBrush : _navInactiveBrush;
+            UpdateNavButtonVisual(kvp.Value, isActive, animate: true);
         }
+        SyncNavIndicators(animate: true);
     }
 
     #endregion

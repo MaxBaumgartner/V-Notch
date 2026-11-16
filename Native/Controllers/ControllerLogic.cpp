@@ -1,4 +1,5 @@
 #include "../vnotch_common.h"
+#include "../vnotch_cpu.h"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -172,12 +173,18 @@ inline double GlassHash(int32_t ix, int32_t iy) noexcept
 
 inline double ValueNoise(double px, double py) noexcept
 {
-    const double floor_x = std::floor(px);
-    const double floor_y = std::floor(py);
+    if (!std::isfinite(px) || !std::isfinite(py))
+    {
+        return 0.5;
+    }
+    const double clamped_px = std::clamp(px, -1e8, 1e8);
+    const double clamped_py = std::clamp(py, -1e8, 1e8);
+    const double floor_x = std::floor(clamped_px);
+    const double floor_y = std::floor(clamped_py);
     const int32_t ix = static_cast<int32_t>(floor_x);
     const int32_t iy = static_cast<int32_t>(floor_y);
-    const double fx = Smoother01(px - floor_x);
-    const double fy = Smoother01(py - floor_y);
+    const double fx = Smoother01(clamped_px - floor_x);
+    const double fy = Smoother01(clamped_py - floor_y);
     const double h00 = GlassHash(ix, iy);
     const double h10 = GlassHash(ix + 1, iy);
     const double h01 = GlassHash(ix, iy + 1);
@@ -196,10 +203,16 @@ inline void PackSampleCoord(
     int32_t* out_idx,
     int32_t* out_aux) noexcept
 {
-    int32_t ix = static_cast<int32_t>(std::floor(sx));
-    int32_t iy = static_cast<int32_t>(std::floor(sy));
-    const double fx = sx - ix;
-    const double fy = sy - iy;
+    const double safe_sx = std::isfinite(sx)
+        ? std::clamp(sx, -1.0, static_cast<double>(std::max(0, max_x)) + 1.0)
+        : 0.0;
+    const double safe_sy = std::isfinite(sy)
+        ? std::clamp(sy, -1.0, static_cast<double>(std::max(0, max_y)) + 1.0)
+        : 0.0;
+    int32_t ix = static_cast<int32_t>(std::floor(safe_sx));
+    int32_t iy = static_cast<int32_t>(std::floor(safe_sy));
+    const double fx = safe_sx - ix;
+    const double fy = safe_sy - iy;
 
     int32_t wx;
     if (ix < 0)
@@ -303,6 +316,10 @@ inline int32_t BilerpChannel(
 
 inline uint8_t ClampByteFloat(float v) noexcept
 {
+    if (!std::isfinite(v))
+    {
+        return 0u;
+    }
     const float clamped = std::min(std::max(v, 0.0f), 255.0f);
     return static_cast<uint8_t>(static_cast<int32_t>(clamped + 0.5f));
 }
@@ -339,7 +356,7 @@ VN_EXPORT int32_t __stdcall vn_glass_frame_hash_128(
     uint64_t hi = 0x84222325CBF29CE4ULL ^ (static_cast<uint64_t>(length) * kPrimeLo);
 
     int32_t offset = 0;
-    if (length >= 64)
+    if (length >= 64 && vnotch::cpu::SupportsX64V3())
     {
         __m256i acc_lo0 = _mm256_set_epi64x(
             static_cast<int64_t>(lo ^ (kPrimeLo * 1ULL)),
@@ -415,7 +432,7 @@ VN_EXPORT int32_t __stdcall vn_glass_frame_hash_128(
              vnotch::controllers::Avalanche64(lanes_hi1[2] ^ lanes_hi0[3]);
     }
 
-    for (; offset + 8 <= length; offset += 8)
+    for (; offset <= length - 8; offset += 8)
     {
         uint64_t w = 0;
         std::memcpy(&w, data + offset, sizeof(w));
@@ -446,7 +463,10 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_lut(
     double* out_lut,
     int32_t lut_len) noexcept
 {
-    if (!out_lut || lut_len <= 1)
+    if (!out_lut || lut_len <= 1 ||
+        !std::isfinite(f_power) || !std::isfinite(refraction_a) ||
+        !std::isfinite(refraction_b) || !std::isfinite(refraction_c) ||
+        !std::isfinite(refraction_d))
     {
         return VN_ERR_INVALID_ARG;
     }
@@ -456,9 +476,11 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_lut(
     for (int32_t i = 0; i < lut_len; ++i)
     {
         const double dist_norm = static_cast<double>(i) * inv_lut_max;
-        const double exponent = -refraction_d * dist_norm - refraction_a;
-        const double f_val = 1.0 - refraction_b * std::pow(base_val, exponent);
-        out_lut[i] = std::pow(std::max(f_val, 0.0001), f_pow);
+        const double exponent = std::clamp(-refraction_d * dist_norm - refraction_a, -700.0, 700.0);
+        const double p_val = std::pow(base_val, exponent);
+        const double f_val = std::isfinite(p_val) ? (1.0 - refraction_b * p_val) : 0.0001;
+        const double out_val = std::pow(std::max(f_val, 0.0001), f_pow);
+        out_lut[i] = std::isfinite(out_val) ? out_val : 1.0;
     }
     return VN_OK;
 }
@@ -472,7 +494,22 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_rows(
     int32_t* out_map) noexcept
 {
     if (!params || !lut || !out_map || lut_len <= 1 || params->out_w <= 0 || params->out_h <= 0 ||
-        params->src_w <= 0 || params->src_h <= 0)
+        params->src_w <= 0 || params->src_h <= 0 ||
+        static_cast<int64_t>(params->src_w) * static_cast<int64_t>(params->src_h) > (INT32_MAX / 4) ||
+        static_cast<int64_t>(params->out_w) * static_cast<int64_t>(params->out_h) > (INT32_MAX / 6) ||
+        !std::isfinite(params->out_scale) ||
+        !std::isfinite(params->top_corner_radius) ||
+        !std::isfinite(params->bottom_corner_radius) ||
+        !std::isfinite(params->edge_bend) ||
+        !std::isfinite(params->chromatic_aberration) ||
+        !std::isfinite(params->distortion) ||
+        !std::isfinite(params->f_power) ||
+        !std::isfinite(params->refraction_a) ||
+        !std::isfinite(params->refraction_b) ||
+        !std::isfinite(params->refraction_c) ||
+        !std::isfinite(params->refraction_d) ||
+        !std::isfinite(params->refraction) ||
+        !std::isfinite(params->z_radius))
     {
         return VN_ERR_INVALID_ARG;
     }
@@ -484,22 +521,27 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_rows(
     const int32_t max_x = params->src_w - 1;
     const int32_t max_y = params->src_h - 1;
 
-    const double half_x = params->notch_w * 0.5;
-    const double half_y = params->notch_h * 0.5;
-    const double cx = params->notch_off_x + (params->notch_w - 1) * 0.5;
-    const double cy = params->notch_off_y + (params->notch_h - 1) * 0.5;
-    const double min_half = std::min(half_x, half_y);
+    const double half_x = static_cast<double>(params->notch_w) * 0.5;
+    const double half_y = static_cast<double>(params->notch_h) * 0.5;
+    const double cx = static_cast<double>(params->notch_off_x) + (static_cast<double>(params->notch_w) - 1.0) * 0.5;
+    const double cy = static_cast<double>(params->notch_off_y) + (static_cast<double>(params->notch_h) - 1.0) * 0.5;
+    const double min_half = std::max(0.0, std::min(half_x, half_y));
 
     const double top_r = std::clamp(params->top_corner_radius * params->out_scale, 0.0, min_half);
     const double bottom_r = std::clamp(params->bottom_corner_radius * params->out_scale, 0.0, min_half);
     const double u_chroma = std::clamp(params->chromatic_aberration, 0.0, 2.0);
     const double distort = std::clamp(params->distortion, 0.0, 2.0);
+    const double refract_strength = std::clamp(params->refraction, 0.0, 3.0);
+    const double z_rad = std::clamp(params->z_radius, 0.04, 1.0);
+    const double depth_reach = std::clamp(z_rad / 0.25, 0.20, 2.8) * (params->bevel_mode >= 1 ? 1.45 : 1.0);
+    const double bevel_shelf = params->bevel_mode >= 1 ? 0.22 : 0.0;
     const double aspect = std::clamp(
         static_cast<double>(params->notch_h) / std::max(static_cast<double>(params->notch_w), 1.0) * 2.5,
         0.0,
         1.0);
     const double vertical_balance = 0.68 + 0.32 * aspect;
-    const double bend = std::max(params->edge_bend, 0.1);
+    const double bend = std::max(params->edge_bend, 0.05) *
+        (refract_strength > 1e-4 ? (0.20 + 1.15 * refract_strength) : 0.0);
     const double inv_half_x = 1.0 / std::max(half_x, 1.0);
     const double inv_half_y = 1.0 / std::max(half_y, 1.0);
     const double inv_min_half = 1.0 / std::max(min_half, 1.0);
@@ -509,18 +551,18 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_rows(
     for (int32_t y = y0; y < y1; ++y)
     {
         const double ly = static_cast<double>(y) - cy;
-        const double row_base_y = static_cast<double>(y + params->margin - params->capture_shift_y);
+        const double row_base_y = static_cast<double>(y) + static_cast<double>(params->margin) - static_cast<double>(params->capture_shift_y);
         int32_t* dst_row = out_map + static_cast<size_t>(y) * static_cast<size_t>(out_w) * 6;
 
         for (int32_t x = 0; x < out_w; ++x)
         {
             const double lx = static_cast<double>(x) - cx;
-            double base_x = static_cast<double>(x + params->margin - params->capture_shift_x);
+            double base_x = static_cast<double>(x) + static_cast<double>(params->margin) - static_cast<double>(params->capture_shift_x);
             double base_y = row_base_y;
             int32_t* cell = dst_row + static_cast<size_t>(x) * 6;
 
             const double inside = -vnotch::controllers::RoundedRectSdf(lx, ly, half_x, half_y, top_r, bottom_r);
-            if (inside <= 0.0)
+            if (!std::isfinite(inside) || inside <= 0.0)
             {
                 int32_t s_idx = 0, s_aux = 0;
                 vnotch::controllers::PackSampleCoord(base_x, base_y, src_w, max_x, max_y, &s_idx, &s_aux);
@@ -532,23 +574,32 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_rows(
 
             const double px_norm = lx * inv_half_x;
             const double py_norm = ly * inv_half_y;
-            const double dist_norm = std::clamp(inside * inv_min_half, 0.0, 1.0);
-            const double one_minus_dist = 1.0 - dist_norm;
+            const double raw_dist = inside * inv_min_half;
+            const double dist_norm = std::isfinite(raw_dist) ? std::clamp(raw_dist, 0.0, 1.0) : 0.0;
+            const double scaled_dist = std::clamp(dist_norm / depth_reach, 0.0, 1.0);
+            const double one_minus_dist = 1.0 - scaled_dist;
 
-            const double lut_pos = dist_norm * lut_scale;
-            const int32_t lut_idx = static_cast<int32_t>(lut_pos);
-            const double refract_factor = (lut_idx >= lut_max_idx)
-                ? lut[lut_max_idx]
-                : (lut[lut_idx] + (lut[lut_idx + 1] - lut[lut_idx]) * (lut_pos - static_cast<double>(lut_idx)));
+            const double raw_lut_pos = scaled_dist * lut_scale;
+            const double lut_pos = std::isfinite(raw_lut_pos)
+                ? std::clamp(raw_lut_pos, 0.0, static_cast<double>(lut_max_idx - 1))
+                : 0.0;
+            int32_t lut_idx = static_cast<int32_t>(lut_pos);
+            lut_idx = std::clamp(lut_idx, 0, lut_max_idx - 1);
+            const double lut0 = std::isfinite(lut[lut_idx]) ? lut[lut_idx] : 1.0;
+            const double lut1 = std::isfinite(lut[lut_idx + 1]) ? lut[lut_idx + 1] : lut0;
+            const double frac = std::clamp((scaled_dist * lut_scale) - static_cast<double>(lut_idx), 0.0, 1.0);
+            const double base_refract = lut0 + (lut1 - lut0) * frac;
+            const double dome_pull = (one_minus_dist * one_minus_dist) * (0.18 + bevel_shelf) * std::min(refract_strength, 1.8);
+            const double refract_factor = std::clamp(base_refract - dome_pull, 0.05, 1.25);
 
             double disp_x = (px_norm * refract_factor - px_norm) * half_x * bend;
             double disp_y = (py_norm * refract_factor - py_norm) * half_y * bend;
 
-            if (distort > 0.0 && one_minus_dist > 0.0)
+            if (distort > 0.0)
             {
-                const double noise_x = vnotch::controllers::ValueNoise(lx * 0.045, ly * 0.045) * 2.0 - 1.0;
-                const double noise_y = vnotch::controllers::ValueNoise(lx * 0.045 + 19.7, ly * 0.045 + 43.1) * 2.0 - 1.0;
-                const double distort_scale = distort * 2.25 * one_minus_dist;
+                const double noise_x = vnotch::controllers::ValueNoise(lx * 0.055, ly * 0.055) * 2.0 - 1.0;
+                const double noise_y = vnotch::controllers::ValueNoise(lx * 0.055 + 19.7, ly * 0.055 + 43.1) * 2.0 - 1.0;
+                const double distort_scale = distort * 14.0 * (0.35 + 0.65 * one_minus_dist);
                 disp_x += noise_x * distort_scale;
                 disp_y += noise_y * vertical_balance * distort_scale;
             }
@@ -556,7 +607,7 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_rows(
             base_x += disp_x;
             base_y += disp_y;
 
-            const double ca_s = std::min(u_chroma * one_minus_dist * 3.0, 8.0);
+            const double ca_s = std::min(u_chroma * (0.30 + 0.70 * one_minus_dist) * 9.5, 14.0);
             if (ca_s <= 0.0)
             {
                 int32_t s_idx = 0, s_aux = 0;
@@ -568,8 +619,13 @@ VN_EXPORT int32_t __stdcall vn_glass_build_refraction_rows(
             }
 
             const double disp_len = std::sqrt(disp_x * disp_x + disp_y * disp_y);
-            const double ca_dir_x = disp_len > 1e-6 ? disp_x / disp_len : 0.0;
-            const double ca_dir_y = disp_len > 1e-6 ? disp_y / disp_len : 0.0;
+            const double norm_len = std::sqrt(px_norm * px_norm + py_norm * py_norm);
+            const double ca_dir_x = (std::isfinite(disp_len) && disp_len > 1e-4)
+                ? disp_x / disp_len
+                : ((norm_len > 1e-4) ? -px_norm / norm_len : 1.0);
+            const double ca_dir_y = (std::isfinite(disp_len) && disp_len > 1e-4)
+                ? disp_y / disp_len
+                : ((norm_len > 1e-4) ? -py_norm / norm_len : 0.0);
             const double ca_x = ca_dir_x * ca_s;
             const double ca_y = ca_dir_y * vertical_balance * ca_s;
 
@@ -649,7 +705,9 @@ VN_EXPORT int32_t __stdcall vn_glass_refract_gather(
         return VN_OK;
     }
 
-    const float one_minus_sat = 1.0f - sat_factor;
+    const float safe_sat = std::isfinite(sat_factor) ? sat_factor : 1.0f;
+    const float safe_bright = std::isfinite(bright_add) ? bright_add : 0.0f;
+    const float one_minus_sat = 1.0f - safe_sat;
     for (int32_t i = start_pixel; i < end_pixel; ++i)
     {
         const int32_t* m = refract_map + static_cast<size_t>(i) * 6;
@@ -694,11 +752,11 @@ VN_EXPORT int32_t __stdcall vn_glass_refract_gather(
             r = vnotch::controllers::BilerpChannel(src, idx_r, aux_r, src_stride, 2);
         }
 
-        const float lum = (static_cast<float>(77 * r + 150 * g + 29 * b) * (1.0f / 256.0f)) * one_minus_sat + bright_add;
+        const float lum = (static_cast<float>(77 * r + 150 * g + 29 * b) * (1.0f / 256.0f)) * one_minus_sat + safe_bright;
         uint8_t* out_px = dst + (static_cast<size_t>(i) << 2);
-        out_px[0] = vnotch::controllers::ClampByteFloat(lum + static_cast<float>(b) * sat_factor);
-        out_px[1] = vnotch::controllers::ClampByteFloat(lum + static_cast<float>(g) * sat_factor);
-        out_px[2] = vnotch::controllers::ClampByteFloat(lum + static_cast<float>(r) * sat_factor);
+        out_px[0] = vnotch::controllers::ClampByteFloat(lum + static_cast<float>(b) * safe_sat);
+        out_px[1] = vnotch::controllers::ClampByteFloat(lum + static_cast<float>(g) * safe_sat);
+        out_px[2] = vnotch::controllers::ClampByteFloat(lum + static_cast<float>(r) * safe_sat);
         out_px[3] = 255;
     }
 
@@ -717,12 +775,19 @@ VN_EXPORT int32_t __stdcall vn_glass_analyze_backdrop_samples(
         return VN_ERR_INVALID_ARG;
     }
 
-    const int32_t count = columns * rows;
-    if (!rgb_samples || columns <= 0 || rows <= 0 || sample_len < count || count > 4096)
+    if (!rgb_samples || columns <= 0 || rows <= 0 || columns > 4096 || rows > 4096)
     {
         *out_optics = VnGlassBackdropOpticsOut{128, 128, 128, 0, 0.0, 0.0, 0.0, 0};
         return VN_OK;
     }
+
+    const int64_t count64 = static_cast<int64_t>(columns) * static_cast<int64_t>(rows);
+    if (count64 <= 0 || count64 > 4096 || sample_len < count64)
+    {
+        *out_optics = VnGlassBackdropOpticsOut{128, 128, 128, 0, 0.0, 0.0, 0.0, 0};
+        return VN_OK;
+    }
+    const int32_t count = static_cast<int32_t>(count64);
 
     double stack_lum[256];
     std::vector<double> heap_lum;
@@ -802,7 +867,8 @@ VN_EXPORT int32_t __stdcall vn_glass_sample_backdrop_optics(
     int32_t sample_h,
     VnGlassBackdropOpticsOut* out_optics) noexcept
 {
-    if (!dib_bits || !out_optics || src_w <= 0 || src_h <= 0 || sample_w <= 0 || sample_h <= 0)
+    if (!dib_bits || !out_optics || src_w <= 0 || src_h <= 0 || sample_w <= 0 || sample_h <= 0 ||
+        static_cast<int64_t>(src_w) * static_cast<int64_t>(src_h) > (INT32_MAX / 4))
     {
         return VN_ERR_INVALID_ARG;
     }
@@ -810,16 +876,22 @@ VN_EXPORT int32_t __stdcall vn_glass_sample_backdrop_optics(
     constexpr int32_t kColumns = 8;
     constexpr int32_t kRows = 8;
     int32_t samples[kColumns * kRows];
-    const int32_t stride = src_w * 4;
+    const int64_t stride = static_cast<int64_t>(src_w) * 4LL;
+    const int64_t max_src_x = static_cast<int64_t>(src_w - 1);
+    const int64_t max_src_y = static_cast<int64_t>(src_h - 1);
 
     for (int32_t gy = 0; gy < kRows; ++gy)
     {
-        const int32_t y = std::clamp(sample_y + (sample_h - 1) * gy / (kRows - 1), 0, src_h - 1);
-        const uint8_t* row = dib_bits + static_cast<int64_t>(y) * stride;
+        const int64_t raw_y = static_cast<int64_t>(sample_y) +
+                              (static_cast<int64_t>(sample_h) - 1LL) * static_cast<int64_t>(gy) / (kRows - 1);
+        const int64_t y = std::clamp<int64_t>(raw_y, 0LL, max_src_y);
+        const uint8_t* row = dib_bits + y * stride;
         for (int32_t gx = 0; gx < kColumns; ++gx)
         {
-            const int32_t x = std::clamp(sample_x + (sample_w - 1) * gx / (kColumns - 1), 0, src_w - 1);
-            const uint8_t* p = row + x * 4;
+            const int64_t raw_x = static_cast<int64_t>(sample_x) +
+                                  (static_cast<int64_t>(sample_w) - 1LL) * static_cast<int64_t>(gx) / (kColumns - 1);
+            const int64_t x = std::clamp<int64_t>(raw_x, 0LL, max_src_x);
+            const uint8_t* p = row + x * 4LL;
             samples[gy * kColumns + gx] = (static_cast<int32_t>(p[2]) << 16) |
                                           (static_cast<int32_t>(p[1]) << 8) |
                                           static_cast<int32_t>(p[0]);
@@ -828,10 +900,13 @@ VN_EXPORT int32_t __stdcall vn_glass_sample_backdrop_optics(
 
     vn_glass_analyze_backdrop_samples(samples, kColumns * kRows, kColumns, kRows, out_optics);
 
-    const int32_t outside_x = std::clamp(sample_x + sample_w / 2, 0, src_w - 1);
-    const int32_t below_y = sample_y + sample_h + 16;
-    const int32_t outside_y = below_y < src_h ? below_y : std::clamp(sample_y - 16, 0, src_h - 1);
-    const uint8_t* outside = dib_bits + static_cast<int64_t>(outside_y) * stride + outside_x * 4;
+    const int64_t outside_x = std::clamp<int64_t>(
+        static_cast<int64_t>(sample_x) + static_cast<int64_t>(sample_w) / 2LL, 0LL, max_src_x);
+    const int64_t below_y = static_cast<int64_t>(sample_y) + static_cast<int64_t>(sample_h) + 16LL;
+    const int64_t outside_y = (below_y >= 0LL && below_y < static_cast<int64_t>(src_h))
+        ? below_y
+        : std::clamp<int64_t>(static_cast<int64_t>(sample_y) - 16LL, 0LL, max_src_y);
+    const uint8_t* outside = dib_bits + outside_y * stride + outside_x * 4LL;
     out_optics->outside_rgb = (static_cast<int32_t>(outside[2]) << 16) |
                               (static_cast<int32_t>(outside[1]) << 8) |
                               static_cast<int32_t>(outside[0]);
@@ -858,7 +933,7 @@ VN_EXPORT int32_t __stdcall vn_glass_gaussian_box_radii(
     }
 
     *out_written = count;
-    if (sigma <= 0.0)
+    if (!std::isfinite(sigma) || sigma <= 0.0)
     {
         for (int32_t i = 0; i < count; ++i)
         {
@@ -867,7 +942,8 @@ VN_EXPORT int32_t __stdcall vn_glass_gaussian_box_radii(
         return VN_OK;
     }
 
-    const double ideal_width = std::sqrt((12.0 * sigma * sigma / count) + 1.0);
+    const double safe_sigma = std::min(sigma, 10000.0);
+    const double ideal_width = std::sqrt((12.0 * safe_sigma * safe_sigma / count) + 1.0);
     int32_t lower_width = static_cast<int32_t>(std::floor(ideal_width));
     if ((lower_width & 1) == 0)
     {
@@ -876,7 +952,7 @@ VN_EXPORT int32_t __stdcall vn_glass_gaussian_box_radii(
     lower_width = std::max(1, lower_width);
     const int32_t upper_width = lower_width + 2;
 
-    const double numerator = 12.0 * sigma * sigma
+    const double numerator = 12.0 * safe_sigma * safe_sigma
         - static_cast<double>(count) * lower_width * lower_width
         - 4.0 * count * lower_width
         - 3.0 * count;
@@ -1692,7 +1768,7 @@ VN_EXPORT int32_t __stdcall vn_audio_mixer_select_icon_glyph(
     {
         return VN_ERR_INVALID_ARG;
     }
-    if (muted != 0 || volume <= 0.01f)
+    if (muted != 0 || !std::isfinite(volume) || volume <= 0.01f)
     {
         *out_codepoint = 0xE74F;
     }
@@ -1745,18 +1821,19 @@ VN_EXPORT int32_t __stdcall vn_glass_should_submit_frame(
     {
         return VN_ERR_INVALID_ARG;
     }
-    if (force_present != 0 || last_submit_ticks <= 0 || stopwatch_freq <= 0 || active_interval_ms <= 0.0)
+    if (force_present != 0 || last_submit_ticks <= 0 || stopwatch_freq <= 0 ||
+        !std::isfinite(active_interval_ms) || active_interval_ms <= 0.0)
     {
         *out_should_submit = 1u;
         return VN_OK;
     }
 
-    const int64_t elapsed_ticks = now_ticks - last_submit_ticks;
-    if (elapsed_ticks <= 0)
+    if (now_ticks <= last_submit_ticks)
     {
         *out_should_submit = 0u;
         return VN_OK;
     }
+    const int64_t elapsed_ticks = now_ticks - last_submit_ticks;
 
     const double elapsed_ms = static_cast<double>(elapsed_ticks) * 1000.0 / static_cast<double>(stopwatch_freq);
     // Allow a 6% timing tolerance for compositor VBlank alignment without letting frames spin unthrottled.

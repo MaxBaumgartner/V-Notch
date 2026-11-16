@@ -246,6 +246,66 @@ public sealed class MainWindowVolumeInteractionTests
     });
 
     [Fact]
+    public void PowerModeShowsItsStepNameGlyphAndColourAndHandsTheHudBack() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create(new FakeMediaDetectionService());
+        var window = fixture.Window;
+        window.SetDebugViewState("CompactMusicPill");
+        var brushes = new Func<SolidColorBrush[]>(() => Get<SolidColorBrush[]>(window, "_volumeHudTickBrushes"));
+
+        Invoke(window, "OnPowerModeChanged", (int)LegionMode.Performance);
+        Assert.True(Get<bool>(window, "_isVolumeIndicatorActive"));
+        Assert.Equal("Performance", window.VolumeIndicatorPercentText.Text);
+        Assert.Equal(Visibility.Visible, window.VolumeIndicatorIcon.Visibility);
+        Assert.Equal("", window.VolumeIndicatorIcon.Text);
+        Assert.Equal(Visibility.Collapsed, window.VolumeIndicatorSpeakerCone.Visibility);
+        Assert.Equal(30, brushes().Count(b => b.Color.A >= 0xF0));
+
+        // A second press while the HUD is up: new step, name and the mode's own colour.
+        Invoke(window, "OnPowerModeChanged", (int)LegionMode.Quiet);
+        Assert.Equal("Quiet", window.VolumeIndicatorPercentText.Text);
+        Assert.Equal(10, brushes().Count(b => b.Color.A >= 0xF0));
+        Assert.Equal(Color.FromRgb(0x86, 0xA8, 0xD8), ((SolidColorBrush)window.VolumeIndicatorIcon.Foreground).Color);
+
+        Invoke(window, "OnPowerModeChanged", (int)LegionMode.Custom);
+        Assert.Equal("Custom", window.VolumeIndicatorPercentText.Text);
+
+        // Any touch of the bar picks a step; the right end is Extreme.
+        var step = typeof(MainWindow).GetMethod("PowerModeStep", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Assert.Equal(new[] { 1, 1, 2, 3, 4, 4 }, new[] { 0d, .25, .26, .6, .9, 1 }.Select(l => (int)step.Invoke(null, new object[] { l })!));
+
+        Invoke(window, "DismissVolumeIndicatorImmediate", true, false);
+        Invoke(window, "SetVolumeHudMediaTint", Color.FromRgb(0x3A, 0x96, 0xFF), true);
+        Invoke(window, "ShowVolumeIndicator", .5f);
+        Assert.Equal("50%", window.VolumeIndicatorPercentText.Text);
+        Assert.Equal(Visibility.Collapsed, window.VolumeIndicatorIcon.Visibility);
+        Assert.Equal(Visibility.Visible, window.VolumeIndicatorSpeakerCone.Visibility);
+        ct.ThrowIfCancellationRequested();
+    });
+
+    [Fact]
+    public void ASpeakerSwitchShowsItsNameUntilARealVolumePress() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        Assert.Equal("Lautsprecher", MainWindow.ShortSpeakerName("Lautsprecher (Realtek(R) Audio)"));
+        Assert.Equal("System", MainWindow.ShortSpeakerName("System (Elgato Virtual Audio)"));
+        Assert.Equal("", MainWindow.ShortSpeakerName(null));
+        Assert.Equal(22, MainWindow.ShortSpeakerName("Kopfhörer mit sehr langem Gerätenamen").Length);
+
+        await using var fixture = Create(new FakeMediaDetectionService());
+        var window = fixture.Window;
+        window.SetDebugViewState("CompactMusicPill");
+        Set(window, "_pendingSwipeDirection", 1);
+        Invoke(window, "ShowSpeakerSwitch", "Lautsprecher (Realtek(R) Audio)", .4f, false);
+        Assert.Equal("Lautsprecher", window.VolumeIndicatorPercentText.Text);
+        Assert.Equal(0, Get<int>(window, "_pendingSwipeDirection"));
+
+        // A volume key right after: the number, at once.
+        Invoke(window, "OnSystemLevelChanged", Enum.Parse(typeof(MainWindow).GetNestedType("LevelHudKind", BindingFlags.NonPublic)!, "SystemVolume"), .55f, false);
+        Assert.Equal("55%", window.VolumeIndicatorPercentText.Text);
+        ct.ThrowIfCancellationRequested();
+    });
+
+    [Fact]
     public void VolumeIndicatorHudUpdatesSegmentedTicksIconAndPercentageLabel() => SharedStaTestRunner.RunAsync(async ct =>
     {
         await using var fixture = Create(new FakeMediaDetectionService());

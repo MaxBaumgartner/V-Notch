@@ -209,6 +209,9 @@ internal sealed partial class PiDashboardClient : IDisposable
         return await PostAsync("/api/todos", new JsonObject { ["text"] = text }).ConfigureAwait(false);
     }
 
+    /// <summary>Sends copied text to the phone through the dashboard.</summary>
+    public Task<bool> SendToPhoneAsync(string text) => PostAsync("/api/notch/handy", new JsonObject { ["text"] = text });
+
     public async Task<bool> SetTodoDoneAsync(string id, bool done)
     {
         if (await IsPlannerAsync().ConfigureAwait(false))

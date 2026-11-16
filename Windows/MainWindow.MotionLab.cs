@@ -16,17 +16,48 @@ namespace VNotch;
 /// the user's mouse; VNOTCH_INTERRUPT_MS=&lt;ms&gt; closes each opening again after that delay; VNOTCH_NO_MEDIA=1
 /// ignores every player, so the slim idle notch can be filmed while music plays; VNOTCH_RENDER_PROBE=1 logs every
 /// few seconds what keeps WPF drawing (Rendering handlers, running animation clocks), to find loops that burn CPU
-/// while nothing is on screen.
+/// while nothing is on screen; VNOTCH_FAKE_PLUG=&lt;ms&gt; plugs a pretend charger in and out at that interval (the
+/// real battery then no longer drives the charging orb), so the plug-in motion can be filmed without touching the cable.
+/// VNOTCH_FAKE_MICMUTE=&lt;ms&gt; (at least 1000) toggles a pretend microphone mute at that interval; real capture
+/// callbacks are ignored while it runs, so the mic dive can be checked without changing any audio hardware.
 /// </summary>
 public partial class MainWindow
 {
     private static readonly bool MotionLabNoMedia = Environment.GetEnvironmentVariable("VNOTCH_NO_MEDIA") == "1";
+    private static readonly double MotionLabFakePlugMs =
+        double.TryParse(Environment.GetEnvironmentVariable("VNOTCH_FAKE_PLUG"), NumberStyles.Float, CultureInfo.InvariantCulture, out double ms) && ms >= 1000 ? ms : 0;
+    private static bool MotionLabFakesCharging => MotionLabFakePlugMs > 0;
+    private static readonly double MotionLabFakeMicMuteMs =
+        double.TryParse(Environment.GetEnvironmentVariable("VNOTCH_FAKE_MICMUTE"), NumberStyles.Float, CultureInfo.InvariantCulture, out double micMs) && micMs >= 1000 ? micMs : 0;
+    private static bool MotionLabFakesMicMute => MotionLabFakeMicMuteMs > 0;
 
     private DispatcherTimer? _autoToggleTimer;
     private DispatcherTimer? _renderProbeTimer;
+    private DispatcherTimer? _fakePlugTimer;
+    private DispatcherTimer? _fakeMicMuteTimer;
 
     private void StartMotionLab()
     {
+        if (MotionLabFakesMicMute)
+        {
+            bool muted = false;
+            OnMicMuteChanged(muted);
+            _fakeMicMuteTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(MotionLabFakeMicMuteMs) };
+            _fakeMicMuteTimer.Tick += (_, _) => OnMicMuteChanged(muted = !muted);
+            _fakeMicMuteTimer.Start();
+        }
+        if (MotionLabFakesCharging)
+        {
+            bool plugged = false;
+            UpdateChargeOrb(new Models.BatteryInfo { Percentage = 64 });
+            _fakePlugTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(MotionLabFakePlugMs) };
+            _fakePlugTimer.Tick += (_, _) =>
+            {
+                plugged = !plugged;
+                UpdateChargeOrb(new Models.BatteryInfo { Percentage = 64, IsPluggedIn = plugged, IsCharging = plugged });
+            };
+            _fakePlugTimer.Start();
+        }
         if (Environment.GetEnvironmentVariable("VNOTCH_RENDER_PROBE") == "1")
         {
             _renderProbeTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
@@ -81,6 +112,7 @@ public partial class MainWindow
                 if (element?.IsVisible == true) shown.Add(name);
             RuntimeLog.Info("RENDER-PROBE", $"expanded={_isExpanded} visible tabs=[{string.Join(",", shown)}] {lines.Count} driver(s): " + string.Join(" || ", lines));
             RuntimeLog.Info("RENDER-PROBE", "dispatcher, last 5 s: " + TakeDispatcherStats());
+            RuntimeLog.Info("RENDER-PROBE", "fast timers: " + string.Join(" || ", UiScheduledTimer.DescribeFast(Dispatcher, TimeSpan.FromMilliseconds(100))));
         }
         catch (Exception ex) when (ex is TargetInvocationException or NullReferenceException or InvalidOperationException)
         {

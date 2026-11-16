@@ -63,6 +63,7 @@ public partial class App : Application
 
     public App()
     {
+        TextRenderingPolicy.Initialize();
         WindowAnimationPolicy.Initialize();
         try
         {
@@ -93,6 +94,15 @@ public partial class App : Application
         try
         {
             RegisterExceptionHandlers();
+            // The notch explains itself; a tooltip there is a second, white window popping up over it.
+            // Settings and the other windows keep theirs.
+            System.Windows.EventManager.RegisterClassHandler(typeof(System.Windows.FrameworkElement),
+                System.Windows.FrameworkElement.ToolTipOpeningEvent,
+                new System.Windows.Controls.ToolTipEventHandler((sender, args) =>
+                {
+                    if (sender is System.Windows.DependencyObject element &&
+                        System.Windows.Window.GetWindow(element) is VNotch.MainWindow) args.Handled = true;
+                }));
 
             bool specialStartup = IsSetupOrUninstall(e.Args) ||
                 e.Args.Contains("--test-integrity") || e.Args.Contains("--test-hash");
@@ -107,9 +117,11 @@ public partial class App : Application
             SetServices(services.BuildServiceProvider());
             var earlySettings = Services.GetRequiredService<ISettingsService>();
             var loadedSettings = earlySettings.Load();
+            AccentTheme.Apply(loadedSettings.AccentColor);
             NetworkPrivacy.Current.Apply(loadedSettings);
             WindowTitleScanner.UpdateInspectionAllowed(loadedSettings.EnableBrowserUrlInspection);
             WindowAnimationPolicy.SetInvisibleMode(loadedSettings.InvisibleMode);
+            WindowAnimationPolicy.SetShadowEnabled(loadedSettings.EnableShadow);
             LocalizedPresentation.Initialize();
             Loc.SetLanguage(loadedSettings.Language);
             AnimationConfig.Configure(loadedSettings.AnimationFps, loadedSettings.AutoAnimationFps);
@@ -159,7 +171,10 @@ public partial class App : Application
             }
             ServicePrewarmer.Prewarm(Services).SafeFireAndForget("PREWARM");
 
-            _ = AppIntegrityService.StartBackgroundCheckAsync();
+            if (loadedSettings.AutoCheckUpdates && !loadedSettings.EnableLocalOnlyMode)
+            {
+                _ = AppIntegrityService.StartBackgroundCheckAsync(settings: loadedSettings);
+            }
 
             base.OnStartup(e);
         }
@@ -323,6 +338,13 @@ public partial class App : Application
             return;
         }
 
+        if (IsRenderThreadFailure(args.Exception))
+        {
+            args.Handled = true;
+            RestartAfterRenderThreadFailure(args.Exception);
+            return;
+        }
+
         if (IsRecoverableException(args.Exception))
         {
             CrashReporter.LogCrash("DispatcherUnhandledException (Recovered)", args.Exception,
@@ -355,8 +377,7 @@ public partial class App : Application
 
         try
         {
-            string message =
-                $"V-Notch encountered an unexpected error and must close. Details were written to:\n{RuntimeLog.LogPath}\n\nCrash Report:\n{CrashReporter.CrashLogPath}";
+            string message = Loc.Get("app.fatalClose", $"{RuntimeLog.LogPath}\n{CrashReporter.CrashLogPath}");
             MessageBox.Show(
                 message,
                 "V-Notch Error",
@@ -455,6 +476,38 @@ public partial class App : Application
         }
 
         RequestShutdownAsync().SafeFireAndForget("APP-RESTART");
+    }
+
+    private const int UceErrRenderThreadFailure = unchecked((int)0x88980406);
+    private static int _renderRestartRequested;
+
+    internal static bool IsRenderThreadFailure(Exception ex) =>
+        ex is System.Runtime.InteropServices.COMException { HResult: UceErrRenderThreadFailure };
+
+    // Once WPF's render thread has died, nothing in this process draws again. Swallowing the error
+    // leaves an invisible notch, so start a fresh instance instead. A failure right after start is
+    // not retried, so a broken GPU state cannot turn into a restart loop.
+    private static void RestartAfterRenderThreadFailure(Exception ex)
+    {
+        if (Interlocked.Exchange(ref _renderRestartRequested, 1) != 0) return;
+
+        var uptime = DateTime.Now - Process.GetCurrentProcess().StartTime;
+        bool restart = uptime > TimeSpan.FromSeconds(30);
+        CrashReporter.LogCrash("DispatcherUnhandledException (RenderThread)", ex,
+            restart ? "WPF render thread failed; restarting V-Notch" : "WPF render thread failed right after start; not restarting",
+            isTerminating: restart);
+        RuntimeLog.Error("RENDER-THREAD", ex, restart ? "Render thread failed; restarting" : "Render thread failed shortly after start");
+        if (!restart) return;
+
+        // The normal shutdown closes windows, which can stall without a render thread.
+        // The new instance waits up to 10 s for the mutex, so exit hard well before that.
+        var fallback = new Thread(() =>
+        {
+            Thread.Sleep(TimeSpan.FromSeconds(4));
+            Environment.Exit(1);
+        }) { IsBackground = true, Name = "RenderRestartFallback" };
+        fallback.Start();
+        RestartApplication();
     }
 
     private static bool IsRecoverableException(Exception ex)

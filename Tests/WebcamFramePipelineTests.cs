@@ -13,6 +13,32 @@ public sealed class WebcamFramePipelineTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void StopDropsPinnedArraysWhileAnAlreadyQueuedFrameRemainsValid(bool graceful)
+    {
+        using var controller = new WebcamCaptureController();
+        int token = Activate(controller);
+        using var frame = new SoftwareBitmap(BitmapPixelFormat.Gray8, 16, 16, BitmapAlphaMode.Ignore);
+        byte[]? queued = null;
+        controller.FrameAvailable += (pixels, _, _, _) => queued = pixels;
+        controller.ProcessFrame(frame, token);
+        Assert.NotNull(queued);
+        Assert.NotEmpty(Get<byte[]>(controller, "_conversionBuffer"));
+        if (graceful) controller.TryBeginGracefulStop(out _, out _, out _);
+        else controller.DetachForSafeStop();
+        Assert.Empty(Get<byte[]>(controller, "_frameBuffer"));
+        Assert.Empty(Get<byte[]>(controller, "_conversionBuffer"));
+        Assert.Equal(0, Get<int>(controller, "_frameBufferCapacity"));
+        Assert.Equal(255, queued[3]);
+        controller.ReleaseFrameBuffer();
+        int nextToken = Activate(controller);
+        Set(controller, "_lastFrameTimestamp", 0L);
+        controller.ProcessFrame(frame, nextToken);
+        Assert.NotEmpty(Get<byte[]>(controller, "_frameBuffer"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void SyntheticFramesAreCopiedAndConvertedBeforeBeingHandedToTheUi(bool gray)
     {
         using var controller = new WebcamCaptureController();
@@ -49,6 +75,43 @@ public sealed class WebcamFramePipelineTests
         controller.ProcessFrame(bitmap, token);
         Assert.Equal(2, calls);
         Assert.False(controller.IsActive);
+    }
+
+    [Fact]
+    public void NativeUploadConvertsIntoPitchedRowsDuringCaptureWithoutLeasingAnArray()
+    {
+        using var controller = new WebcamCaptureController();
+        int token = Activate(controller);
+        byte[] pixels = Enumerable.Range(0, 24).Select(i => (byte)i).ToArray();
+        using var bitmap = SoftwareBitmap.CreateCopyFromBuffer(pixels.AsBuffer(), BitmapPixelFormat.Gray8, 8, 3, BitmapAlphaMode.Ignore);
+        const int pitch = 40;
+        byte[] output = Enumerable.Repeat((byte)0xcd, pitch * 3).ToArray();
+        controller.PresentNativeFrame = (frame, generation) =>
+        {
+            Assert.Equal(token, generation);
+            unsafe
+            {
+                fixed (byte* dst = output)
+                {
+                    int hr = D3DImageFramePresenter.vn_webcam_write_surface(((WinRT.IWinRTObject)frame).NativeObject.ThisPtr,
+                        (nint)dst, pitch, 8, 3);
+                    System.Runtime.InteropServices.Marshal.ThrowExceptionForHR(hr);
+                }
+            }
+            return true;
+        };
+        controller.ProcessFrame(bitmap, token);
+        for (int row = 0; row < 3; row++)
+        {
+            for (int x = 0; x < 8; x++)
+            {
+                byte value = pixels[row * 8 + x];
+                Assert.Equal(new byte[] { value, value, value, 255 }, output.AsSpan(row * pitch + x * 4, 4).ToArray());
+            }
+            Assert.All(output.Skip(row * pitch + 32).Take(8), x => Assert.Equal(0xcd, x));
+        }
+        Assert.Empty(Get<byte[]>(controller, "_frameBuffer"));
+        Assert.Equal(0, Get<int>(controller, "_frameBufferInUse"));
     }
 
     [Fact]

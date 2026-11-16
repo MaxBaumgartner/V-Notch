@@ -67,10 +67,12 @@ public sealed class ClipboardTrayMotionRegressionTests
         typeof(ClipboardTray).GetField("_cardsScrollTarget", flags)!.SetValue(tray, 1d);
         Invoke(tray, "StartCardsScrollFrames");
         var active = typeof(ClipboardTray).GetField("_cardsScrollActive", flags)!;
-        var clock = typeof(ClipboardTray).GetField("_cardsFrameTime", flags)!;
+        var clock = typeof(ClipboardTray).GetField("_cardsFrameClock", flags)!;
         for (int frame = 0; frame < 100 && (bool)active.GetValue(tray)!; frame++)
         {
-            clock.SetValue(tray, System.Diagnostics.Stopwatch.GetTimestamp() - System.Diagnostics.Stopwatch.Frequency / 1000);
+            var frameClock = new AnimationFrameClock();
+            frameClock.Reset(System.Diagnostics.Stopwatch.GetTimestamp() - System.Diagnostics.Stopwatch.Frequency / Math.Max(1, AnimationConfig.TargetFps));
+            clock.SetValue(tray, frameClock);
             Invoke(tray, "Cards_ScrollFrame", null, EventArgs.Empty);
         }
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
@@ -127,8 +129,7 @@ public sealed class ClipboardTrayMotionRegressionTests
         var size = item.RenderSize;
         var animate = typeof(ClipboardTray).GetMethod("AnimateCardLifecycle", BindingFlags.Static | BindingFlags.NonPublic)!;
         animate.Invoke(null, new object[] { item, true, true });
-        await Task.Delay(300);
-        await NextRenderFrame();
+        await WpfFrameWaiter.UntilAsync(() => item.Opacity == 1 && item.RenderTransform.Value == Matrix.Identity, "card spring settles");
         Assert.Equal(1, item.Opacity);
         Assert.Equal(Matrix.Identity, item.RenderTransform.Value);
         Assert.Equal(size, item.RenderSize);
@@ -139,8 +140,7 @@ public sealed class ClipboardTrayMotionRegressionTests
         Assert.InRange(item.Opacity, 0, 0.99);
         if (reducedMotion) Assert.Equal(Matrix.Identity, item.RenderTransform.Value);
         animate.Invoke(null, new object[] { item, true, false });
-        await Task.Delay(300);
-        await NextRenderFrame();
+        await WpfFrameWaiter.UntilAsync(() => item.Opacity == 1 && item.RenderTransform.Value == Matrix.Identity, "reversed card spring settles");
         Assert.Equal(1, item.Opacity);
         Assert.Equal(Matrix.Identity, item.RenderTransform.Value);
         Assert.Equal(size, item.RenderSize);
@@ -165,7 +165,9 @@ public sealed class ClipboardTrayMotionRegressionTests
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
 
         container = (ListBoxItem)list.ItemContainerGenerator.ContainerFromItem(survivor);
-        var motion = Assert.IsType<TranslateTransform>(container.RenderTransform);
+        var motion = container.RenderTransform is TransformGroup group
+            ? group.Children.OfType<TranslateTransform>().Single()
+            : Assert.IsType<TranslateTransform>(container.RenderTransform);
         Assert.True(motion.X > 0);
         Assert.Equal(0d, motion.GetAnimationBaseValue(TranslateTransform.XProperty));
         Assert.Null(Field<object?>(tray, "_pendingCardPositions"));
@@ -222,7 +224,8 @@ public sealed class ClipboardTrayMotionRegressionTests
 
         list.UpdateLayout();
         container = (ListBoxItem)list.ItemContainerGenerator.ContainerFromItem(first);
-        var motion = Assert.IsType<TranslateTransform>(container.RenderTransform);
+        var layer = Assert.IsType<TransformGroup>(container.RenderTransform);
+        var motion = layer.Children.OfType<TranslateTransform>().Single();
         Assert.Equal(0d, motion.GetAnimationBaseValue(TranslateTransform.XProperty));
         // WPF initializes the replacement animation clock on the next render tick.
         await NextRenderFrame();
@@ -233,7 +236,7 @@ public sealed class ClipboardTrayMotionRegressionTests
         Assert.InRange(Math.Abs(renderedX - positions[first.Entry.Id]), 0, travelDistance);
         Assert.InRange(renderedX, Math.Min(positions[first.Entry.Id], targetX) - 1, Math.Max(positions[first.Entry.Id], targetX) + 1);
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        Assert.Same(motion, container.RenderTransform);
+        Assert.Same(layer, container.RenderTransform);
         Assert.Null(Field<object?>(tray, "_pendingCardPositions"));
     });
 

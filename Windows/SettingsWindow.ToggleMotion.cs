@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -185,85 +185,40 @@ public partial class SettingsWindow
         }
     }
 
-    private static readonly CubicEase _switchEaseOut = CreateFrozenCubicEase(EasingMode.EaseOut);
-    private static readonly CubicEase _switchEaseInOut = CreateFrozenCubicEase(EasingMode.EaseInOut);
-
-    private static CubicEase CreateFrozenCubicEase(EasingMode mode)
-    {
-        var ease = new CubicEase { EasingMode = mode };
-        ease.Freeze();
-        return ease;
-    }
-
     private static void AnimateSettingsSwitchThumbLiquidMorph(ScaleTransform capScale, VnSettingsSwitchMotionOut motion, bool animate)
     {
         if (!animate || motion.DurationMs <= 0)
         {
-            capScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            capScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-            capScale.ScaleX = 1.0;
-            capScale.ScaleY = 1.0;
+            Motion.Stop(capScale, ScaleTransform.ScaleXProperty, 1.0);
+            Motion.Stop(capScale, ScaleTransform.ScaleYProperty, 1.0);
             return;
         }
 
-        double curX = capScale.ScaleX;
-        double curY = capScale.ScaleY;
-        var scaleXAnim = new DoubleAnimationUsingKeyFrames { FillBehavior = FillBehavior.Stop };
-        scaleXAnim.KeyFrames.Add(new EasingDoubleKeyFrame(curX, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        scaleXAnim.KeyFrames.Add(new EasingDoubleKeyFrame(motion.PeakScaleX, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(motion.PeakTimeMs)), _switchEaseOut));
-        scaleXAnim.KeyFrames.Add(new EasingDoubleKeyFrame(motion.ReboundScaleX, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(motion.ReboundTimeMs)), _switchEaseInOut));
-        scaleXAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(motion.DurationMs)), AnimationPrimitives._easeAppleOut));
-        Timeline.SetDesiredFrameRate(scaleXAnim, AnimationConfig.TargetFps);
-
-        var scaleYAnim = new DoubleAnimationUsingKeyFrames { FillBehavior = FillBehavior.Stop };
-        scaleYAnim.KeyFrames.Add(new EasingDoubleKeyFrame(curY, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        scaleYAnim.KeyFrames.Add(new EasingDoubleKeyFrame(motion.DipScaleY, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(motion.PeakTimeMs)), _switchEaseOut));
-        scaleYAnim.KeyFrames.Add(new EasingDoubleKeyFrame(motion.ReboundScaleY, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(motion.ReboundTimeMs)), _switchEaseInOut));
-        scaleYAnim.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(motion.DurationMs)), AnimationPrimitives._easeAppleOut));
-        Timeline.SetDesiredFrameRate(scaleYAnim, AnimationConfig.TargetFps);
-
-        capScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleXAnim, HandoffBehavior.SnapshotAndReplace);
-        capScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleYAnim, HandoffBehavior.SnapshotAndReplace);
-        capScale.ScaleX = 1.0;
-        capScale.ScaleY = 1.0;
+        // The knob springs back from its press squeeze. A flip without a press (keyboard, click on the label)
+        // gets a little stretch along its travel instead, so it still feels liquid.
+        bool squeezed = Math.Abs(capScale.ScaleX - 1) > 0.01 || Math.Abs(capScale.ScaleY - 1) > 0.01;
+        Motion.To(capScale, ScaleTransform.ScaleXProperty, 1.0, Motion.Press, velocity: squeezed ? null : 1.6);
+        Motion.To(capScale, ScaleTransform.ScaleYProperty, 1.0, Motion.Press, velocity: squeezed ? null : -0.8);
     }
 
-    private static void AnimateSettingsSwitchValue(Animatable target, DependencyProperty property, double value, bool animate, int durationMs = 220)
+    // A pressed switch dips quickly; a released or flipped one springs, keeping its speed when flipped back mid-way.
+    private static void AnimateSettingsSwitchValue(Animatable target, DependencyProperty property, double value, bool animate, int durationMs = 190)
     {
-        // Capture the presented value before replacing a clock so rapid toggles reverse smoothly.
-        double current = (double)target.GetValue(property);
-        if (!animate || Math.Abs(current - value) < 0.001)
+        if (!animate)
         {
-            target.BeginAnimation(property, null);
-            target.SetValue(property, value);
+            Motion.Stop(target, property, value);
             return;
         }
-
-        var animation = AnimationPrimitives.WithFps(new DoubleAnimation(current, value, TimeSpan.FromMilliseconds(durationMs))
-        {
-            EasingFunction = AnimationPrimitives._easeMoveSpring,
-            FillBehavior = FillBehavior.Stop
-        });
-        target.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
-        target.SetValue(property, value);
+        Motion.To(target, property, value, durationMs <= 140 ? Motion.PressDown : Motion.Press);
     }
 
     private static void AnimateSettingsSwitchValue(UIElement target, DependencyProperty property, double value, bool animate)
     {
-        double current = (double)target.GetValue(property);
-        if (!animate || Math.Abs(current - value) < 0.001)
+        if (!animate)
         {
-            target.BeginAnimation(property, null);
-            target.SetValue(property, value);
+            Motion.Stop(target, property, value);
             return;
         }
-
-        var animation = AnimationPrimitives.WithFps(new DoubleAnimation(current, value, TimeSpan.FromMilliseconds(180))
-        {
-            EasingFunction = AnimationPrimitives._easeAppleOut,
-            FillBehavior = FillBehavior.Stop
-        });
-        target.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
-        target.SetValue(property, value);
+        Motion.To(target, property, value, Motion.Glide);
     }
 }

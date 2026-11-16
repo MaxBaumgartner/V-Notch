@@ -33,13 +33,9 @@ public partial class MainWindow
     private void VolumeSyncTimer_Tick(object? sender, EventArgs e)
     {
         PollMediaVolumeIfDue();
-        if (_isExpanded && _isMusicExpanded && !_isDraggingVolume && DateTime.UtcNow >= _volumeScrollSyncAfterUtc &&
-            _mediaService.TryGetCurrentSessionVolume(out float volume, out bool isMuted))
-        {
-            _currentVolume = volume;
-            SetVolumeFill(VolumeBarScale, _currentVolume);
-            UpdateVolumeIcon(_currentVolume, isMuted);
-        }
+        // The audio endpoint query is a COM call; keep it off the UI thread (guarded against overlap).
+        if (_isExpanded && _isMusicExpanded && !_isDraggingVolume && DateTime.UtcNow >= _volumeScrollSyncAfterUtc)
+            _ = SyncVolumeFromActiveSession();
     }
 
     private readonly Queue<OutsideClickSnapshot> _outsideClicks = new();
@@ -49,6 +45,9 @@ public partial class MainWindow
 
     private void GlobalMouseHook_MouseLeftButtonDown(object? sender, InputMonitorService.POINT pt)
     {
+        // Check at mouse-down as well as drain time: completing a region capture
+        // can close its overlay before this queued input is processed.
+        if (IsScreenCaptureActive) return;
         if (IsGreetingInteractionBlocked) return;
         if (_cleanedUp || _spotlightMorphSessionActive || _spotlightMorphOwnsNotchVisibility ||
             (!_isExpanded && !_isMusicExpanded)) return;
@@ -75,6 +74,7 @@ public partial class MainWindow
 
     private void HandleOutsideClick(OutsideClickSnapshot click)
     {
+        if (IsScreenCaptureActive) return;
         var pt = click.Point;
         if (_clipboardHistory?.IsDragging == true || _clipboardTrayView?.IsContextMenuOpen == true || _clipboardTrayView?.ContainsMenuPoint(new Point(pt.x, pt.y)) == true) return;
         // Clicks inside Spotlight window must not collapse MainWindow's hidden
@@ -155,6 +155,7 @@ public partial class MainWindow
 
         MediaPlayback.UpdateProgressTimerState();
         SetTimerEnabled(_lyricsTimer, shouldRunLyrics);
+        if (!shouldRunLyrics) _lyricWords.Suspend();
         SetTimerEnabled(_volumeSyncTimer, shouldRunVolumeSync);
 
         if (isExpanded)

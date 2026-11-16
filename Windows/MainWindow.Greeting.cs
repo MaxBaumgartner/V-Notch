@@ -3,9 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
-using System.Windows.Threading;
 using VNotch.Services;
-using static VNotch.Services.AnimationPrimitives;
 
 namespace VNotch;
 
@@ -43,30 +41,26 @@ public partial class MainWindow
         NotchLiveContent.Visibility = Visibility.Hidden;
 
         GreetingOverlay.Visibility = Visibility.Visible;
-        GreetingOverlay.Opacity = 1;
+        Motion.To(GreetingOverlay, OpacityProperty, 1, Motion.Tile);
         PrepareGreetingPathsIfNeeded();
 
-        NotchBorder.BeginAnimation(WidthProperty, null);
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        NotchBorder.Width = _collapsedWidth;
-        NotchBorder.Height = _collapsedHeight;
-
-        var widthAnim = MakeAnim(_expandedWidth, _dur600, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-        var heightAnim = MakeAnim(_expandedHeight, _dur600, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-
-        AnimateCornerRadius(_cornerRadiusExpanded, TimeSpan.FromMilliseconds(400));
-
-        heightAnim.Completed += (s, e) =>
+        AnimateCornerRadius(_cornerRadiusExpanded, Motion.ShellOpenHeight);
+        Motion.To(NotchBorder, WidthProperty, _expandedWidth, Motion.ShellOpenWidth);
+        Motion.To(NotchBorder, HeightProperty, _expandedHeight, Motion.ShellOpenHeight);
+        if (!IsGreetingCurrent(generation)) return;
+        if (AnimationConfig.ReduceMotion)
         {
-            if (!IsGreetingCurrent(generation)) return;
-            if (_isVietnameseGreeting)
-                PlayXinChaoStrokeAnimation();
-            else
-                PlayHelloStrokeAnimation();
-        };
-
-        NotchBorder.BeginAnimation(WidthProperty, widthAnim);
-        NotchBorder.BeginAnimation(HeightProperty, heightAnim);
+            foreach (var path in new[] { HelloPath1, HelloPath2, ViPath1, ViPath2, ViPath3, ViPath4, ViPath5, ViPath6, ViPath7, ViPath8, ViPath9, ViPath10 })
+                path.StrokeDashOffset = 0;
+            ViDotI.Visibility = Visibility.Visible;
+            ViDotI.Opacity = 1;
+            ScheduleGreetingDismiss(TimeSpan.FromMilliseconds(1500));
+            return;
+        }
+        if (_isVietnameseGreeting)
+            PlayXinChaoStrokeAnimation();
+        else
+            PlayHelloStrokeAnimation();
     }
 
     private void PlayXinChaoStrokeAnimation()
@@ -124,9 +118,8 @@ public partial class MainWindow
         {
             From = 0,
             To = 1,
-            Duration = TimeSpan.FromMilliseconds(250),
+            Duration = TimeSpan.FromMilliseconds(160),
             BeginTime = TimeSpan.FromMilliseconds(340),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
         System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(dotFadeIn, VNotch.Services.AnimationConfig.TargetFps);
         ViDotI.BeginAnimation(OpacityProperty, dotFadeIn);
@@ -252,19 +245,13 @@ public partial class MainWindow
     {
         int generation = _greetingGeneration;
         if (!IsGreetingCurrent(generation)) return;
-        var fadeOut = new DoubleAnimation
+        Motion.To(GreetingOverlay, OpacityProperty, 0, Motion.Exit, done: () =>
         {
-            From = 1,
-            To = 0,
-            Duration = TimeSpan.FromMilliseconds(500),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
-        };
-
-        fadeOut.Completed += (s, e) =>
-        {
-            if (!IsGreetingCurrent(generation)) return;
+            if (_cleanedUp || generation != _greetingGeneration) return;
             GreetingOverlay.Visibility = Visibility.Collapsed;
-            GreetingOverlay.Opacity = 0;
+            Motion.Stop(GreetingOverlay, OpacityProperty, 0);
+            foreach (var path in new[] { HelloPath1, HelloPath2, ViPath1, ViPath2, ViPath3, ViPath4, ViPath5, ViPath6, ViPath7, ViPath8, ViPath9, ViPath10 })
+                path.BeginAnimation(OpacityProperty, null);
 
             if (_isVietnameseGreeting)
             {
@@ -288,49 +275,35 @@ public partial class MainWindow
                 HelloPath2.BeginAnimation(Shape.StrokeDashOffsetProperty, null);
             }
 
-            CollapseAfterGreeting();
-        };
-
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(fadeOut, VNotch.Services.AnimationConfig.TargetFps);
-        GreetingOverlay.BeginAnimation(OpacityProperty, fadeOut);
+        });
+        CollapseAfterGreeting();
     }
 
     private void CollapseAfterGreeting()
     {
         int generation = _greetingGeneration;
-        var widthAnim = MakeAnim(_collapsedWidth, _dur500, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-        var heightAnim = MakeAnim(_collapsedHeight, _dur500, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-
-        AnimateCornerRadius(_cornerRadiusCollapsed, TimeSpan.FromMilliseconds(350));
-
-        heightAnim.Completed += (s, e) =>
+        AnimateCornerRadius(_cornerRadiusCollapsed, Motion.ShellCloseHeight);
+        int remaining = 2;
+        void Arrived()
         {
-            if (!IsGreetingCurrent(generation)) return;
+            if (--remaining != 0 || !IsGreetingCurrent(generation)) return;
+            Motion.Stop(NotchBorder, WidthProperty, _collapsedWidth);
+            Motion.Stop(NotchBorder, HeightProperty, _collapsedHeight);
             _isAnimating = false;
             _isGreetingActive = false;
             RestorePrivacyDotVisibility();
             NotchLiveContent.Visibility = Visibility.Visible;
 
             CollapsedContent.Visibility = Visibility.Visible;
-            var restoreFade = new DoubleAnimation
-            {
-                From = 0,
-                To = 1,
-                Duration = TimeSpan.FromMilliseconds(300),
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            restoreFade.Completed += (_, _) =>
+            Motion.To(CollapsedContent, OpacityProperty, 1, Motion.Tile, from: 0, done: () =>
             {
                 if (_cleanedUp || generation != _greetingGeneration) return;
                 StartStartupHold(TimeSpan.FromSeconds(3));
                 SchedulePostAppearInitialization();
-            };
-            System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(restoreFade, VNotch.Services.AnimationConfig.TargetFps);
-            CollapsedContent.BeginAnimation(OpacityProperty, restoreFade);
-        };
-
-        NotchBorder.BeginAnimation(WidthProperty, widthAnim);
-        NotchBorder.BeginAnimation(HeightProperty, heightAnim);
+            });
+        }
+        Motion.To(NotchBorder, WidthProperty, _collapsedWidth, Motion.ShellCloseWidth, done: Arrived);
+        Motion.To(NotchBorder, HeightProperty, _collapsedHeight, Motion.ShellCloseHeight, done: Arrived);
     }
 
     private bool IsGreetingCurrent(int generation) => !_cleanedUp && _isGreetingActive && generation == _greetingGeneration;
@@ -360,7 +333,7 @@ public partial class MainWindow
         _greetingDismissTimer?.Dispose();
         _greetingDismissTimer = null;
         _isGreetingActive = false;
-        GreetingOverlay.BeginAnimation(OpacityProperty, null);
+        Motion.Stop(GreetingOverlay, OpacityProperty, 0);
         foreach (var path in new[] { HelloPath1, HelloPath2, ViPath1, ViPath2, ViPath3, ViPath4, ViPath5, ViPath6, ViPath7, ViPath8, ViPath9, ViPath10 })
         {
             path.BeginAnimation(Shape.StrokeDashOffsetProperty, null);

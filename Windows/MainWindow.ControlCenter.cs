@@ -20,11 +20,12 @@ public partial class MainWindow
     // Narrower than the system tab, as tall as its cards up to where the list scrolls.
     private const double ClaudeViewWidth = 640;
     private const double ClaudeViewMinHeight = 120;
-    private const double ClaudeViewMaxHeight = 460;
+    private const double ClaudeViewMaxHeight = 560;
 
     private ClaudeSessionTracker? _claudeTracker;
     private ClaudeHookServer? _claudeHookServer;
     private ClaudeUsageClient? _claudeUsage;
+    private CodexUsageClient? _codexUsage;
     private DispatcherTimer? _claudeSweepTimer;
     private bool _claudeTabAutoOpened;
     private bool _isClaudeView;
@@ -38,13 +39,14 @@ public partial class MainWindow
         _claudeTracker = new ClaudeSessionTracker();
         _claudeHookServer = new ClaudeHookServer(_claudeTracker);
         _claudeUsage = new ClaudeUsageClient();
+        _codexUsage = new CodexUsageClient();
         _claudeHookServer.Start();
 
         // Settings load after this runs, and anything that pumps messages meanwhile can let the views build:
         // until then they are plain-skinned and offline.
         ControlCenter.Attach(() => _settings != null && IsLiquidGlassEnabled);
         ControlCenter.AttachBackdrop(SystemBackdrop);
-        ClaudeCenter.AttachClaude(_claudeTracker, _claudeHookServer, _claudeUsage,
+        ClaudeCenter.AttachClaude(_claudeTracker, _claudeHookServer, _claudeUsage, _codexUsage,
             () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled);
         ClaudeCenter.AttachBackdrop(ClaudeBackdrop);
         ClaudeCenter.AttentionRequested += OpenClaudeTabForAttention;
@@ -55,11 +57,16 @@ public partial class MainWindow
         _claudeTracker.Changed += OnClaudeSessionsChanged;
         _claudeTracker.TurnFinished += OnClaudeTurnFinished;
         _claudeTracker.PermissionRequested += OnClaudePermissionRequestedSound;
+        NotchWrapper.PreviewMouseRightButtonUp += NotchWrapper_DismissClaudeDone;
         ClaudeCenter.AttachSoundSwitch(() => _settings?.PlayClaudeSounds ?? false, SetClaudeSounds);
         ClaudeCenter.AttachNotchSwitch(() => _settings?.ShowClaudeInNotch ?? true, SetClaudeInNotch);
 
         _claudeSweepTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = ClaudeSweepInterval };
-        _claudeSweepTimer.Tick += (_, _) => _claudeTracker?.Sweep();
+        _claudeSweepTimer.Tick += (_, _) =>
+        {
+            _claudeTracker?.Sweep();
+            CheckClaudeLimitResets();
+        };
         _claudeSweepTimer.Start();
         // Asking Windows about notification access is a cross-apartment call that pumps messages: after startup.
         Dispatcher.BeginInvoke(DispatcherPriority.Background, InitializeAppNotifications);
@@ -67,6 +74,9 @@ public partial class MainWindow
         InitializeWeather();
         InitializeMicMuted();
         InitializeDownloads();
+        InitializeLevelHud();
+        InitializeKeepAwake();
+        SchedulePrefetch();
     }
 
     private void DisposeControlCenter()
@@ -79,6 +89,8 @@ public partial class MainWindow
         DisposeWeather();
         DisposeMicMuted();
         DisposeDownloads();
+        DisposeLevelHud();
+        DisposeKeepAwake();
         ClaudeCenter.AttentionRequested -= OpenClaudeTabForAttention;
         ClaudeCenter.ContentHeightChanged -= OnClaudeContentHeightChanged;
         ClaudeCenter.SessionOpened -= OnClaudeSessionOpened;
@@ -96,6 +108,7 @@ public partial class MainWindow
         // Hands every held request back to Claude Code's own dialog.
         _claudeHookServer?.Dispose();
         _claudeUsage?.Dispose();
+        _codexUsage?.Dispose();
     }
 
     private void ClaudeIconButton_Click(object sender, MouseButtonEventArgs e)
@@ -116,6 +129,12 @@ public partial class MainWindow
     private void OpenClaudeTabForAttention()
     {
         if (_cleanedUp || _isClaudeView || _settings?.ShowClaudeInNotch == false) return;
+        // A tool to allow or a question goes to the pill in the closed notch; a plan to read opens the tab.
+        if (NewestAskForPill() is { } ask && (IsAskPillShown || TryShowClaudeAskPill(ask)))
+        {
+            _claudeAttentionRetry?.Stop();
+            return;
+        }
         if (_isAnimating || _isGreetingActive || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention)
         {
             _claudeAttentionRetry ??= CreateClaudeAttentionRetry();
@@ -150,6 +169,8 @@ public partial class MainWindow
     {
         if (_claudeTracker == null || _cleanedUp) return;
         UpdateClaudeLive();
+        PruneClaudeDone();
+        SyncClaudeAskPill();
         bool waiting = _claudeTracker.GetPending().Count > 0;
         if (waiting != _isClaudeWaiting)
         {
@@ -164,13 +185,17 @@ public partial class MainWindow
 
     private void ShowClaudeWaitingBadge(bool show)
     {
-        ClaudeWaitingBadgeScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        ClaudeWaitingBadgeScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        ClaudeWaitingBadge.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        if (!show || AnimationConfig.ReduceMotion) return;
-        var pop = MakeAnim(0d, 1d, _dur400, _easeSpring);
-        ClaudeWaitingBadgeScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-        ClaudeWaitingBadgeScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+        bool entering = ClaudeWaitingBadge.Visibility != Visibility.Visible;
+        if (show) ClaudeWaitingBadge.Visibility = Visibility.Visible;
+        Motion.To(ClaudeWaitingBadgeScale, ScaleTransform.ScaleXProperty, show ? 1 : Motion.ExitToScale,
+            show ? Motion.TileScale : Motion.Exit, from: show && entering ? Motion.TileFromScale : null);
+        Motion.To(ClaudeWaitingBadgeScale, ScaleTransform.ScaleYProperty, show ? 1 : Motion.ExitToScale,
+            show ? Motion.TileScale : Motion.Exit, from: show && entering ? Motion.TileFromScale : null);
+        Motion.To(ClaudeWaitingBadge, OpacityProperty, show ? 1 : 0, show ? Motion.Tile : Motion.Exit,
+            from: show && entering ? 0 : null, done: () =>
+            {
+                if (!show) ClaudeWaitingBadge.Visibility = Visibility.Collapsed;
+            });
     }
 
     /// <summary>Typing a message to a session needs the keys; otherwise the notch never takes focus.</summary>
@@ -207,6 +232,8 @@ public partial class MainWindow
     #region Claude notification (compact pill)
 
     private static readonly TimeSpan ClaudeNotificationDuration = TimeSpan.FromSeconds(4);
+    // App and Pi notifications carry a message to read, so they stay longer than Claude's short status pills.
+    private static readonly TimeSpan AppNotificationDuration = TimeSpan.FromSeconds(10);
 
     private bool _isClaudeNotificationVisible;
     private int _claudeNotificationToken;
@@ -244,15 +271,20 @@ public partial class MainWindow
     private void OnClaudeTurnFinished(ClaudeSession session) => Dispatcher.BeginInvoke(() =>
     {
         PlayClaudeSound(ClaudeSound.Done);
+        // Switched off for the closed notch (the eye in the Claude tab): the sound stays, no pill.
         if (_settings?.ShowClaudeInNotch == false) return;
-        ShowNotchPill(session.Name, Loc.Get("control.claude.done"), appIcon: null, isClaude: true,
-            tap: () => ClaudeSessionWindow.TryActivate(session.Id, session.Title));
+        RememberClaudeDone(session);
     });
 
     /// <summary>A tap on the pill goes straight to the session's terminal or the app, not into the notch.</summary>
     private bool TryHandleNotificationTap()
     {
-        if (!_isClaudeNotificationVisible || _notificationTap is not { } tap || !tap()) return false;
+        if (!_isClaudeNotificationVisible) return false;
+        // Tapping a finished turn counts as seen, even when its window cannot come up and the notch opens instead.
+        if (_claudeDoneShownId is { } done) ForgetClaudeDone(done);
+        IntPtr foregroundBefore = OverlayWindowController.GetForegroundWindowHandle();
+        if (_notificationTap is not { } tap || !tap()) return false;
+        PlayNotificationDrop(foregroundBefore);
         _claudeNotificationTimer?.Stop();
         AnimateClaudeNotificationOut();
         return true;
@@ -262,16 +294,28 @@ public partial class MainWindow
     /// "name · status" in the closed notch, like a Bluetooth device connecting: Claude's star for a finished
     /// turn, the app's logo for a Windows notification. Never over a fullscreen app.
     /// </summary>
-    private void ShowNotchPill(string title, string status, ImageSource? appIcon, bool isClaude, Func<bool>? tap)
+    private const string NotificationBellGlyph = "";
+
+    private void ShowNotchPill(string title, string status, ImageSource? appIcon, bool isClaude, Func<bool>? tap,
+        string? doneSessionId = null, string? glyph = null, TimeSpan? duration = null, Brush? accent = null)
     {
         if (_cleanedUp || _isGreetingActive || _isAnimating || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention) return;
 
         _isClaudePeek = false;
+        _isCopiedPillShown = false;
+        _askRequest = null;
+        bool replacing = _isClaudeNotificationVisible &&
+            (ClaudeNotificationTitle.Text != title || ClaudeNotificationStatus.Text != status ||
+             NotificationAppIcon.Source != appIcon || _isClaudePill != isClaude || NotificationBellIcon.Text != (glyph ?? NotificationBellGlyph));
+        if (replacing) KeepCompactDeparture(ClaudeNotification);
         ClaudeNotificationTitle.Text = title;
+        ClaudeNotificationTitle.Foreground = accent ?? UiPalette.PrimaryBrush;
+        NotificationBellIcon.Foreground = accent ?? UiPalette.PrimaryBrush;
         ClaudeNotificationStatus.Text = status;
         NotificationClaudeIcon.Visibility = isClaude ? Visibility.Visible : Visibility.Collapsed;
         NotificationAppIcon.Source = appIcon;
         NotificationAppIcon.Visibility = !isClaude && appIcon != null ? Visibility.Visible : Visibility.Collapsed;
+        NotificationBellIcon.Text = glyph ?? NotificationBellGlyph;
         NotificationBellIcon.Visibility = !isClaude && appIcon == null ? Visibility.Visible : Visibility.Collapsed;
         _notificationTap = tap;
         _isClaudePill = isClaude;
@@ -282,11 +326,13 @@ public partial class MainWindow
             _isClaudeNotificationVisible = true;
             AnimateClaudeNotificationIn();
         }
+        else if (replacing) AnimateClaudeNotificationIn();
+        _claudeDoneShownId = doneSessionId;
         FitNotchToPill();
 
         _claudeNotificationTimer ??= CreateClaudeNotificationTimer();
         _claudeNotificationTimer.Stop();
-        _claudeNotificationTimer.Interval = ClaudeNotificationDuration;
+        _claudeNotificationTimer.Interval = duration ?? (isClaude ? ClaudeNotificationDuration : AppNotificationDuration);
         _claudeNotificationTimer.Start();
     }
 
@@ -320,25 +366,16 @@ public partial class MainWindow
         SuppressPrivacyDot();
         PlayBluetoothBounce();
 
-        CollapsedContent.BeginAnimation(OpacityProperty, null);
-        CollapsedContent.Opacity = 0;
-        CollapsedContent.Visibility = Visibility.Collapsed;
+        HideCompactSurface(CollapsedContent);
         if (MusicCompactContent.Visibility == Visibility.Visible)
-        {
-            MusicCompactContent.BeginAnimation(OpacityProperty, null);
-            MusicCompactContent.Opacity = 0;
-            MusicCompactContent.Visibility = Visibility.Collapsed;
-        }
+            HideCompactSurface(MusicCompactContent);
 
         ClaudeNotification.Visibility = Visibility.Visible;
-        ClaudeNotification.Opacity = 0;
-        ClaudeNotification.BeginAnimation(OpacityProperty, MakeCompactNotificationEntrance(0, 1));
-        ClaudeNotificationTranslate.BeginAnimation(
-            TranslateTransform.YProperty, MakeCompactNotificationEntrance(6, 0), HandoffBehavior.SnapshotAndReplace);
+        Motion.To(ClaudeNotification, OpacityProperty, 1, Motion.Tile, from: 0);
+        Motion.To(ClaudeNotificationTranslate, TranslateTransform.YProperty, 0, Motion.Tile, from: 6);
 
-        var iconScale = MakeAnim(0.8d, 1d, _dur400, _easeSpring, TimeSpan.FromMilliseconds(150));
-        ClaudeNotificationIconScale.BeginAnimation(ScaleTransform.ScaleXProperty, iconScale);
-        ClaudeNotificationIconScale.BeginAnimation(ScaleTransform.ScaleYProperty, iconScale);
+        Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
     }
 
     private void AnimateClaudeNotificationOut()
@@ -346,11 +383,13 @@ public partial class MainWindow
         if (!_isClaudeNotificationVisible) return;
         int token = _claudeNotificationToken;
         _isClaudePeek = false;
+        _isCopiedPillShown = false;
+        _askRequest = null;
+        _claudeDoneShownId = null;
         if (NotchBorder.ActualWidth > _collapsedWidth + 0.5)
             AnimateCompactWidth(_collapsedWidth, TimeSpan.FromMilliseconds(400), _easeExpOut6, token);
 
-        var fadeOut = MakeCompactNotificationExit(1, 0);
-        fadeOut.Completed += (_, _) =>
+        Motion.To(ClaudeNotification, OpacityProperty, 0, Motion.Exit, done: () =>
         {
             if (token != _claudeNotificationToken || IsCompactSlotStale(token)) return;
 
@@ -363,23 +402,27 @@ public partial class MainWindow
 
             FrameworkElement content = _isMusicCompactMode && _currentMediaInfo != null ? MusicCompactContent : CollapsedContent;
             content.Visibility = Visibility.Visible;
-            content.BeginAnimation(OpacityProperty, MakeCompactContentRestore());
-        };
-        ClaudeNotification.BeginAnimation(OpacityProperty, fadeOut);
-        ClaudeNotificationTranslate.BeginAnimation(
-            TranslateTransform.YProperty, MakeCompactNotificationExit(0, -4), HandoffBehavior.SnapshotAndReplace);
+            Motion.To(content, OpacityProperty, 1, Motion.Tile);
+        });
+        Motion.To(ClaudeNotificationTranslate, TranslateTransform.YProperty, -4, Motion.Exit);
+        Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
     }
 
     /// <summary>The notch opens or another alert takes the pill: drop it without an exit animation.</summary>
     private void CancelClaudeNotificationImmediate()
     {
         _claudeNotificationTimer?.Stop();
+        _claudeDoneShownId = null;
+        _isCopiedPillShown = false;
+        _askRequest = null;
         if (!_isClaudeNotificationVisible) return;
         _isClaudeNotificationVisible = false;
         _claudeNotificationToken = 0;
-        ClaudeNotification.BeginAnimation(OpacityProperty, null);
-        ClaudeNotificationTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-        ClaudeNotification.Opacity = 0;
+        Motion.Stop(ClaudeNotification, OpacityProperty, 0);
+        Motion.Stop(ClaudeNotificationTranslate, TranslateTransform.YProperty, 0);
+        Motion.Stop(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, 1);
         ClaudeNotification.Visibility = Visibility.Collapsed;
     }
 

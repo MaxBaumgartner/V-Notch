@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -21,6 +22,7 @@ public sealed class DebugWindowOptions
     public Action? OnClose { get; init; }
     public Action<double, double>? OnPositionChanged { get; init; }
     public Func<(double Fps, int Hz, double FrameTimeMs, double NetDown, double NetUp)>? LiveMetricsProvider { get; init; }
+    public Func<(bool Active, long Submissions, double LatencyMs)>? GlassMetricsProvider { get; init; }
     public Action<bool>? OnLockViewChanged { get; init; }
     public Action<bool>? OnDragNotchChanged { get; init; }
     public Action<string>? OnViewStateChanged { get; init; }
@@ -42,6 +44,9 @@ public partial class DebugWindow : Window
     private readonly Action? _onClose;
     private readonly Action<double, double>? _onPositionChanged;
     private readonly Func<(double Fps, int Hz, double FrameTimeMs, double NetDown, double NetUp)>? _liveMetricsProvider;
+    private readonly Func<(bool Active, long Submissions, double LatencyMs)>? _glassMetricsProvider;
+    private long _glassSampleTicks, _glassSampleCount;
+    private (double Fps, double Latency)? _prevGlassMetrics;
     private readonly Action<bool>? _onLockViewChanged;
     private readonly Action<bool>? _onDragNotchChanged;
     private readonly Action<string>? _onViewStateChanged;
@@ -114,6 +119,7 @@ public partial class DebugWindow : Window
         _onClose = options?.OnClose;
         _onPositionChanged = options?.OnPositionChanged;
         _liveMetricsProvider = options?.LiveMetricsProvider;
+        _glassMetricsProvider = options?.GlassMetricsProvider;
         _onLockViewChanged = options?.OnLockViewChanged;
         _onDragNotchChanged = options?.OnDragNotchChanged;
         _onViewStateChanged = options?.OnViewStateChanged;
@@ -128,6 +134,18 @@ public partial class DebugWindow : Window
             {
                 _updateTimer.Stop();
                 _updateTimer.Tick -= UpdateTimer_Tick;
+                if (CopyAllLogsBtn?.Tag is UiScheduledTimer copyAllTimer)
+                {
+                    copyAllTimer.Stop();
+                    copyAllTimer.Dispose();
+                    CopyAllLogsBtn.Tag = null;
+                }
+                if (CopyServiceLogsBtn?.Tag is UiScheduledTimer copyServiceTimer)
+                {
+                    copyServiceTimer.Stop();
+                    copyServiceTimer.Dispose();
+                    CopyServiceLogsBtn.Tag = null;
+                }
                 _updateTimer.Dispose();
             }
             _serviceLogCapture?.Dispose();
@@ -197,6 +215,11 @@ public partial class DebugWindow : Window
             var (fps, hz, frameTimeMs, netDown, netUp) = _liveMetricsProvider?.Invoke() ?? (0, 0, 0, 0, 0);
             var snapshot = PerformanceDiagnosticService.Instance.SampleSnapshot(fps, hz, frameTimeMs, netDown, netUp);
             UpdateSnapshot(snapshot);
+            if (_glassMetricsProvider is { } glassProvider)
+            {
+                var glass = glassProvider();
+                UpdateGlassMetrics(glass.Active, glass.Submissions, glass.LatencyMs, Stopwatch.GetTimestamp());
+            }
 
             _logRefreshCounter++;
             if (_logRefreshCounter % 2 == 0) // Refresh log UI every ~400ms
@@ -258,8 +281,32 @@ public partial class DebugWindow : Window
         double rounded = Math.Round(fps);
         if (FpsSummaryText != null && HasChanged(ref _prevFps, rounded))
         {
-            FpsSummaryText.Text = $"{rounded} FPS";
+            FpsSummaryText.Text = $"UI {rounded} FPS";
         }
+    }
+
+    internal void UpdateGlassMetrics(bool active, long count, double latencyMs, long now)
+    {
+        GlassSummaryText.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
+        if (!active || _glassSampleTicks == 0 || count < _glassSampleCount)
+        {
+            _glassSampleTicks = active ? now : 0;
+            _glassSampleCount = count;
+            _prevGlassMetrics = null;
+            GlassSummaryText.Text = "Glass: waiting for sample";
+            return;
+        }
+        double elapsed = (now - _glassSampleTicks) / (double)Stopwatch.Frequency;
+        if (elapsed < 0.4) return;
+        double fps = Math.Round((count - _glassSampleCount) / elapsed);
+        double latency = fps > 0 ? Math.Round(latencyMs, 1) : 0;
+        if (_prevGlassMetrics != (fps, latency))
+        {
+            GlassSummaryText.Text = fps > 0 ? $"Glass {fps} FPS • submit {latency:0.0} ms" : "Glass: idle";
+            _prevGlassMetrics = (fps, latency);
+        }
+        _glassSampleTicks = now;
+        _glassSampleCount = count;
     }
 
     public void UpdateRefreshRate(int hz)
@@ -376,7 +423,7 @@ public partial class DebugWindow : Window
         if (RenderLatencyText != null && HasChanged(ref _prevRenderLatency,
             (snapshot.FrameTimeMs, snapshot.DispatcherLatencyMs)))
         {
-            RenderLatencyText.Text = $"GPU ({snapshot.FrameTimeMs:0.0}ms / {snapshot.DispatcherLatencyMs:0.0}ms UI)";
+            RenderLatencyText.Text = $"WPF ({snapshot.FrameTimeMs:0.0}ms / {snapshot.DispatcherLatencyMs:0.0}ms UI)";
         }
     }
 
@@ -712,15 +759,30 @@ public partial class DebugWindow : Window
             }
 
             Clipboard.SetText(sb.ToString());
-            CopyAllLogsBtn.Content = "Copied!";
+            var btn = CopyAllLogsBtn;
+            if (btn.Tag is UiScheduledTimer existingTimer)
+            {
+                existingTimer.Stop();
+                existingTimer.Dispose();
+                btn.Tag = null;
+            }
+            btn.Content = "Copied!";
 
             var timer = new UiScheduledTimer { Interval = TimeSpan.FromSeconds(1.5) };
             timer.Tick += (s, ev) =>
             {
                 timer.Stop();
                 timer.Dispose();
-                if (CopyAllLogsBtn != null) CopyAllLogsBtn.Content = "Copy";
+                if (CopyAllLogsBtn != null)
+                {
+                    if (ReferenceEquals(CopyAllLogsBtn.Tag, timer))
+                    {
+                        CopyAllLogsBtn.Tag = null;
+                    }
+                    CopyAllLogsBtn.Content = "Copy";
+                }
             };
+            btn.Tag = timer;
             timer.Start();
         }
         catch (Exception ex)
@@ -743,15 +805,30 @@ public partial class DebugWindow : Window
             }
 
             Clipboard.SetText(sb.ToString());
-            CopyServiceLogsBtn.Content = "Copied!";
+            var btn = CopyServiceLogsBtn;
+            if (btn.Tag is UiScheduledTimer existingTimer)
+            {
+                existingTimer.Stop();
+                existingTimer.Dispose();
+                btn.Tag = null;
+            }
+            btn.Content = "Copied!";
 
             var timer = new UiScheduledTimer { Interval = TimeSpan.FromSeconds(1.5) };
             timer.Tick += (s, ev) =>
             {
                 timer.Stop();
                 timer.Dispose();
-                if (CopyServiceLogsBtn != null) CopyServiceLogsBtn.Content = "Copy All";
+                if (CopyServiceLogsBtn != null)
+                {
+                    if (ReferenceEquals(CopyServiceLogsBtn.Tag, timer))
+                    {
+                        CopyServiceLogsBtn.Tag = null;
+                    }
+                    CopyServiceLogsBtn.Content = "Copy All";
+                }
             };
+            btn.Tag = timer;
             timer.Start();
         }
         catch (Exception ex)

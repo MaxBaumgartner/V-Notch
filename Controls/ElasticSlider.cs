@@ -1,3 +1,5 @@
+﻿using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -6,11 +8,57 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
+using VNotch.Services;
 
 namespace VNotch.Controls;
 
-public class ElasticSlider : Slider
+public partial class ElasticSlider : Slider
 {
+    private const double TrackEdgePad = 10.0;
+
+    [LibraryImport("VNotch.Native", EntryPoint = "vn_animation_compute_elastic_slider_overscroll")]
+    private static unsafe partial int NativeComputeElasticSliderOverscroll(
+        double overflowPx,
+        double usableWidth,
+        byte reducedMotion,
+        double* outScaleX,
+        double* outScaleY);
+
+    [LibraryImport("VNotch.Native", EntryPoint = "vn_elastic_slider_compute_metrics")]
+    private static unsafe partial int NativeComputeElasticSliderMetrics(
+        double value,
+        double minVal,
+        double maxVal,
+        double tickFreq,
+        double* outFraction,
+        double* outEffectiveStep,
+        int* outTickCount,
+        double* outSnappedValue);
+
+    [LibraryImport("VNotch.Native", EntryPoint = "vn_elastic_slider_compute_indicator_layout")]
+    private static unsafe partial int NativeComputeElasticSliderIndicatorLayout(
+        double value,
+        double minVal,
+        double maxVal,
+        double width,
+        double trackEdgePad,
+        double indicatorWidth,
+        double* outTargetLeft,
+        double* outFillWidth);
+
+    [LibraryImport("VNotch.Native", EntryPoint = "vn_elastic_slider_eval_mouse")]
+    private static unsafe partial int NativeEvalElasticSliderMouse(
+        double mouseX,
+        double width,
+        double trackEdgePad,
+        double minVal,
+        double maxVal,
+        double tickFreq,
+        double* outDragOverflow,
+        double* outClampedFraction,
+        double* outSnappedValue,
+        int* outOverscrollDir);
+
     #region Dependency Properties
 
     public static readonly DependencyProperty LabelProperty =
@@ -24,6 +72,16 @@ public class ElasticSlider : Slider
     public static readonly DependencyProperty UnitProperty =
         DependencyProperty.Register(nameof(Unit), typeof(string), typeof(ElasticSlider),
             new PropertyMetadata(string.Empty, OnUnitChanged));
+
+    public static readonly DependencyProperty ValueFormatProperty =
+        DependencyProperty.Register(nameof(ValueFormat), typeof(string), typeof(ElasticSlider),
+            new PropertyMetadata(string.Empty, OnUnitChanged));
+
+    public string ValueFormat
+    {
+        get => (string)GetValue(ValueFormatProperty);
+        set => SetValue(ValueFormatProperty, value);
+    }
 
     public string Label
     {
@@ -68,8 +126,11 @@ public class ElasticSlider : Slider
 
     #endregion
 
-    private static readonly SolidColorBrush MajorTickBrush = CreateFrozenBrush(70);
-    private static readonly SolidColorBrush MinorTickBrush = CreateFrozenBrush(35);
+    private static readonly SolidColorBrush MajorTickBrush = CreateFrozenBrush(52);
+    private static readonly SolidColorBrush MinorTickBrush = CreateFrozenBrush(24);
+    private static readonly SolidColorBrush ActiveMajorTickBrush = CreateFrozenBrush(115);
+    private static readonly SolidColorBrush ActiveMinorTickBrush = CreateFrozenBrush(60);
+    private static readonly CubicEase SmoothOutEase = CreateFrozenCubicEase();
 
     private static SolidColorBrush CreateFrozenBrush(byte alpha)
     {
@@ -78,14 +139,23 @@ public class ElasticSlider : Slider
         return brush;
     }
 
+    private static CubicEase CreateFrozenCubicEase()
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        ease.Freeze();
+        return ease;
+    }
+
     private Border? _rootBorder;
     private Border? _fillBorder;
+    private Border? _hoverOverlay;
     private Canvas? _tickCanvas;
     private Rectangle? _indicator;
     private TextBlock? _labelText;
     private TextBlock? _descText;
     private TextBlock? _valueText;
     private ScaleTransform? _rootScale;
+    private ScaleTransform? _indicatorScale;
     private bool _isDragging;
     private double _dragOverflow;
     private double _lastAnimatedValue = double.NaN;
@@ -95,10 +165,15 @@ public class ElasticSlider : Slider
         base.OnApplyTemplate();
 
         if (_rootBorder != null)
+        {
             _rootBorder.SizeChanged -= OnRootBorderSizeChanged;
+            _rootBorder.MouseEnter -= OnRootBorderMouseEnter;
+            _rootBorder.MouseLeave -= OnRootBorderMouseLeave;
+        }
 
         _rootBorder = Template?.FindName("PART_Root", this) as Border;
         _fillBorder = Template?.FindName("PART_Fill", this) as Border;
+        _hoverOverlay = Template?.FindName("PART_HoverOverlay", this) as Border;
         _tickCanvas = Template?.FindName("PART_Ticks", this) as Canvas;
         _indicator = Template?.FindName("PART_Indicator", this) as Rectangle;
         _labelText = Template?.FindName("PART_Label", this) as TextBlock;
@@ -111,6 +186,15 @@ public class ElasticSlider : Slider
             _rootBorder.RenderTransform = _rootScale;
             if (!_isDragging) _rootBorder.RenderTransformOrigin = new Point(0.5, 0.5);
             _rootBorder.SizeChanged += OnRootBorderSizeChanged;
+            _rootBorder.MouseEnter += OnRootBorderMouseEnter;
+            _rootBorder.MouseLeave += OnRootBorderMouseLeave;
+        }
+
+        if (_indicator != null)
+        {
+            _indicatorScale = new ScaleTransform(1, 1);
+            _indicator.RenderTransform = _indicatorScale;
+            _indicator.RenderTransformOrigin = new Point(0.5, 0.5);
         }
 
         SetFillImmediate();
@@ -118,14 +202,74 @@ public class ElasticSlider : Slider
         UpdateDescriptionText();
         UpdateValueText();
         DrawTicks();
-        UpdateIndicatorPosition();
+        UpdateIndicatorPosition(immediate: true);
     }
 
     private void OnRootBorderSizeChanged(object sender, SizeChangedEventArgs e)
     {
         SetFillImmediate();
         DrawTicks();
-        UpdateIndicatorPosition();
+        UpdateIndicatorPosition(immediate: true);
+    }
+
+    private void OnRootBorderMouseEnter(object sender, MouseEventArgs e)
+    {
+        UpdateInteractiveStateVisuals();
+    }
+
+    private void OnRootBorderMouseLeave(object sender, MouseEventArgs e)
+    {
+        UpdateInteractiveStateVisuals();
+    }
+
+    private void UpdateInteractiveStateVisuals()
+    {
+        bool hovered = _rootBorder?.IsMouseOver == true || IsMouseOver;
+        double targetOverlayOpacity = _isDragging ? 1.0 : (hovered ? 0.65 : 0.0);
+        AnimateElementOpacity(_hoverOverlay, targetOverlayOpacity, hovered || _isDragging ? 160 : 220);
+
+        double indScaleX = _isDragging ? 1.18 : (hovered ? 1.08 : 1.0);
+        double indScaleY = _isDragging ? 1.16 : (hovered ? 1.08 : 1.0);
+        AnimateScaleTransform(_indicatorScale, indScaleX, indScaleY, 160);
+    }
+
+    private static void AnimateElementOpacity(UIElement? element, double targetOpacity, int durationMs)
+    {
+        if (element == null) return;
+        if (AnimationConfig.ReduceMotion || !SystemParameters.ClientAreaAnimation)
+        {
+            element.BeginAnimation(OpacityProperty, null);
+            element.Opacity = targetOpacity;
+            return;
+        }
+
+        var anim = new DoubleAnimation(targetOpacity, TimeSpan.FromMilliseconds(durationMs))
+        {
+            EasingFunction = SmoothOutEase
+        };
+        Timeline.SetDesiredFrameRate(anim, AnimationConfig.TargetFps);
+        element.BeginAnimation(OpacityProperty, anim, HandoffBehavior.SnapshotAndReplace);
+    }
+
+    private static void AnimateScaleTransform(ScaleTransform? transform, double targetX, double targetY, int durationMs)
+    {
+        if (transform == null) return;
+        if (AnimationConfig.ReduceMotion || !SystemParameters.ClientAreaAnimation)
+        {
+            transform.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            transform.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            transform.ScaleX = targetX;
+            transform.ScaleY = targetY;
+            return;
+        }
+
+        var dur = TimeSpan.FromMilliseconds(durationMs);
+        var ax = new DoubleAnimation(targetX, dur) { EasingFunction = SmoothOutEase };
+        var ay = new DoubleAnimation(targetY, dur) { EasingFunction = SmoothOutEase };
+        Timeline.SetDesiredFrameRate(ax, AnimationConfig.TargetFps);
+        Timeline.SetDesiredFrameRate(ay, AnimationConfig.TargetFps);
+        transform.BeginAnimation(ScaleTransform.ScaleXProperty, ax, HandoffBehavior.SnapshotAndReplace);
+        transform.BeginAnimation(ScaleTransform.ScaleYProperty, ay, HandoffBehavior.SnapshotAndReplace);
     }
 
     protected override void OnValueChanged(double oldValue, double newValue)
@@ -143,12 +287,14 @@ public class ElasticSlider : Slider
         }
 
         UpdateValueText();
-        UpdateIndicatorPosition();
+        UpdateTickBrushes();
+        bool hasPrevious = !double.IsNaN(_lastAnimatedValue) && Math.Abs(oldValue - newValue) > 0.001;
+        UpdateIndicatorPosition(immediate: !hasPrevious);
 
-        if (IsSnapToTickEnabled && TickFrequency > 0 && !double.IsNaN(_lastAnimatedValue) && Math.Abs(oldValue - newValue) > 0.001)
-            AnimateFillSpring();
-        else
+        if (hasPrevious)
             AnimateFillSmooth();
+        else
+            SetFillImmediate();
 
         _lastAnimatedValue = newValue;
     }
@@ -158,7 +304,7 @@ public class ElasticSlider : Slider
         base.OnMinimumChanged(oldMinimum, newMinimum);
         SetFillImmediate();
         DrawTicks();
-        UpdateIndicatorPosition();
+        UpdateIndicatorPosition(immediate: true);
     }
 
     protected override void OnMaximumChanged(double oldMaximum, double newMaximum)
@@ -166,19 +312,19 @@ public class ElasticSlider : Slider
         base.OnMaximumChanged(oldMaximum, newMaximum);
         SetFillImmediate();
         DrawTicks();
-        UpdateIndicatorPosition();
+        UpdateIndicatorPosition(immediate: true);
     }
 
     #region Tick Marks & Indicator
 
-    private double GetRightReserve()
+    private unsafe double GetNormalizedFraction()
     {
-        if (_valueText == null) return 62;
-        _valueText.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        return Math.Max(50, _valueText.DesiredSize.Width + 22);
+        double f = 0.0, step = 1.0, snapped = Value;
+        int ticks = 1;
+        return NativeComputeElasticSliderMetrics(Value, Minimum, Maximum, TickFrequency, &f, &step, &ticks, &snapped) == 0 ? f : 0.0;
     }
 
-    private void DrawTicks()
+    private unsafe void DrawTicks()
     {
         if (_tickCanvas == null || _rootBorder == null) return;
         _tickCanvas.Children.Clear();
@@ -188,23 +334,24 @@ public class ElasticSlider : Slider
         if (width <= 0 || height <= 0) return;
         if (Maximum <= Minimum) return;
 
-        int totalTicks = GetTickCount();
-
-        double leftPad = 12;
-        double rightReserve = GetRightReserve();
-        double usableWidth = width - leftPad - rightReserve;
+        double usableWidth = width - TrackEdgePad * 2.0;
         if (usableWidth <= 0) return;
+
+        double currentFraction = 0.0, step = 1.0, snapped = Value;
+        int totalTicks = 1;
+        if (NativeComputeElasticSliderMetrics(Value, Minimum, Maximum, TickFrequency, &currentFraction, &step, &totalTicks, &snapped) != 0)
+            return;
 
         for (int i = 0; i <= totalTicks; i++)
         {
             double fraction = (double)i / totalTicks;
-
-            double x = leftPad + fraction * usableWidth;
+            double x = TrackEdgePad + fraction * usableWidth;
 
             bool isMajor = (i % 5 == 0);
+            bool isActive = fraction <= currentFraction + 0.001;
 
             double tickHeight = isMajor ? 14 : 8;
-            double tickWidth = isMajor ? 2 : 1.2;
+            double tickWidth = isMajor ? 1.8 : 1.1;
 
             var tick = new Rectangle
             {
@@ -212,7 +359,10 @@ public class ElasticSlider : Slider
                 Height = tickHeight,
                 RadiusX = tickWidth / 2,
                 RadiusY = tickWidth / 2,
-                Fill = isMajor ? MajorTickBrush : MinorTickBrush,
+                Fill = isMajor
+                    ? (isActive ? ActiveMajorTickBrush : MajorTickBrush)
+                    : (isActive ? ActiveMinorTickBrush : MinorTickBrush),
+                Tag = fraction,
                 SnapsToDevicePixels = true
             };
 
@@ -222,7 +372,24 @@ public class ElasticSlider : Slider
         }
     }
 
-    private void UpdateIndicatorPosition()
+    private void UpdateTickBrushes()
+    {
+        if (_tickCanvas == null || _tickCanvas.Children.Count == 0) return;
+        double currentFraction = GetNormalizedFraction();
+        int count = _tickCanvas.Children.Count;
+        for (int i = 0; i < count; i++)
+        {
+            if (_tickCanvas.Children[i] is not Rectangle tick || tick.Tag is not double fraction)
+                continue;
+            bool isMajor = (i % 5 == 0);
+            bool isActive = fraction <= currentFraction + 0.001;
+            tick.Fill = isMajor
+                ? (isActive ? ActiveMajorTickBrush : MajorTickBrush)
+                : (isActive ? ActiveMinorTickBrush : MinorTickBrush);
+        }
+    }
+
+    private unsafe void UpdateIndicatorPosition(bool immediate = false)
     {
         if (_indicator == null || _rootBorder == null) return;
 
@@ -231,50 +398,44 @@ public class ElasticSlider : Slider
         if (width <= 0 || height <= 0) return;
         if (Maximum <= Minimum) return;
 
-        double leftPad = 12;
-        double rightReserve = GetRightReserve();
-        double usableWidth = width - leftPad - rightReserve;
+        double usableWidth = width - TrackEdgePad * 2.0;
         if (usableWidth <= 0) return;
 
-        double fraction = (Value - Minimum) / (Maximum - Minimum);
-        double x = leftPad + fraction * usableWidth;
-        double targetLeft = x - _indicator.Width / 2;
+        double targetLeft = 0.0, fill = 0.0;
+        if (NativeComputeElasticSliderIndicatorLayout(Value, Minimum, Maximum, width, TrackEdgePad, _indicator.Width, &targetLeft, &fill) != 0)
+            return;
         double currentLeft = Canvas.GetLeft(_indicator);
-        if (_isDragging || double.IsNaN(currentLeft) || double.IsInfinity(currentLeft))
+
+        Canvas.SetTop(_indicator, (height - _indicator.Height) / 2);
+
+        if (immediate || double.IsNaN(currentLeft) || double.IsInfinity(currentLeft) || AnimationConfig.ReduceMotion || !SystemParameters.ClientAreaAnimation)
         {
             _indicator.BeginAnimation(Canvas.LeftProperty, null);
             Canvas.SetLeft(_indicator, targetLeft);
             return;
         }
 
-        if (_isDragging)
+        int durMs = _isDragging ? 75 : 170;
+        var anim = new DoubleAnimation(targetLeft, TimeSpan.FromMilliseconds(durMs))
         {
-            var anim = new DoubleAnimation(currentLeft, targetLeft, TimeSpan.FromMilliseconds(50))
-            {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            Timeline.SetDesiredFrameRate(anim, VNotch.Services.AnimationConfig.TargetFps);
-            _indicator.BeginAnimation(Canvas.LeftProperty, anim);
-        }
-        else
-        {
-            var anim = new DoubleAnimation(currentLeft, targetLeft, TimeSpan.FromMilliseconds(300))
-            {
-                EasingFunction = new ElasticEase { EasingMode = EasingMode.EaseOut, Oscillations = 1, Springiness = 7 }
-            };
-            Timeline.SetDesiredFrameRate(anim, VNotch.Services.AnimationConfig.TargetFps);
-            _indicator.BeginAnimation(Canvas.LeftProperty, anim);
-        }
+            EasingFunction = SmoothOutEase,
+            FillBehavior = FillBehavior.Stop
+        };
+        Timeline.SetDesiredFrameRate(anim, AnimationConfig.TargetFps);
+        _indicator.BeginAnimation(Canvas.LeftProperty, anim, HandoffBehavior.SnapshotAndReplace);
+        Canvas.SetLeft(_indicator, targetLeft);
     }
 
     #endregion
 
     #region Fill
 
-    private double ComputeTargetFillWidth(double width)
+    private unsafe double ComputeTargetFillWidth(double width)
     {
-        double clampedFraction = Math.Clamp((Value - Minimum) / (Maximum - Minimum), 0, 1);
-        return width * clampedFraction;
+        double left = 0.0, fillWidth = 0.0;
+        return NativeComputeElasticSliderIndicatorLayout(Value, Minimum, Maximum, width, TrackEdgePad, _indicator?.Width ?? 0.0, &left, &fillWidth) == 0
+            ? fillWidth
+            : 0.0;
     }
 
     private void SetFillImmediate()
@@ -294,6 +455,8 @@ public class ElasticSlider : Slider
                     _fillBorder.BeginAnimation(WidthProperty, null);
                     _fillBorder.Width = ComputeTargetFillWidth(w);
                     _lastAnimatedValue = Value;
+                    UpdateTickBrushes();
+                    UpdateIndicatorPosition(immediate: true);
                 }
             });
             return;
@@ -306,29 +469,7 @@ public class ElasticSlider : Slider
 
     private void AnimateFillSpring()
     {
-        if (_fillBorder == null || _rootBorder == null) return;
-        if (Maximum <= Minimum) return;
-
-        double width = _rootBorder.ActualWidth;
-        if (width <= 0) return;
-
-        double targetWidth = ComputeTargetFillWidth(width);
-        double currentWidth = !double.IsNaN(_fillBorder.Width) && _fillBorder.ActualWidth <= 0
-            ? _fillBorder.Width
-            : _fillBorder.ActualWidth;
-        if (_isDragging || double.IsNaN(currentWidth) || double.IsInfinity(currentWidth))
-        {
-            _fillBorder.BeginAnimation(WidthProperty, null);
-            _fillBorder.Width = targetWidth;
-            return;
-        }
-
-        var anim = new DoubleAnimation(currentWidth, targetWidth, TimeSpan.FromMilliseconds(300))
-        {
-            EasingFunction = new ElasticEase { EasingMode = EasingMode.EaseOut, Oscillations = 1, Springiness = 7 }
-        };
-        Timeline.SetDesiredFrameRate(anim, VNotch.Services.AnimationConfig.TargetFps);
-        _fillBorder.BeginAnimation(WidthProperty, anim);
+        AnimateFillSmooth();
     }
 
     private void AnimateFillSmooth()
@@ -343,26 +484,22 @@ public class ElasticSlider : Slider
         double currentWidth = !double.IsNaN(_fillBorder.Width) && _fillBorder.ActualWidth <= 0
             ? _fillBorder.Width
             : _fillBorder.ActualWidth;
-        if (_isDragging || double.IsNaN(currentWidth) || double.IsInfinity(currentWidth))
+
+        if (double.IsNaN(currentWidth) || double.IsInfinity(currentWidth) || AnimationConfig.ReduceMotion || !SystemParameters.ClientAreaAnimation)
         {
             _fillBorder.BeginAnimation(WidthProperty, null);
             _fillBorder.Width = targetWidth;
             return;
         }
 
-        if (_isDragging)
+        // Under the finger the fill follows tightly; let go (or set from outside) and it glides to rest with
+        // whatever speed it had.
+        var fill = _fillBorder;
+        if (!Motion.IsRunning(fill, WidthProperty)) Motion.Stop(fill, WidthProperty, currentWidth);
+        Motion.To(fill, WidthProperty, targetWidth, _isDragging ? Motion.PressDown : Motion.Glide, done: () =>
         {
-            var anim = new DoubleAnimation(currentWidth, targetWidth, TimeSpan.FromMilliseconds(50))
-            {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            Timeline.SetDesiredFrameRate(anim, VNotch.Services.AnimationConfig.TargetFps);
-            _fillBorder.BeginAnimation(WidthProperty, anim);
-        }
-        else
-        {
-            AnimateFillSpring();
-        }
+            if (Math.Abs(fill.Width - targetWidth) < 0.5) Motion.Stop(fill, WidthProperty, targetWidth);
+        });
     }
 
     #endregion
@@ -390,9 +527,9 @@ public class ElasticSlider : Slider
         string unit = Unit;
         int val = (int)Value;
         if (val == 0 && unit == " fps")
-            _valueText.Text = VNotch.Services.Loc.Get("settings.fps.auto");
+            _valueText.Text = Loc.Get("settings.fps.auto");
         else
-            _valueText.Text = string.IsNullOrEmpty(unit) ? val.ToString() : $"{val}{unit}";
+            _valueText.Text = (string.IsNullOrEmpty(ValueFormat) ? val.ToString() : Value.ToString(ValueFormat)) + unit;
     }
 
     #endregion
@@ -406,7 +543,7 @@ public class ElasticSlider : Slider
         if (_rootBorder != null)
         {
             var pos = e.GetPosition(_rootBorder);
-            if (pos.Y < 0 || pos.Y > _rootBorder.ActualHeight)
+            if (pos.Y < -4 || pos.Y > _rootBorder.ActualHeight + 4)
                 return;
         }
 
@@ -414,6 +551,7 @@ public class ElasticSlider : Slider
         _dragOverflow = 0;
         CaptureMouse();
         Focus();
+        UpdateInteractiveStateVisuals();
 
         SetValueFromMouse(e);
         e.Handled = true;
@@ -433,8 +571,9 @@ public class ElasticSlider : Slider
 
         _isDragging = false;
         ReleaseMouseCapture();
+        UpdateInteractiveStateVisuals();
 
-        if (Math.Abs(_dragOverflow) > 1)
+        if (Math.Abs(_dragOverflow) > 0.5)
             AnimateRubberBandRelease();
     }
 
@@ -444,11 +583,21 @@ public class ElasticSlider : Slider
         if (!_isDragging) return;
 
         _isDragging = false;
-        if (Math.Abs(_dragOverflow) > 1)
+        UpdateInteractiveStateVisuals();
+        if (Math.Abs(_dragOverflow) > 0.5)
             AnimateRubberBandRelease();
     }
 
-    private void SetValueFromMouse(MouseEventArgs e)
+    private static unsafe (double ScaleX, double ScaleY) ComputeOverscrollScale(double overflowPx, double usableWidth)
+    {
+        double sx = 1.0, sy = 1.0;
+        bool reduced = AnimationConfig.ReduceMotion || !SystemParameters.ClientAreaAnimation;
+        return NativeComputeElasticSliderOverscroll(overflowPx, usableWidth, reduced ? (byte)1 : (byte)0, &sx, &sy) == 0
+            ? (sx, sy)
+            : (1.0, 1.0);
+    }
+
+    private unsafe void SetValueFromMouse(MouseEventArgs e)
     {
         if (_rootBorder == null) return;
 
@@ -456,26 +605,29 @@ public class ElasticSlider : Slider
         double width = _rootBorder.ActualWidth;
         if (width <= 0) return;
 
-        double leftPad = 12;
-        double rightReserve = GetRightReserve();
-        double usableWidth = width - leftPad - rightReserve;
+        double usableWidth = width - TrackEdgePad * 2.0;
         if (usableWidth <= 0) return;
 
-        double fraction = (pos.X - leftPad) / usableWidth;
-
-        if (fraction < 0)
+        double dragOverflow = 0.0, clampedFraction = 0.0, snappedValue = Minimum;
+        int overscrollDir = 0;
+        if (NativeEvalElasticSliderMouse(
+            pos.X, width, TrackEdgePad, Minimum, Maximum, TickFrequency,
+            &dragOverflow, &clampedFraction, &snappedValue, &overscrollDir) != 0)
         {
-            _dragOverflow = fraction * usableWidth;
-            fraction = 0;
-            double decay = Decay(Math.Abs(_dragOverflow), 60);
-            AnimateScaleImmediate(1.0 + decay * 0.001, 1.0 - decay * 0.002, stretchFromLeft: false);
+            return;
         }
-        else if (fraction > 1)
+
+        if (overscrollDir < 0)
         {
-            _dragOverflow = (fraction - 1) * usableWidth;
-            fraction = 1;
-            double decay = Decay(Math.Abs(_dragOverflow), 60);
-            AnimateScaleImmediate(1.0 + decay * 0.001, 1.0 - decay * 0.002, stretchFromLeft: true);
+            _dragOverflow = dragOverflow;
+            var (sx, sy) = ComputeOverscrollScale(_dragOverflow, usableWidth);
+            AnimateScaleImmediate(sx, sy, stretchFromLeft: false);
+        }
+        else if (overscrollDir > 0)
+        {
+            _dragOverflow = dragOverflow;
+            var (sx, sy) = ComputeOverscrollScale(_dragOverflow, usableWidth);
+            AnimateScaleImmediate(sx, sy, stretchFromLeft: true);
         }
         else
         {
@@ -487,61 +639,32 @@ public class ElasticSlider : Slider
                 _rootScale.ScaleX = 1.0;
                 _rootScale.ScaleY = 1.0;
             }
-            if (_rootBorder != null)
-                if (!_isDragging) _rootBorder.RenderTransformOrigin = new Point(0.5, 0.5);
+            if (_rootBorder != null && !_isDragging)
+                _rootBorder.RenderTransformOrigin = new Point(0.5, 0.5);
         }
 
-        double rawValue = Minimum + fraction * (Maximum - Minimum);
-
-        rawValue = SnapValue(rawValue);
-
-        Value = Math.Max(Minimum, Math.Min(Maximum, rawValue));
+        Value = Math.Max(Minimum, Math.Min(Maximum, snappedValue));
     }
 
-    private double GetEffectiveTickStep()
+    private unsafe double GetEffectiveTickStep()
     {
-        if (TickFrequency > 0)
-        {
-            return TickFrequency;
-        }
-
-        return Maximum > Minimum ? (Maximum - Minimum) / 20.0 : 1.0;
+        double f = 0.0, step = 1.0, snapped = Value;
+        int ticks = 1;
+        return NativeComputeElasticSliderMetrics(Value, Minimum, Maximum, TickFrequency, &f, &step, &ticks, &snapped) == 0 ? step : 1.0;
     }
 
-    private int GetTickCount()
+    private unsafe int GetTickCount()
     {
-        if (Maximum <= Minimum)
-        {
-            return 1;
-        }
-
-        double step = GetEffectiveTickStep();
-        if (step <= 0)
-        {
-            return 20;
-        }
-
-        return Math.Max(1, (int)Math.Round((Maximum - Minimum) / step));
+        double f = 0.0, step = 1.0, snapped = Value;
+        int ticks = 1;
+        return NativeComputeElasticSliderMetrics(Value, Minimum, Maximum, TickFrequency, &f, &step, &ticks, &snapped) == 0 ? ticks : 1;
     }
 
-    private double SnapValue(double value)
+    private unsafe double SnapValue(double value)
     {
-        double step = GetEffectiveTickStep();
-        if (step <= 0)
-        {
-            return Math.Max(Minimum, Math.Min(Maximum, value));
-        }
-
-        double snapped = Math.Round((value - Minimum) / step) * step + Minimum;
-        return Math.Max(Minimum, Math.Min(Maximum, snapped));
-    }
-
-    private static double Decay(double value, double max)
-    {
-        if (max == 0) return 0;
-        double entry = value / max;
-        double sigmoid = 2.0 * (1.0 / (1.0 + Math.Exp(-entry)) - 0.5);
-        return sigmoid * max;
+        double f = 0.0, step = 1.0, snapped = value;
+        int ticks = 1;
+        return NativeComputeElasticSliderMetrics(value, Minimum, Maximum, TickFrequency, &f, &step, &ticks, &snapped) == 0 ? snapped : value;
     }
 
     #endregion
@@ -564,12 +687,11 @@ public class ElasticSlider : Slider
     private void AnimateRubberBandRelease()
     {
         if (_rootScale == null || _rootBorder == null) return;
-        var dur = TimeSpan.FromMilliseconds(600);
-        var ease = new ElasticEase { EasingMode = EasingMode.EaseOut, Oscillations = 1, Springiness = 5 };
-        var ax = new DoubleAnimation(1.0, dur) { EasingFunction = ease };
-        var ay = new DoubleAnimation(1.0, dur) { EasingFunction = ease };
-        Timeline.SetDesiredFrameRate(ax, VNotch.Services.AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(ay, VNotch.Services.AnimationConfig.TargetFps);
+        var dur = TimeSpan.FromMilliseconds(260);
+        var ax = new DoubleAnimation(1.0, dur) { EasingFunction = SmoothOutEase };
+        var ay = new DoubleAnimation(1.0, dur) { EasingFunction = SmoothOutEase };
+        Timeline.SetDesiredFrameRate(ax, AnimationConfig.TargetFps);
+        Timeline.SetDesiredFrameRate(ay, AnimationConfig.TargetFps);
         ax.Completed += (_, _) =>
         {
             if (!_isDragging) _rootBorder.RenderTransformOrigin = new Point(0.5, 0.5);
@@ -603,6 +725,14 @@ public class ElasticSlider : Slider
                 break;
             case Key.Up:
                 Value = Math.Min(Maximum, Value + step);
+                handled = true;
+                break;
+            case Key.PageDown:
+                Value = Math.Max(Minimum, Value - step * 5);
+                handled = true;
+                break;
+            case Key.PageUp:
+                Value = Math.Min(Maximum, Value + step * 5);
                 handled = true;
                 break;
             case Key.Home:

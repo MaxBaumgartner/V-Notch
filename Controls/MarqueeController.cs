@@ -250,7 +250,8 @@ internal sealed class MarqueeController : IDisposable
         double containerWidth = _getVisibleMediaTextWidth(340);
         double distance = textWidth - containerWidth + 15;
 
-        if (distance > 1)
+        // The trailing fade padding extends a scroll, but is not text overflow.
+        if (textWidth > containerWidth)
         {
             if (isTitle) _titleScrollDistance = distance;
             else _artistScrollDistance = distance;
@@ -310,37 +311,19 @@ internal sealed class MarqueeController : IDisposable
         TranslateTransform nextMorph,
         string newText)
     {
-        double currentOpacity = Math.Clamp(currentLayer.Opacity, 0, 1);
-        currentLayer.BeginAnimation(UIElement.OpacityProperty, null);
-        nextLayer.BeginAnimation(UIElement.OpacityProperty, null);
-        currentLayer.Opacity = currentOpacity;
-        nextLayer.Opacity = 0;
+        // The leaving text goes on from wherever it is, so a track that changes again mid-swap never jumps
+        // back; only the arriving text starts fresh.
         next.SetCurrentValue(TextBlock.TextProperty, newText);
-
         int animFps = VNotch.Services.AnimationConfig.TargetFps;
-        var easeOut = _easeExpOut6;
 
-        currentMorph.BeginAnimation(TranslateTransform.XProperty, null);
-        nextMorph.BeginAnimation(TranslateTransform.XProperty, null);
-        currentMorph.BeginAnimation(TranslateTransform.YProperty, null);
-        nextMorph.BeginAnimation(TranslateTransform.YProperty, null);
-        currentMorph.X = 0;
-        nextMorph.X = 20;
-        currentMorph.Y = 0;
-        nextMorph.Y = 0;
+        VNotch.Services.Motion.To(currentMorph, TranslateTransform.XProperty, -18, VNotch.Services.Motion.Exit, fps: animFps);
+        VNotch.Services.Motion.To(currentMorph, TranslateTransform.YProperty, 0, VNotch.Services.Motion.Exit, fps: animFps);
+        VNotch.Services.Motion.To(currentLayer, UIElement.OpacityProperty, 0, VNotch.Services.Motion.Exit, fps: animFps);
 
-        var slideOut = MakeAnim(0, -18, _dur400, _easeQuadIn, animFps);
-        currentMorph.BeginAnimation(TranslateTransform.XProperty, slideOut);
-
-        var slideIn = MakeAnim(20, 0, _dur600, easeOut, animFps);
-        nextMorph.BeginAnimation(TranslateTransform.XProperty, slideIn);
-
-        var fadeOut = MakeAnim(currentOpacity, 0, _dur350, _easeQuadIn, animFps);
-        currentLayer.BeginAnimation(UIElement.OpacityProperty, fadeOut);
-
-        var fadeIn = MakeAnim(0, 1, _dur500, easeOut, TimeSpan.FromMilliseconds(70));
-        Timeline.SetDesiredFrameRate(fadeIn, animFps);
-        nextLayer.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+        VNotch.Services.Motion.Stop(nextMorph, TranslateTransform.YProperty, 0);
+        VNotch.Services.Motion.To(nextMorph, TranslateTransform.XProperty, 0, VNotch.Services.Motion.Tile, from: 20, fps: animFps);
+        VNotch.Services.Motion.To(nextLayer, UIElement.OpacityProperty, 1, VNotch.Services.Motion.Tile, from: 0,
+            delay: TimeSpan.FromMilliseconds(70), fps: animFps);
     }
 
     #endregion

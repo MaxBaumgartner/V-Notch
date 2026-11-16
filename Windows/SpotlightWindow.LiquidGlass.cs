@@ -108,7 +108,10 @@ public partial class SpotlightWindow
             CloseAiHistory();
             RenderAiHistory();
         }
+        bool introSeen = _settings.HasSeenSpotlightIntro;
         _settings = settings.Clone();
+        _settings.HasSeenSpotlightIntro |= introSeen;
+        RefreshSpotlightIntro();
         if (restoreSavedChats) LoadAiHistory();
         _viewModel.HistoryEnabled = _settings.EnableSpotlightHistory;
         _gpuRefractionFailed = false;
@@ -117,8 +120,19 @@ public partial class SpotlightWindow
         ApplyLiquidGlassSkin();
     }
 
+    internal void ApplyWindowShadow(bool enabled)
+    {
+        if (ShellShadowBorder != null)
+            ShellShadowBorder.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        if (ShellShadowEffect != null)
+            ShellShadowEffect.Opacity = enabled ? 0.6 : 0.0;
+        if (!enabled && Shell?.Effect is DropShadowEffect)
+            Shell.Effect = null;
+    }
+
     internal void ApplyLiquidGlassSkin()
     {
+        ApplyWindowShadow(_settings.EnableShadow);
         if (GlassBackdropHost == null) return;
 
         if (IsLiquidGlassEnabled)
@@ -224,9 +238,8 @@ public partial class SpotlightWindow
         _lastGpuGeometry = null;
         _lastAppliedGpuOptics = null;
 
-        double dipRadius = Math.Clamp(cfg.BlurAmount, 0, 1) * 28.0;
         double dpiScale = GetGlassDpiScale();
-        int gaussianSigma = (int)Math.Round(dipRadius * dpiScale);
+        double gaussianSigma = LiquidGlassController.BlurAmountToSigma(cfg.BlurAmount, dpiScale);
         if (_liquidGlass != null)
         {
             _liquidGlass.SetBlur(gaussianSigma);
@@ -247,6 +260,12 @@ public partial class SpotlightWindow
 
         ApplyGpuBlur(cfg.BlurAmount);
         GlassBackdropHost.Opacity = Math.Clamp(cfg.Opacity, 0, 1);
+        if (GlassTintOverlay != null)
+        {
+            GlassTintOverlay.Opacity = cfg.Variant == 1
+                ? 0.16
+                : Math.Clamp(0.42 + cfg.BlurAmount * 0.42 - cfg.Brightness * 0.85, 0.14, 0.96);
+        }
 
         if (GlassGrainOverlay != null)
         {
@@ -267,7 +286,7 @@ public partial class SpotlightWindow
 
         if (Shell.Effect is DropShadowEffect dse)
         {
-            dse.Opacity = Math.Clamp(cfg.ShadowOpacity, 0, 1);
+            dse.Opacity = _settings.EnableShadow ? Math.Clamp(cfg.ShadowOpacity, 0, 1) : 0.0;
             dse.BlurRadius = Math.Clamp(cfg.ShadowSpread, 0, 60);
         }
 
@@ -292,6 +311,10 @@ public partial class SpotlightWindow
             Saturation = cfg.Saturation,
             Brightness = cfg.Brightness,
             BevelMode = cfg.BevelMode,
+            EdgeHighlight = cfg.EdgeHighlight,
+            Specular = cfg.Specular,
+            Fresnel = cfg.Fresnel,
+            Variant = cfg.Variant,
             TopCornerRadius = Shell.CornerRadius.TopLeft,
             BottomCornerRadius = Shell.CornerRadius.BottomLeft
         });
@@ -316,13 +339,13 @@ public partial class SpotlightWindow
         bool useUltimateGpu = _settings.LiquidGlass?.UseUltimateGpu ?? false;
         if (_gpuRefractionConfigured &&
             _gpuUltimateConfigured == useUltimateGpu &&
-            ReferenceEquals(GlassBackdropImage.Effect, _glassRefractionEffect))
+            _liquidGlass.UsesNativeRefraction)
             return;
 
         try
         {
             _glassRefractionEffect ??= new LiquidGlassRefractionEffect();
-            GlassBackdropImage.Effect = _glassRefractionEffect;
+            GlassBackdropImage.Effect = null;
 
             _glassInteractionController ??= new LiquidGlassInteractionController(Shell, Shell, _glassRefractionEffect);
 
@@ -335,6 +358,7 @@ public partial class SpotlightWindow
                 return;
             }
 
+            _liquidGlass.EnableNativeRefraction();
             RuntimeLog.Log("LIQUIDGLASS",
                 $"Spotlight GPU refraction enabled; target={Math.Clamp(_settings.LiquidGlass?.TargetFps ?? 60, 30, LiquidGlassController.MaxTargetFps)} FPS; ultimateGpu={useUltimateGpu}");
             _gpuRefractionConfigured = true;
@@ -555,6 +579,7 @@ public partial class SpotlightWindow
             _lastAppliedTouchLight = cfg.TouchLight;
             fx.HighlightStrength = cfg.TouchLight;
         }
+        lg.UpdateGpuLens(fx, screenLeft, screenTop);
     }
 
     private (double ScreenLeft, double ScreenTop) GetShellScreenPosition(double exactW, double dpiScale)
@@ -678,7 +703,7 @@ public partial class SpotlightWindow
             && Math.Abs(r1.SubY - r2.SubY) <= 1e-4;
     }
 
-    private void SyncLiveGlassFrame(bool updateDynamicFresnel)
+    private void SyncLiveGlassFrame(bool updateDynamicFresnel, TimeSpan? renderingTime = null)
     {
         if (_liquidGlass == null || !IsLiquidGlassEnabled || !IsSpotlightOpen) return;
 
@@ -692,7 +717,8 @@ public partial class SpotlightWindow
 
         if (isAnimating || regionChanged)
         {
-            if (!regionChanged && _liquidGlass.ShouldThrottleFrameUpdate(ref _lastGlassFrameUpdateTick))
+            if (_liquidGlass.ShouldThrottleFrameUpdate(ref _lastGlassFrameUpdateTick, force: regionChanged,
+                renderingTime: renderingTime))
                 return;
             _lastPushedCaptureRegion = region;
             _liquidGlass.SetLiveRegion(region);
@@ -707,7 +733,7 @@ public partial class SpotlightWindow
 
     private void OnLiquidGlassFrameUpdate(object? sender, EventArgs e)
     {
-        SyncLiveGlassFrame(updateDynamicFresnel: true);
+        SyncLiveGlassFrame(updateDynamicFresnel: true, renderingTime: (e as RenderingEventArgs)?.RenderingTime);
     }
 
     private void AnimateGlassReadability(bool opened, bool animate = true)

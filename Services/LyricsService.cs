@@ -2,13 +2,9 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,8 +13,6 @@ namespace VNotch.Services;
 internal sealed partial class LyricsService : IDisposable
 {
     private const string NativeDll = "VNotch.Native.dll";
-
-
 
     [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_lyrics_try_parse_lrc_line(
@@ -56,47 +50,69 @@ internal sealed partial class LyricsService : IDisposable
         out int outStart,
         out int outLength);
 
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_lyrics_normalize_for_matching(
+        ReadOnlySpan<char> text_ptr,
+        int text_len,
+        Span<char> out_buf,
+        int out_cap,
+        out int out_written);
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_lyrics_strip_title_extras(
+        ReadOnlySpan<char> title_ptr,
+        int title_len,
+        byte is_turkic_culture,
+        Span<char> out_buf,
+        int out_cap,
+        out int out_written);
+
     private const string LogTag = "LYRICS";
     private static readonly string[] Dashes = { " - ", " – ", " — ", " // " };
-    private const int MaxLyricsResponseBytes = 512 * 1024;
+    private const int MaxLyricsResponseBytes = 2 * 1024 * 1024;
 
-    [GeneratedRegex(@"[\(\[][^\)\]]*[\)\]]")]
-    private static partial Regex BracketedExtrasRegex();
+    private static readonly HttpClient _lrclibHttp = CreateClient("https://lrclib.net", 2500);
+    private static readonly HttpClient _lrcMuxHttp = CreateClient("https://api.lrcmux.dev", 2000);
+    private long _lrcMuxRetryUntil;
 
-    [GeneratedRegex(@"\s*[\(\[][^\)\]]*[\)\]]")]
-    private static partial Regex TitleExtrasRegex();
-
-    private const string VideoSuffixPattern = @"\s*\|\s*(?:Official|OFFICIAL|MV|mv|Music Video|Visualizer|Lyric Video|Audio|Track\s*No\.\d+).*";
-    private const string RecordingSuffixPattern = @"\s*-\s*(?:Remaster(?:ed)?|Live|Acoustic|Radio Edit|Bonus Track|Single Version|Instrumental|Deluxe|Mono|Stereo).*";
-
-    private static readonly HttpClient _lrclibHttp = new(NetworkPrivacy.Handler(NetworkFeature.Lyrics))
+    private static HttpClient CreateClient(string address, int timeoutMs)
     {
-        BaseAddress = new Uri("https://lrclib.net"),
-        Timeout = TimeSpan.FromSeconds(8)
-    };
-
-    private static readonly HttpClient _lrcMuxHttp = new(NetworkPrivacy.Handler(NetworkFeature.Lyrics))
-    {
-        BaseAddress = new Uri("https://api.lrcmux.dev"),
-        Timeout = TimeSpan.FromSeconds(12)
-    };
-
-    static LyricsService()
-    {
-        _lrclibHttp.DefaultRequestHeaders.UserAgent.ParseAdd(AppVersion.UserAgent);
-        _lrcMuxHttp.DefaultRequestHeaders.UserAgent.ParseAdd(AppVersion.UserAgent);
+        var transport = new SocketsHttpHandler
+        {
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromMilliseconds(1500),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+        };
+        var client = new HttpClient(NetworkPrivacy.Handler(NetworkFeature.Lyrics, transport))
+        { BaseAddress = new Uri(address), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(AppVersion.UserAgent);
+        return client;
     }
 
     private readonly HttpClient _lrclibClient;
     private readonly HttpClient _lrcMuxClient;
+    private readonly HttpClient _netEaseClient;
+    private readonly HttpClient _kugouClient;
+    private readonly HttpClient _qqMusicClient;
+    private readonly HttpClient _amllClient;
+    private readonly SpotifyLocalMetadataReader? _spotifyLocalMetadata;
 
-    public LyricsService() : this(_lrclibHttp, _lrcMuxHttp) { }
+    public LyricsService() : this(_lrclibHttp, _lrcMuxHttp,
+        spotifyLocalMetadata: new SpotifyLocalMetadataReader(includeTrackId: true))
+    { }
 
-    internal LyricsService(HttpClient lrclibClient, HttpClient lrcMuxClient, int cacheCapacity = 64)
+    internal LyricsService(HttpClient lrclibClient, HttpClient lrcMuxClient, int cacheCapacity = 64, HttpClient? netEaseClient = null,
+        HttpClient? amllClient = null, SpotifyLocalMetadataReader? spotifyLocalMetadata = null,
+        HttpClient? kugouClient = null, HttpClient? qqMusicClient = null)
     {
         if (cacheCapacity <= 0) throw new ArgumentOutOfRangeException(nameof(cacheCapacity));
         _lrclibClient = lrclibClient;
         _lrcMuxClient = lrcMuxClient;
+        _netEaseClient = netEaseClient ?? NetEaseHttp;
+        _kugouClient = kugouClient ?? KugouHttp;
+        _qqMusicClient = qqMusicClient ?? QqMusicHttp;
+        _amllClient = amllClient ?? AmllHttp;
+        _spotifyLocalMetadata = spotifyLocalMetadata;
         _cacheCapacity = cacheCapacity;
     }
 
@@ -107,7 +123,7 @@ internal sealed partial class LyricsService : IDisposable
     private FetchOperation? _activeFetch;
     private bool _disposed;
 
-    private readonly record struct FetchKey(string Track, string Artist, int DurationSeconds);
+    private readonly record struct FetchKey(string Track, string Artist, int DurationSeconds, string Providers, string SpotifyTrackId, bool FindWordTiming);
 
     private sealed class FetchOperation(FetchKey key)
     {
@@ -115,16 +131,28 @@ internal sealed partial class LyricsService : IDisposable
         public CancellationTokenSource Cancellation { get; } = new();
         public TaskCompletionSource<LyricsResult?> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task CancellationTask { get; set; } = Task.CompletedTask;
+        public Action<LyricsResult>? OnLyricsAvailable { get; set; }
+        public LyricsResult? AvailableResult { get; set; }
     }
 
-    public Task<LyricsResult?> FetchSyncedLyricsAsync(string trackName, string artistName, int durationSeconds)
+    public Task<LyricsResult?> FetchSyncedLyricsAsync(string trackName, string artistName, int durationSeconds, string? providerOrder = null,
+        string? spotifyTrackId = null, Action<LyricsResult>? onLyricsAvailable = null)
     {
-        var key = new FetchKey(trackName, artistName, durationSeconds);
+        string order = providerOrder == null ? $"{LyricsProviderOrder.Amll},{LyricsProviderOrder.Legacy}" : string.Join(',', LyricsProviderOrder.Normalize(providerOrder));
+        var key = new FetchKey(trackName, artistName, durationSeconds, order, NormalizeSpotifyTrackId(spotifyTrackId) ?? "", providerOrder != null);
         FetchOperation operation;
         lock (_fetchLock)
         {
             if (_disposed) return Task.FromResult<LyricsResult?>(null);
-            if (_activeFetch?.Key == key) return _activeFetch.Completion.Task;
+            if (_activeFetch?.Key == key)
+            {
+                _activeFetch.OnLyricsAvailable += onLyricsAvailable;
+                // A collapsed prefetch may already have found line lyrics while
+                // searching for words. Replay them when the lyrics view joins.
+                if (_activeFetch.AvailableResult is { } available)
+                    NotifyLyricsAvailable(onLyricsAvailable, available);
+                return _activeFetch.Completion.Task;
+            }
 
             CancelActiveFetchLocked();
             if (_cache.TryGetValue(key, out var cached))
@@ -133,7 +161,7 @@ internal sealed partial class LyricsService : IDisposable
                 return Task.FromResult<LyricsResult?>(cached.Result);
             }
 
-            operation = new FetchOperation(key);
+            operation = new FetchOperation(key) { OnLyricsAvailable = onLyricsAvailable };
             _activeFetch = operation;
         }
 
@@ -146,14 +174,14 @@ internal sealed partial class LyricsService : IDisposable
         LyricsResult? result = null;
         try
         {
-            result = await FetchUncachedLyricsAsync(operation.Key, operation.Cancellation.Token).ConfigureAwait(false);
+            result = await FetchUncachedLyricsAsync(operation.Key, operation.Cancellation.Token,
+                available => PublishAvailableLyrics(operation, available)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { /* Canceled */ }
         catch (Exception ex)
         {
             RuntimeLog.Log(LogTag, $"Error: {ex.Message}");
         }
-
         Task cancellationTask;
         lock (_fetchLock)
         {
@@ -162,7 +190,21 @@ internal sealed partial class LyricsService : IDisposable
             else if (result is { Lines.Count: > 0 })
             {
                 if (_cache.Count >= _cacheCapacity && !_cache.ContainsKey(operation.Key))
-                    _cache.Remove(_cache.MinBy(static entry => entry.Value.LastAccess).Key);
+                {
+                    FetchKey oldestKey = default;
+                    long oldestAccess = long.MaxValue;
+                    bool hasOldest = false;
+                    foreach (var kv in _cache)
+                    {
+                        if (!hasOldest || kv.Value.LastAccess < oldestAccess)
+                        {
+                            oldestKey = kv.Key;
+                            oldestAccess = kv.Value.LastAccess;
+                            hasOldest = true;
+                        }
+                    }
+                    if (hasOldest) _cache.Remove(oldestKey);
+                }
                 _cache[operation.Key] = (result, ++_cacheAccess);
             }
 
@@ -190,36 +232,92 @@ internal sealed partial class LyricsService : IDisposable
         _activeFetch = null;
     }
 
-    private async Task<LyricsResult?> FetchUncachedLyricsAsync(FetchKey key, CancellationToken token)
+    private void PublishAvailableLyrics(FetchOperation operation, LyricsResult result)
     {
-        var candidates = GenerateSearchCandidates(key.Track, key.Artist);
-        try
+        Action<LyricsResult>? callback;
+        lock (_fetchLock)
         {
-            foreach (var (candTrack, candArtist) in candidates)
-            {
-                token.ThrowIfCancellationRequested();
-                if (!string.IsNullOrEmpty(candArtist))
-                {
-                    var exact = await TryGetExactAsync(candTrack, candArtist, key.DurationSeconds, token).ConfigureAwait(false);
-                    if (exact is { Count: > 0 }) return new LyricsResult(exact, "LRCLIB");
-                }
-
-                var searched = await TrySearchAsync(candTrack, candArtist, key.DurationSeconds, token).ConfigureAwait(false);
-                if (searched is { Count: > 0 }) return new LyricsResult(searched, "LRCLIB");
-            }
+            if (_disposed || _activeFetch != operation || operation.Cancellation.IsCancellationRequested) return;
+            operation.AvailableResult = result;
+            callback = operation.OnLyricsAvailable;
         }
-        catch (Exception ex) when (!token.IsCancellationRequested &&
-            ex is HttpRequestException or OperationCanceledException or System.IO.IOException or JsonException or InvalidOperationException or KeyNotFoundException)
-        { RuntimeLog.Warn(LogTag, "LRCLIB unavailable; trying the fallback provider."); }
+        NotifyLyricsAvailable(callback, result);
+    }
 
-        foreach (var (candTrack, candArtist) in candidates)
+    private static void NotifyLyricsAvailable(Action<LyricsResult>? callback, LyricsResult result)
+    {
+        if (callback == null) return;
+        foreach (Action<LyricsResult> listener in callback.GetInvocationList())
+        {
+            try { listener(result); }
+            catch (Exception ex) { RuntimeLog.Warn(LogTag, $"Lyrics presentation callback failed: {ex.Message}"); }
+        }
+    }
+
+    private async Task<LyricsResult?> FetchUncachedLyricsAsync(FetchKey key, CancellationToken token,
+        Action<LyricsResult> onLyricsAvailable)
+    {
+        LyricsResult? lineFallback = null;
+        foreach (string provider in key.Providers.Split(','))
         {
             token.ThrowIfCancellationRequested();
-            var aggregated = await TryLrcMuxAsync(candTrack, candArtist, key.DurationSeconds, token).ConfigureAwait(false);
-            if (aggregated != null) return aggregated;
+            try
+            {
+                var result = await FetchProviderLyricsAsync(key, provider, token).ConfigureAwait(false);
+                if (result is not { Lines.Count: > 0 }) continue;
+                if (!key.FindWordTiming || result.Lines.Any(line => line.Words is { Length: > 0 })) return result;
+                if (lineFallback == null)
+                {
+                    lineFallback = result;
+                    onLyricsAvailable(result);
+                }
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested &&
+                ex is HttpRequestException or OperationCanceledException or System.IO.IOException or JsonException or System.Xml.XmlException or InvalidOperationException or KeyNotFoundException)
+            { RuntimeLog.Warn(LogTag, $"{provider} unavailable; trying the next lyrics provider."); }
+        }
+        // Exhaustion ends the word search and keeps the first usable line source.
+        return lineFallback;
+    }
+
+    private async Task<LyricsResult?> FetchProviderLyricsAsync(FetchKey key, string provider, CancellationToken token)
+    {
+        if (provider == LyricsProviderOrder.Amll)
+        {
+            string? id = key.SpotifyTrackId;
+            if (string.IsNullOrEmpty(id) && _spotifyLocalMetadata != null)
+                id = await _spotifyLocalMetadata.TryGetTrackIdAsync(key.Track, key.Artist, token).ConfigureAwait(false);
+            return await TryAmllAsync(id, token).ConfigureAwait(false);
+        }
+        if (provider == "NetEase")
+            return await TryNetEaseAsync(key.Track, key.Artist, key.DurationSeconds, token).ConfigureAwait(false);
+        if (provider == "Kugou")
+            return await TryKugouAsync(key.Track, key.Artist, key.DurationSeconds, token).ConfigureAwait(false);
+        if (provider == "QQ Music")
+            return await TryQqMusicAsync(key.Track, key.Artist, key.DurationSeconds, token).ConfigureAwait(false);
+        foreach (var (track, artist) in GenerateSearchCandidates(key.Track, key.Artist))
+        {
+            token.ThrowIfCancellationRequested();
+            if (provider == "lrc mux")
+            {
+                var result = await TryLrcMuxAsync(track, artist, key.DurationSeconds, token).ConfigureAwait(false);
+                if (result != null) return result;
+                continue;
+            }
+            if (provider != "LRCLIB") return null;
+            if (!string.IsNullOrEmpty(artist))
+            {
+                var exact = await TryGetExactAsync(track, artist, key.DurationSeconds, token).ConfigureAwait(false);
+                if (exact is { Count: > 0 }) return new LyricsResult(exact, "LRCLIB");
+            }
+            var searched = await TrySearchAsync(track, artist, key.DurationSeconds, token).ConfigureAwait(false);
+            if (searched is { Count: > 0 }) return new LyricsResult(searched, "LRCLIB");
         }
         return null;
     }
+
+    private static void MarkCooldown(ref long retryUntilField, TimeSpan duration) =>
+        Interlocked.Exchange(ref retryUntilField, DateTimeOffset.UtcNow.Add(duration).UtcTicks);
 
     public static List<(string Track, string Artist)> GenerateSearchCandidates(string trackName, string artistName)
     {
@@ -257,8 +355,8 @@ internal sealed partial class LyricsService : IDisposable
         // 3. Decompose pipe '|' (common in YouTube music video titles: "Artist | Title" or "Artist - Nick | Title")
         DecomposePipes(cTrack, AddCandidate);
 
-        // 4. Decompose standard dashes " - ", " – ", " — "
-        DecomposeDashes(cTrack, AddCandidate);
+        // 4. Decompose standard dashes " - ", " – ", " — " on raw track before suffix stripping
+        DecomposeDashes(trackName, AddCandidate);
 
         // 5. Track name only if artist is empty or generic
         if (!string.IsNullOrEmpty(cTrack))
@@ -283,20 +381,22 @@ internal sealed partial class LyricsService : IDisposable
         {
             addCandidate(parts[1], parts[0]);
             addCandidate(parts[0], parts[1]);
-            addCandidate(string.Join(" ", parts.Skip(1)), parts[0]);
+            addCandidate(string.Join(' ', parts, 1, parts.Length - 1), parts[0]);
         }
     }
 
-    private static void DecomposeDashes(string cTrack, Action<string, string> addCandidate)
+    private static void DecomposeDashes(string rawTrack, Action<string, string> addCandidate)
     {
         foreach (var dash in Dashes)
         {
-            if (!cTrack.Contains(dash)) continue;
-            var parts = cTrack.Split(dash, 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (parts.Length == 2)
+            int idx = rawTrack.IndexOf(dash, StringComparison.Ordinal);
+            if (idx <= 0) continue;
+            string left = CleanTitle(rawTrack[..idx]);
+            string right = CleanTitle(rawTrack[(idx + dash.Length)..]);
+            if (!string.IsNullOrWhiteSpace(left) && !string.IsNullOrWhiteSpace(right))
             {
-                addCandidate(parts[1], parts[0]);
-                addCandidate(parts[0], parts[1]);
+                addCandidate(right, left);
+                addCandidate(left, right);
             }
         }
     }
@@ -416,46 +516,22 @@ internal sealed partial class LyricsService : IDisposable
     internal static string NormalizeForMatching(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return "";
-        string decomposed = BracketedExtrasRegex().Replace(text, "").Normalize(NormalizationForm.FormD);
-        char[]? rented = decomposed.Length <= 512 ? null : ArrayPool<char>.Shared.Rent(decomposed.Length);
-        Span<char> buffer = rented is null
-            ? stackalloc char[decomposed.Length]
-            : rented.AsSpan(0, decomposed.Length);
+        int cap = Math.Max(text.Length, 64);
+        char[]? rented = cap <= 512 ? null : ArrayPool<char>.Shared.Rent(cap);
+        Span<char> buffer = rented is null ? stackalloc char[cap] : rented.AsSpan(0, cap);
         try
         {
-            int length = 0;
-            bool needsRecomposition = false;
-            foreach (char original in decomposed)
+            int status = vn_lyrics_normalize_for_matching(text.AsSpan(), text.Length, buffer, buffer.Length, out int written);
+            if (status == -2 && written > buffer.Length)
             {
-                if (original > 127 && CharUnicodeInfo.GetUnicodeCategory(original) == UnicodeCategory.NonSpacingMark)
-                    continue;
-                char c = original is 'đ' or 'Đ' ? 'd' : original;
-                buffer[length++] = c;
-                needsRecomposition |= c > 127;
+                if (rented != null) ArrayPool<char>.Shared.Return(rented);
+                rented = ArrayPool<char>.Shared.Rent(written);
+                buffer = rented.AsSpan(0, written);
+                status = vn_lyrics_normalize_for_matching(text.AsSpan(), text.Length, buffer, buffer.Length, out written);
             }
-
-            // Preserve NFC behavior for non-ASCII text; Latin titles can stay in the buffer.
-            ReadOnlySpan<char> characters = buffer[..length];
-            if (needsRecomposition)
-                characters = new string(characters).Normalize(NormalizationForm.FormC);
-
-            int written = 0;
-            bool pendingSpace = false;
-            foreach (char original in characters)
-            {
-                char c = original is >= 'A' and <= 'Z' ? (char)(original + ('a' - 'A')) : original;
-                if (c is >= 'a' and <= 'z' or >= '0' and <= '9')
-                {
-                    if (pendingSpace) buffer[written++] = ' ';
-                    buffer[written++] = c;
-                    pendingSpace = false;
-                }
-                else
-                {
-                    pendingSpace = written > 0;
-                }
-            }
-            return new string(buffer[..written]);
+            return status == 0 && written > 0 && written <= buffer.Length
+                ? new string(buffer[..written])
+                : "";
         }
         finally
         {
@@ -469,9 +545,9 @@ internal sealed partial class LyricsService : IDisposable
         int durationSeconds,
         CancellationToken token)
     {
+        if (DateTimeOffset.UtcNow.UtcTicks < Interlocked.Read(ref _lrcMuxRetryUntil)) return null;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(_lrcMuxClient.Timeout);
-        token = timeout.Token;
         string url = $"/get?title={Uri.EscapeDataString(trackName)}" +
                      $"&artist={Uri.EscapeDataString(artistName)}" +
                      $"&duration={durationSeconds}" +
@@ -479,93 +555,44 @@ internal sealed partial class LyricsService : IDisposable
 
         RuntimeLog.Log(LogTag, $"Fetching (lrc mux): {trackName} - {artistName}");
 
-        using var response = await _lrcMuxClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            RuntimeLog.Log(LogTag, $"lrc mux HTTP {(int)response.StatusCode} for '{trackName}'");
-            return null;
-        }
-
-        using var doc = await ReadBoundedJsonAsync(response.Content, token);
-        if (doc == null) return null;
-        var result = ParseLrcMuxResult(doc.RootElement);
-        if (result is { Lines.Count: > 0 })
-            RuntimeLog.Log(LogTag, $"Got {result.Lines.Count} synced lines from {result.Provider} for '{trackName}'");
-        return result;
-    }
-
-    internal static LyricsResult? ParseLrcMuxResult(string json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return null;
-
-        using var doc = JsonDocument.Parse(json);
-        return ParseLrcMuxResult(doc.RootElement);
-    }
-
-    private static LyricsResult? ParseLrcMuxResult(JsonElement root)
-    {
-        if (root.ValueKind != JsonValueKind.Object) return null;
-
-        if (!root.TryGetProperty("meta", out var meta) || meta.ValueKind != JsonValueKind.Object)
-            return null;
-
-        if (!IsValidSyncLevel(meta))
-            return null;
-
-        string provider = ResolveProviderName(meta);
-
-        if (!root.TryGetProperty("lines", out var linesProp) || linesProp.ValueKind != JsonValueKind.Array)
-            return null;
-
-        var lines = ParseLrcMuxLines(linesProp);
-        lines.Sort((a, b) => a.Time.CompareTo(b.Time));
-        return lines.Count > 0 ? new LyricsResult(lines, provider) : null;
-    }
-
-    private static bool IsValidSyncLevel(JsonElement meta)
-    {
-        string syncLevel = meta.TryGetProperty("level", out var levelProp)
-            ? levelProp.GetString() ?? ""
-            : "";
-        return vn_lyrics_is_valid_sync_level(syncLevel.AsSpan(), syncLevel.Length, out byte valid) == 0 && valid != 0;
-    }
-
-    private static string ResolveProviderName(JsonElement meta)
-    {
-        if (meta.TryGetProperty("source", out var source) &&
-            source.ValueKind == JsonValueKind.Object &&
-            source.TryGetProperty("name", out var nameProp) &&
-            !string.IsNullOrWhiteSpace(nameProp.GetString()))
-        {
-            return $"{nameProp.GetString()!.Trim()} via lrc mux";
-        }
-        return "lrc mux";
-    }
-
-    private static List<LyricLine> ParseLrcMuxLines(JsonElement linesProp)
-    {
-        var lines = new List<LyricLine>();
-        foreach (var item in linesProp.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object ||
-                !item.TryGetProperty("text", out var textProp) ||
-                !item.TryGetProperty("start", out var startProp) ||
-                startProp.ValueKind != JsonValueKind.Number)
+            using var response = await _lrcMuxClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if ((int)response.StatusCode >= 500 || response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
             {
-                continue;
+                MarkCooldown(ref _lrcMuxRetryUntil, TimeSpan.FromMinutes(2));
+                return null;
+            }
+            if (!response.IsSuccessStatusCode)
+            {
+                RuntimeLog.Log(LogTag, $"lrc mux HTTP {(int)response.StatusCode} for '{trackName}'");
+                return null;
             }
 
-            string text = textProp.GetString()?.Trim() ?? "";
-            if (text.Length == 0 ||
-                !startProp.TryGetInt64(out long startMilliseconds) ||
-                startMilliseconds < 0)
-            {
-                continue;
-            }
-
-            lines.Add(new LyricLine(TimeSpan.FromMilliseconds(startMilliseconds), text));
+            using var body = await PooledUtf8Response.ReadAsync(response, MaxLyricsResponseBytes, timeout.Token).ConfigureAwait(false);
+            var result = ParseLrcMuxResult(body.Span);
+            if (result is { Lines.Count: > 0 })
+                RuntimeLog.Log(LogTag, $"Got {result.Lines.Count} synced lines from {result.Provider} for '{trackName}'");
+            return result;
         }
-        return lines;
+        catch (Exception ex) when (!token.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException)
+        {
+            MarkCooldown(ref _lrcMuxRetryUntil, TimeSpan.FromMinutes(2));
+            throw;
+        }
+    }
+
+    internal static LyricsResult? ParseLrcMuxResult(string json) =>
+        string.IsNullOrWhiteSpace(json) ? null : ParseLrcMuxResult(System.Text.Encoding.UTF8.GetBytes(json));
+
+    private static LyricsResult? ParseLrcMuxResult(ReadOnlySpan<byte> json)
+    {
+        var fields = YouTubeMetadataParsing.ParseUtf8(json, 11).Items;
+        if (fields.Count == 0 || !(fields[0].First.Equals("line", StringComparison.OrdinalIgnoreCase) ||
+                                  fields[0].First.Equals("word", StringComparison.OrdinalIgnoreCase))) return null;
+        var lines = NativeLyricParser.Parse(json, 2);
+        string provider = string.IsNullOrWhiteSpace(fields[0].Second) ? "lrc mux" : $"{fields[0].Second.Trim()} via lrc mux";
+        return lines.Count == 0 ? null : new(lines, provider);
     }
 
     private static List<LyricLine>? ExtractSyncedLines(JsonElement element)
@@ -585,18 +612,25 @@ internal sealed partial class LyricsService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(title)) return title;
 
-        // Drop bracketed/parenthesised extras like (Official Music Video), (Lyric Video), [MV], etc.
-        string s = TitleExtrasRegex().Replace(title, "");
+        int cap = title.Length;
+        char[]? rented = cap <= 512 ? null : ArrayPool<char>.Shared.Rent(cap);
+        Span<char> buffer = rented is null ? stackalloc char[cap] : rented.AsSpan(0, cap);
+        try
+        {
+            byte isTurkic = System.Globalization.CultureInfo.CurrentCulture.TwoLetterISOLanguageName is "tr" or "az" ? (byte)1 : (byte)0;
+            int status = vn_lyrics_strip_title_extras(title.AsSpan(), title.Length, isTurkic, buffer, buffer.Length, out int written);
+            if (status == 0 && written > 0 && written <= buffer.Length)
+            {
+                ReadOnlySpan<char> slice = buffer[..written];
+                return slice.SequenceEqual(title.AsSpan()) ? title : new string(slice);
+            }
+        }
+        finally
+        {
+            if (rented != null) ArrayPool<char>.Shared.Return(rented);
+        }
 
-        // Remove YouTube visualizer/MV suffix patterns
-        // Runtime regex preserves CurrentCulture casing (notably Turkish/Azeri I).
-        s = Regex.Replace(s, VideoSuffixPattern, "", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
-
-        // Strip standard remaster/live suffixes
-        s = Regex.Replace(s, RecordingSuffixPattern, "", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
-
-        s = s.Trim();
-        return s.Length == 0 ? title.Trim() : s;
+        return title.Trim();
     }
 
     private static string CleanArtist(string artist)
@@ -616,21 +650,8 @@ internal sealed partial class LyricsService : IDisposable
         lock (_fetchLock) CancelActiveFetchLocked();
     }
 
-    internal static List<LyricLine> ParseLrc(string lrc)
-    {
-        var lines = new List<LyricLine>();
-        foreach (var rawLine in lrc.AsSpan().EnumerateLines())
-        {
-            if (vn_lyrics_try_parse_lrc_line(rawLine, rawLine.Length, out long ticks, out int textStart, out int textLength, out byte ok) == 0 &&
-                ok != 0 && textStart >= 0 && textStart + textLength <= rawLine.Length)
-            {
-                lines.Add(new LyricLine(TimeSpan.FromTicks(ticks), new string(rawLine.Slice(textStart, textLength))));
-            }
-        }
-
-        lines.Sort((a, b) => a.Time.CompareTo(b.Time));
-        return lines;
-    }
+    internal static List<LyricLine> ParseLrc(string lrc) =>
+        NativeLyricParser.Parse(MemoryMarshal.AsBytes(lrc.AsSpan()), 6, utf16: true);
 
     private static async Task<JsonDocument?> ReadBoundedJsonAsync(HttpContent content, CancellationToken token)
     {
@@ -664,6 +685,6 @@ internal sealed partial class LyricsService : IDisposable
     }
 }
 
-internal readonly record struct LyricLine(TimeSpan Time, string Text);
+internal readonly record struct LyricLine(TimeSpan Time, string Text, LyricWord[]? Words = null);
 
 internal sealed record LyricsResult(List<LyricLine> Lines, string Provider);

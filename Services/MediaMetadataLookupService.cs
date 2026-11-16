@@ -2,12 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using VNotch.Models;
@@ -38,6 +36,60 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
         out int outLen,
         out byte outFound);
 
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_yt_next_scrape_candidate(
+        ReadOnlySpan<char> json,
+        int jsonLen,
+        int startPos,
+        out int outNextPos,
+        Span<char> outVideoId,
+        int videoIdCap,
+        out int outVideoIdLen,
+        Span<char> outTitle,
+        int titleCap,
+        out int outTitleLen,
+        Span<char> outChannel,
+        int channelCap,
+        out int outChannelLen);
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_media_metadata_extract_youtube_video_id(
+        ReadOnlySpan<char> input,
+        int inputLen,
+        byte mode,
+        out int outStart,
+        out int outLen,
+        out byte outFound);
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_media_metadata_score_youtube_track_match(
+        ReadOnlySpan<char> candidateTitle,
+        int candidateTitleLen,
+        ReadOnlySpan<char> targetTitle,
+        int targetTitleLen,
+        long candidateDurationSec,
+        long targetDurationSec,
+        out int outScore,
+        out int outDurationDelta,
+        out byte outIsMatch);
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_media_metadata_format_spotify_artists(
+        ReadOnlySpan<char> rawArtist,
+        int rawArtistLen,
+        ReadOnlySpan<char> primaryArtist,
+        int primaryArtistLen,
+        ReadOnlySpan<char> candTitle,
+        int candTitleLen,
+        ReadOnlySpan<char> expTitle,
+        int expTitleLen,
+        long candDurMs,
+        long expDurMs,
+        Span<char> outFormatted,
+        int outCap,
+        out int outLen,
+        out int outScore);
+
     private const string YouTubeTitleSearchLogTag = "META-YOUTUBE-TITLE-SEARCH";
     private const string YouTubeApiLogTag = "META-YOUTUBE-API";
     private const string ItemsPropertyName = "items";
@@ -51,15 +103,43 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
     private readonly HttpClient _keyClient;
     private readonly Func<bool> _artworkAllowed;
     private readonly Func<string?> _apiKey;
+    private readonly SpotifyTokenProvider _spotifyTokens;
+    private readonly SpotifyQueryMetadataProvider _spotifyQueryMeta;
+    private readonly SpotifyCatalogClient _spotifyCatalog;
+    private readonly SpotifyLocalMetadataReader? _spotifyLocalMetadata;
 
-    public MediaMetadataLookupService() : this(SharedHttpClient, SharedKeyClient, IsOnlineArtworkAllowed, GetYouTubeApiKey) { }
+    public MediaMetadataLookupService() : this(SharedHttpClient, SharedKeyClient, IsOnlineArtworkAllowed, GetYouTubeApiKey,
+        new SpotifyLocalMetadataReader())
+    {
+        _spotifyLocalMetadata?.WarmUp();
+        if (_artworkAllowed())
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(3000);
+                    await _spotifyTokens.GetAccessTokenAsync(null, cts.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Ignore background token prewarm errors
+                }
+            });
+        }
+    }
 
-    internal MediaMetadataLookupService(HttpClient httpClient, HttpClient keyClient, Func<bool> artworkAllowed, Func<string?> apiKey)
+    internal MediaMetadataLookupService(HttpClient httpClient, HttpClient keyClient, Func<bool> artworkAllowed, Func<string?> apiKey,
+        SpotifyLocalMetadataReader? spotifyLocalMetadata = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _keyClient = keyClient ?? throw new ArgumentNullException(nameof(keyClient));
         _artworkAllowed = artworkAllowed ?? throw new ArgumentNullException(nameof(artworkAllowed));
         _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
+        _spotifyTokens = new SpotifyTokenProvider(_httpClient);
+        _spotifyQueryMeta = new SpotifyQueryMetadataProvider(_httpClient);
+        _spotifyCatalog = new SpotifyCatalogClient(_httpClient, _spotifyQueryMeta);
+        _spotifyLocalMetadata = spotifyLocalMetadata;
     }
 
     internal static HttpRequestMessage CreateYouTubeApiRequest(string url, string apiKey)
@@ -72,12 +152,60 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
         ReadOnlySpan<char> keySpan = apiKey.AsSpan();
         bool validKey = vn_media_metadata_is_valid_api_key_format(keySpan, keySpan.Length, out byte outValid) == 0
             ? outValid != 0
-            : (apiKey.Length > 0 && apiKey.Length <= 4096 && !apiKey.Any(c => c < '!' || c > '~'));
+            : IsPrintableAsciiKey(keySpan);
         if (!validKey)
             throw new ArgumentException("Invalid API key format.");
         var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Add("x-goog-api-key", apiKey);
         return request;
+    }
+
+    private static bool IsPrintableAsciiKey(ReadOnlySpan<char> keySpan)
+    {
+        if (keySpan.Length == 0 || keySpan.Length > 4096) return false;
+        for (int i = 0; i < keySpan.Length; i++)
+        {
+            char c = keySpan[i];
+            if (c < '!' || c > '~') return false;
+        }
+        return true;
+    }
+
+    private static bool TryExtractYouTubeVideoId(string input, byte mode, out string videoId)
+    {
+        videoId = string.Empty;
+        if (string.IsNullOrEmpty(input)) return false;
+        ReadOnlySpan<char> span = input.AsSpan();
+        if (vn_media_metadata_extract_youtube_video_id(span, span.Length, mode, out int start, out int len, out byte found) == 0 &&
+            found != 0 && start >= 0 && len == 11 && start + len <= input.Length)
+        {
+            videoId = input.Substring(start, len);
+            return true;
+        }
+        return false;
+    }
+
+    internal static bool ScoreYouTubeTrackMatch(
+        string? candidateTitle,
+        string? targetTitle,
+        long candidateDurationSec,
+        long targetDurationSec,
+        out int score,
+        out int durationDelta)
+    {
+        ReadOnlySpan<char> candSpan = candidateTitle is not null ? candidateTitle.AsSpan() : ReadOnlySpan<char>.Empty;
+        ReadOnlySpan<char> targSpan = targetTitle is not null ? targetTitle.AsSpan() : ReadOnlySpan<char>.Empty;
+        if (vn_media_metadata_score_youtube_track_match(
+                candSpan, candSpan.Length,
+                targSpan, targSpan.Length,
+                candidateDurationSec, targetDurationSec,
+                out score, out durationDelta, out byte isMatch) == 0)
+        {
+            return isMatch != 0;
+        }
+        score = 0;
+        durationDelta = int.MaxValue / 2;
+        return false;
     }
 
     static MediaMetadataLookupService()
@@ -95,6 +223,7 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
 
         try
         {
+            ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(title))
                 return null;
 
@@ -107,15 +236,17 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
                     return validated;
             }
 
-            var urlMatch = Regex.Match(cleanTitle, @"(?:youtube\.com/watch\?.*v=|youtu\.be/|music\.youtube\.com/watch\?.*v=)([a-zA-Z0-9_-]{11})", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-            if (urlMatch.Success)
+            if (TryExtractYouTubeVideoId(cleanTitle, mode: 0, out string extractedId))
             {
-                string extractedId = urlMatch.Groups[1].Value;
                 var validated = await ResolveVideoIdAsync(extractedId, ct);
                 if (validated != null)
                     return validated;
             }
 
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
         }
         catch (Exception ex)
         {
@@ -172,61 +303,21 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
 
             using var request = CreateYouTubeApiRequest(url, apiKey);
-            using var response = await _keyClient.SendAsync(request, timeoutCts.Token);
+            using var response = await _keyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
             if (!response.IsSuccessStatusCode)
             {
-                string body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-                if (LooksLikeQuotaExceeded(body))
+                using var errorBody = await PooledUtf8Response.ReadAsync(response, YouTubeMetadataParsing.MaxJsonResponseBytes, timeoutCts.Token);
+                if (YouTubeMetadataParsing.LooksLikeQuotaExceeded(errorBody.Span))
                     QuotaCooldown.Trip(apiKey);
                 return null;
             }
 
-            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty(ItemsPropertyName, out var items) || items.GetArrayLength() == 0)
-                return null;
-
-            foreach (var item in items.EnumerateArray())
+            var candidates = await YouTubeMetadataParsing.ReadMetadataAsync(response, 0, originalTitle, timeoutCts.Token);
+            foreach (var candidate in candidates)
             {
-                string? videoId = null;
-                string? resultTitle = null;
-                string? channelTitle = null;
-
-                if (item.TryGetProperty("id", out var idEl) && idEl.TryGetProperty(VideoIdPropertyName, out var vidEl))
-                    videoId = vidEl.GetString();
-                if (item.TryGetProperty("snippet", out var snippet))
-                {
-                    if (snippet.TryGetProperty(TitlePropertyName, out var titleEl))
-                        resultTitle = titleEl.GetString();
-                    if (snippet.TryGetProperty("channelTitle", out var chEl))
-                        channelTitle = chEl.GetString();
-                }
-
-                if (string.IsNullOrEmpty(videoId))
-                    continue;
-
-                var candidate = new YouTubeLookupResult
-                {
-                    Id = videoId,
-                    Title = resultTitle,
-                    Author = channelTitle,
-                    Duration = TimeSpan.Zero,
-                    ThumbnailUrl = null,
-                    Source = YouTubeLookupSource.DataApi,
-                };
-
-                if (candidate.TitleMatches(originalTitle))
-                {
-                    var enriched = await ResolveVideoIdAsync(videoId, ct);
-                    if (enriched != null && enriched.TitleMatches(originalTitle))
-                    {
-                        RuntimeLog.Log(YouTubeTitleSearchLogTag,
-                            $"data-api-search-ok query='{query}' videoId={videoId} title='{resultTitle}'");
-                        return enriched;
-                    }
-                }
+                if (candidate.Id is not { Length: > 0 } videoId) continue;
+                var enriched = await ResolveVideoIdAsync(videoId, ct);
+                if (enriched != null && enriched.TitleMatches(originalTitle)) return enriched;
             }
 
         }
@@ -253,62 +344,16 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(TimeSpan.FromSeconds(2));
 
-                using var response = await _httpClient.GetAsync(url, timeoutCts.Token);
+                using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 if (!response.IsSuccessStatusCode)
                     continue;
 
-                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-
-                if (!root.TryGetProperty(ItemsPropertyName, out var items) || items.GetArrayLength() == 0)
-                    continue;
-
-                foreach (var item in items.EnumerateArray())
+                var candidates = await YouTubeMetadataParsing.ReadMetadataAsync(response, 1, originalTitle, timeoutCts.Token);
+                if (candidates.Count > 0)
                 {
-                    string? itemUrl = null;
-                    string? itemTitle = null;
-                    string? uploaderName = null;
-                    long durationSec = 0;
-                    string? thumbnailUrl = null;
-
-                    if (item.TryGetProperty("url", out var urlEl))
-                        itemUrl = urlEl.GetString();
-                    if (item.TryGetProperty(TitlePropertyName, out var titleEl))
-                        itemTitle = titleEl.GetString();
-                    if (item.TryGetProperty("uploaderName", out var uploaderEl))
-                        uploaderName = uploaderEl.GetString();
-                    if (item.TryGetProperty(DurationPropertyName, out var durEl) && durEl.ValueKind == JsonValueKind.Number)
-                        durationSec = durEl.GetInt64();
-                    if (item.TryGetProperty("thumbnail", out var thumbEl))
-                        thumbnailUrl = thumbEl.GetString();
-
-                    if (string.IsNullOrEmpty(itemUrl))
-                        continue;
-
-                    var match = Regex.Match(itemUrl, @"v=([a-zA-Z0-9_-]{11})", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-                    if (!match.Success)
-                        continue;
-
-                    string videoId = match.Groups[1].Value;
-
-                    var candidate = new YouTubeLookupResult
-                    {
-                        Id = videoId,
-                        Title = itemTitle,
-                        Author = uploaderName,
-                        Duration = TimeSpan.FromSeconds(durationSec),
-                        ThumbnailUrl = thumbnailUrl,
-                        Source = YouTubeLookupSource.OEmbed,
-                    };
-
-                    if (candidate.TitleMatches(originalTitle))
-                    {
-                        RuntimeLog.Log(YouTubeTitleSearchLogTag,
-                            $"piped-search-ok instance={instance} query='{query}' videoId={videoId} title='{itemTitle}'");
-                        CacheVideo(videoId, candidate);
-                        return candidate;
-                    }
+                    var candidate = candidates[0];
+                    if (candidate.Id is { Length: > 0 } videoId) CacheVideo(videoId, candidate);
+                    return candidate;
                 }
 
             }
@@ -330,44 +375,16 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(TimeSpan.FromSeconds(2));
 
-                using var response = await _httpClient.GetAsync(url, timeoutCts.Token);
+                using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 if (!response.IsSuccessStatusCode)
                     continue;
 
-                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-
-                if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
-                    continue;
-
-                foreach (var item in root.EnumerateArray())
+                var candidates = await YouTubeMetadataParsing.ReadMetadataAsync(response, 2, originalTitle, timeoutCts.Token);
+                if (candidates.Count > 0)
                 {
-                    string? videoId = item.TryGetProperty(VideoIdPropertyName, out var vidEl) ? vidEl.GetString() : null;
-                    string? itemTitle = item.TryGetProperty(TitlePropertyName, out var titleEl) ? titleEl.GetString() : null;
-                    string? author = item.TryGetProperty("author", out var authEl) ? authEl.GetString() : null;
-                    long lengthSec = item.TryGetProperty("lengthSeconds", out var lenEl) && lenEl.ValueKind == JsonValueKind.Number ? lenEl.GetInt64() : 0;
-
-                    if (string.IsNullOrEmpty(videoId))
-                        continue;
-
-                    var candidate = new YouTubeLookupResult
-                    {
-                        Id = videoId,
-                        Title = itemTitle,
-                        Author = author,
-                        Duration = TimeSpan.FromSeconds(lengthSec),
-                        ThumbnailUrl = null,
-                        Source = YouTubeLookupSource.OEmbed,
-                    };
-
-                    if (candidate.TitleMatches(originalTitle))
-                    {
-                        RuntimeLog.Log(YouTubeTitleSearchLogTag,
-                            $"invidious-search-ok instance={instance} query='{query}' videoId={videoId} title='{itemTitle}'");
-                        CacheVideo(videoId, candidate);
-                        return candidate;
-                    }
+                    var candidate = candidates[0];
+                    if (candidate.Id is { Length: > 0 } videoId) CacheVideo(videoId, candidate);
+                    return candidate;
                 }
 
             }
@@ -400,44 +417,8 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
                 return null;
 
             string html = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-            if (vn_media_metadata_extract_yt_initial_data_slice(html.AsSpan(), html.Length, out int jsonStart, out int jsonLen, out byte foundSlice) != 0 || foundSlice == 0)
-                return null;
-
-            string jsonStr = html.Substring(jsonStart, jsonLen);
-
-            var videoIds = new List<(string id, string? title, string? channel)>();
-            var videoIdPattern = new Regex(@"""videoId""\s*:\s*""([a-zA-Z0-9_-]{11})""", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-
-            var idMatches = videoIdPattern.Matches(jsonStr);
-            var seenIds = new HashSet<string>();
-
-            foreach (Match idMatch in idMatches)
-            {
-                string videoId = idMatch.Groups[1].Value;
-                if (!seenIds.Add(videoId))
-                    continue;
-
-                string? videoTitle = null;
-                string? channelName = null;
-                int searchStart = idMatch.Index;
-                int searchLen = Math.Min(800, jsonStr.Length - searchStart);
-                string context = jsonStr.Substring(searchStart, searchLen);
-
-                var titleMatch = Regex.Match(context, @"""title"":\{""runs"":\[\{""text"":""([^""]+)""", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-                if (titleMatch.Success)
-                    videoTitle = System.Net.WebUtility.HtmlDecode(titleMatch.Groups[1].Value);
-
-                var channelMatch = Regex.Match(context, @"""(?:ownerText|longBylineText|shortBylineText)"":\{""runs"":\[\{""text"":""([^""]+)""", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-                if (channelMatch.Success)
-                    channelName = System.Net.WebUtility.HtmlDecode(channelMatch.Groups[1].Value);
-
-                videoIds.Add((videoId, videoTitle, channelName));
-
-                if (videoIds.Count >= 5)
-                    break;
-            }
-
-            if (videoIds.Count == 0)
+            var videoIds = ExtractYouTubeScrapeCandidates(html);
+            if (videoIds == null || videoIds.Count == 0)
                 return null;
 
             foreach (var (videoId, videoTitle, channelName) in videoIds)
@@ -480,6 +461,55 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
         return null;
     }
 
+    private static List<(string id, string? title, string? channel)>? ExtractYouTubeScrapeCandidates(string html)
+    {
+        if (vn_media_metadata_extract_yt_initial_data_slice(html.AsSpan(), html.Length, out int jsonStart, out int jsonLen, out byte foundSlice) != 0 || foundSlice == 0)
+            return null;
+
+        var videoIds = new List<(string id, string? title, string? channel)>(5);
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        ReadOnlySpan<char> jsonSpan = html.AsSpan(jsonStart, jsonLen);
+        Span<char> idBuf = stackalloc char[16];
+        Span<char> titleBuf = stackalloc char[512];
+        Span<char> channelBuf = stackalloc char[256];
+
+        int scanPos = 0;
+        while (scanPos < jsonLen && videoIds.Count < 5)
+        {
+            if (vn_yt_next_scrape_candidate(
+                    jsonSpan,
+                    jsonLen,
+                    scanPos,
+                    out int nextPos,
+                    idBuf,
+                    idBuf.Length,
+                    out int idLen,
+                    titleBuf,
+                    titleBuf.Length,
+                    out int titleLen,
+                    channelBuf,
+                    channelBuf.Length,
+                    out int channelLen) != 0 || idLen <= 0)
+            {
+                break;
+            }
+
+            scanPos = nextPos > scanPos ? nextPos : scanPos + 1;
+            if (titleLen <= 0)
+                continue;
+
+            string videoId = new string(idBuf[..idLen]);
+            if (!seenIds.Add(videoId))
+                continue;
+
+            string videoTitle = new string(titleBuf[..titleLen]);
+            string? channelName = channelLen > 0 ? new string(channelBuf[..channelLen]) : null;
+            videoIds.Add((videoId, videoTitle, channelName));
+        }
+
+        return videoIds;
+    }
+
     public async Task<YouTubeLookupResult?> TryGetYouTubeVideoInfoFromUrlAsync(string url, CancellationToken ct = default)
     {
         if (!_artworkAllowed())
@@ -487,15 +517,18 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
 
         try
         {
+            ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(url))
                 return null;
 
-            var match = Regex.Match(url, @"(?:youtube\.com/watch\?.*v=|youtu\.be/|music\.youtube\.com/watch\?.*v=|youtube\.com/embed/|youtube\.com/v/)([a-zA-Z0-9_-]{11})", RegexOptions.None, TimeSpan.FromMilliseconds(250));
-            if (!match.Success)
+            if (!TryExtractYouTubeVideoId(url, mode: 1, out string videoId))
                 return null;
 
-            string videoId = match.Groups[1].Value;
             return await ResolveVideoIdAsync(videoId, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
         }
         catch (Exception ex)
         {
@@ -507,7 +540,7 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
 
     private async Task<YouTubeLookupResult?> ResolveVideoIdAsync(string videoId, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(videoId))
+        if (string.IsNullOrWhiteSpace(videoId) || ct.IsCancellationRequested)
             return null;
         lock (_videoCacheLock) { if (_failedLookups.TryGetValue(videoId, out var failedUntil) && failedUntil > DateTime.UtcNow) return null; }
 
@@ -527,6 +560,8 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
                 CacheVideo(videoId, apiResult, apiKey);
                 return apiResult;
             }
+            if (ct.IsCancellationRequested)
+                return null;
             RuntimeLog.Log(YouTubeApiLogTag, $"data-api-miss videoId={videoId} -> falling back to oEmbed");
         }
         else
@@ -534,22 +569,23 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
             RuntimeLog.Log(YouTubeApiLogTag, $"data-api-disabled videoId={videoId} -> using oEmbed only");
         }
 
-        var oembed = await ValidateVideoIdWithOEmbedAsync(videoId, ct);
+        var oembed = await ValidateVideoIdWithOEmbedAsync(videoId, apiKey, ct);
         if (oembed == null)
         {
-            lock (_videoCacheLock)
+            if (!ct.IsCancellationRequested)
             {
-                if (_failedLookups.Count >= FailedLookupsMaxEntries) _failedLookups.Clear();
-                _failedLookups[videoId] = DateTime.UtcNow.AddMinutes(15);
+                lock (_videoCacheLock)
+                {
+                    if (_failedLookups.Count >= FailedLookupsMaxEntries) _failedLookups.Clear();
+                    _failedLookups[videoId] = DateTime.UtcNow.AddMinutes(15);
+                }
             }
             return null;
         }
 
-        if (!string.IsNullOrEmpty(apiKey))
-        {
-            oembed = await EnrichWithDurationAsync(oembed, apiKey, ct) ?? oembed;
-        }
-
+        TimeSpan enrichedDuration = await TryFetchDurationFromDataApiAsync(videoId, apiKey, ct);
+        if (enrichedDuration > TimeSpan.Zero)
+            oembed = new YouTubeLookupResult { Id = oembed.Id, Title = oembed.Title, Author = oembed.Author, Duration = enrichedDuration, ThumbnailUrl = oembed.ThumbnailUrl, Source = oembed.Source };
         CacheVideo(videoId, oembed, apiKey);
         return oembed;
     }
@@ -568,6 +604,7 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
 
         try
         {
+            ct.ThrowIfCancellationRequested();
             var trackUrl = ExtractSoundCloudTrackUrl(soundCloudUrl);
             if (string.IsNullOrEmpty(trackUrl))
                 return null;
@@ -586,6 +623,10 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
             if (!IsLikelySoundCloudPlaceholderArtworkUrl(normalized))
                 return normalized;
         }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
         catch (Exception ex)
         {
             RuntimeLog.Error("META-SOUNDCLOUD-URL", ex.ToString());
@@ -594,7 +635,7 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
         return null;
     }
 
-    private async Task<YouTubeLookupResult?> ValidateVideoIdWithOEmbedAsync(string videoId, CancellationToken ct)
+    private async Task<YouTubeLookupResult?> ValidateVideoIdWithOEmbedAsync(string videoId, string? apiKey, CancellationToken ct)
     {
         try
         {
@@ -602,25 +643,10 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(2000);
 
-            string json = await _httpClient.GetStringAsync(oembedUrl, timeoutCts.Token);
-            if (string.IsNullOrWhiteSpace(json))
-                return null;
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            string? oembedTitle = root.TryGetProperty(TitlePropertyName, out var titleEl) ? titleEl.GetString() : null;
-            string? oembedAuthor = root.TryGetProperty("author_name", out var authorEl) ? authorEl.GetString() : null;
-
-            return new YouTubeLookupResult
-            {
-                Id = videoId,
-                Title = oembedTitle,
-                Author = oembedAuthor,
-                Duration = TimeSpan.Zero,
-                ThumbnailUrl = null,
-                Source = YouTubeLookupSource.OEmbed,
-            };
+            using var response = await _httpClient.GetAsync(oembedUrl, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            if (!response.IsSuccessStatusCode) return null;
+            var results = await YouTubeMetadataParsing.ReadMetadataAsync(response, 3, videoId, timeoutCts.Token);
+            return results.Count > 0 ? results[0] : null;
         }
         catch
         {
@@ -629,6 +655,30 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
     }
 
 #pragma warning disable S3776
+    private async Task<TimeSpan> TryFetchDurationFromDataApiAsync(string videoId, string? apiKey, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(apiKey) || QuotaCooldown.IsActive(apiKey))
+            return TimeSpan.Zero;
+        try
+        {
+            string url = $"https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id={Uri.EscapeDataString(videoId)}&fields=items(contentDetails/duration)";
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(2000);
+            using var request = CreateYouTubeApiRequest(url, apiKey);
+            using var response = await _keyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                using var errorBody = await PooledUtf8Response.ReadAsync(response, YouTubeMetadataParsing.MaxJsonResponseBytes, timeoutCts.Token);
+                if (YouTubeMetadataParsing.LooksLikeQuotaExceeded(errorBody.Span)) QuotaCooldown.Trip(apiKey);
+                return TimeSpan.Zero;
+            }
+            var results = await YouTubeMetadataParsing.ReadMetadataAsync(response, 4, videoId, timeoutCts.Token);
+            return results.Count > 0 ? results[0].Duration : TimeSpan.Zero;
+        }
+        catch { /* Best-effort duration enrichment */ }
+        return TimeSpan.Zero;
+    }
+
     private async Task<YouTubeLookupResult?> TryGetVideoFromDataApiAsync(string videoId, string apiKey, CancellationToken ct)
     {
         if (QuotaCooldown.IsActive(apiKey))
@@ -642,64 +692,15 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
             timeoutCts.CancelAfter(2500);
 
             using var request = CreateYouTubeApiRequest(url, apiKey);
-            using var response = await _keyClient.SendAsync(request, timeoutCts.Token);
-            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-
+            using var response = await _keyClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
             if (!response.IsSuccessStatusCode)
             {
-                if (LooksLikeQuotaExceeded(json))
-                {
-                    QuotaCooldown.Trip(apiKey);
-                    RuntimeLog.Log(YouTubeApiLogTag, "quotaExceeded — Data API disabled until tomorrow, falling back to oEmbed.");
-                }
-                else
-                {
-                    RuntimeLog.Log(YouTubeApiLogTag, $"HTTP {(int)response.StatusCode} for videoId={videoId}");
-                }
+                using var errorBody = await PooledUtf8Response.ReadAsync(response, YouTubeMetadataParsing.MaxJsonResponseBytes, timeoutCts.Token);
+                if (YouTubeMetadataParsing.LooksLikeQuotaExceeded(errorBody.Span)) QuotaCooldown.Trip(apiKey);
                 return null;
             }
-
-            if (string.IsNullOrWhiteSpace(json))
-                return null;
-
-            using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty(ItemsPropertyName, out var items) || items.GetArrayLength() == 0)
-                return null;
-
-            var item = items[0];
-            string? title = null;
-            string? channel = null;
-            string? thumbnailUrl = null;
-            TimeSpan duration = TimeSpan.Zero;
-
-            if (item.TryGetProperty("snippet", out var snippet))
-            {
-                if (snippet.TryGetProperty(TitlePropertyName, out var titleEl)) title = titleEl.GetString();
-                if (snippet.TryGetProperty("channelTitle", out var channelEl)) channel = channelEl.GetString();
-                if (snippet.TryGetProperty("thumbnails", out var thumbs))
-                    thumbnailUrl = PickBestThumbnail(thumbs);
-            }
-
-            if (item.TryGetProperty("contentDetails", out var details) &&
-                details.TryGetProperty(DurationPropertyName, out var durationEl))
-            {
-                string? iso = durationEl.GetString();
-                if (!string.IsNullOrEmpty(iso))
-                    duration = ParseIso8601Duration(iso);
-            }
-
-            RuntimeLog.Log(YouTubeApiLogTag,
-                $"data-api-ok videoId={videoId} title='{title}' channel='{channel}' duration={duration} thumb={(string.IsNullOrWhiteSpace(thumbnailUrl) ? "(none)" : "ok")}");
-
-            return new YouTubeLookupResult
-            {
-                Id = videoId,
-                Title = title,
-                Author = channel,
-                Duration = duration,
-                ThumbnailUrl = thumbnailUrl,
-                Source = YouTubeLookupSource.DataApi,
-            };
+            var results = await YouTubeMetadataParsing.ReadMetadataAsync(response, 4, videoId, timeoutCts.Token);
+            return results.Count > 0 ? results[0] : null;
         }
         catch (OperationCanceledException)
         {
@@ -751,73 +752,34 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
             if (_videoCache.Count >= VideoCacheMaxEntries)
             {
                 var now = DateTime.UtcNow;
-                var stale = _videoCache.Where(kv => kv.Value.ExpiresUtc <= now).Select(kv => kv.Key).ToList();
-                foreach (var key in stale) _videoCache.Remove(key);
+                List<string>? stale = null;
+                foreach (var kv in _videoCache)
+                {
+                    if (kv.Value.ExpiresUtc <= now)
+                    {
+                        stale ??= new List<string>();
+                        stale.Add(kv.Key);
+                    }
+                }
+                if (stale != null)
+                {
+                    for (int i = 0; i < stale.Count; i++)
+                        _videoCache.Remove(stale[i]);
+                }
                 if (_videoCache.Count >= VideoCacheMaxEntries)
                 {
-                    foreach (var key in _videoCache.Keys.Take(_videoCache.Count / 2).ToList())
-                        _videoCache.Remove(key);
+                    int evictCount = _videoCache.Count / 2;
+                    var toEvict = new List<string>(evictCount);
+                    foreach (var key in _videoCache.Keys)
+                    {
+                        if (toEvict.Count >= evictCount) break;
+                        toEvict.Add(key);
+                    }
+                    for (int i = 0; i < toEvict.Count; i++)
+                        _videoCache.Remove(toEvict[i]);
                 }
             }
             _videoCache[VideoCacheKey(videoId, apiKey)] = (result, DateTime.UtcNow.Add(_videoCacheTtl));
-        }
-    }
-
-    private async Task<YouTubeLookupResult?> EnrichWithDurationAsync(YouTubeLookupResult result, string apiKey, CancellationToken ct)
-    {
-        if (QuotaCooldown.IsActive(apiKey)) return result;
-        try
-        {
-            if (string.IsNullOrEmpty(result.Id))
-                return result;
-
-            string url = $"https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id={result.Id}&fields=items/contentDetails/duration";
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(2000);
-
-            using var request = CreateYouTubeApiRequest(url, apiKey);
-            using var response = await _keyClient.SendAsync(request, timeoutCts.Token);
-            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-            if (!response.IsSuccessStatusCode)
-            {
-                if (LooksLikeQuotaExceeded(json)) QuotaCooldown.Trip(apiKey);
-                return result;
-            }
-            if (string.IsNullOrWhiteSpace(json))
-                return result;
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty(ItemsPropertyName, out var items) || items.GetArrayLength() == 0)
-                return result;
-
-            var firstItem = items[0];
-            if (firstItem.TryGetProperty("contentDetails", out var details) &&
-                details.TryGetProperty(DurationPropertyName, out var durationEl))
-            {
-                string? isoDuration = durationEl.GetString();
-                if (!string.IsNullOrEmpty(isoDuration))
-                {
-                    var duration = ParseIso8601Duration(isoDuration);
-                    return new YouTubeLookupResult
-                    {
-                        Id = result.Id,
-                        Title = result.Title,
-                        Author = result.Author,
-                        Duration = duration,
-                        ThumbnailUrl = result.ThumbnailUrl,
-                        Source = result.Source,
-                    };
-                }
-            }
-
-            return result;
-        }
-        catch
-        {
-            return result;
         }
     }
 
@@ -1144,4 +1106,290 @@ public sealed partial class MediaMetadataLookupService : IMediaMetadataLookupSer
 
     private static bool IsLikelySoundCloudPlaceholderArtworkUrl(string? url)
         => MediaHeuristics.IsLikelySoundCloudPlaceholderArtworkUrl(url);
+
+    internal static string? FormatSpotifyArtistsCandidate(
+        string? candidateTitle,
+        string? candidateArtists,
+        long candidateDurationMs,
+        string targetTitle,
+        string primaryArtist,
+        long targetDurationMs,
+        out int score)
+    {
+        score = 0;
+        if (string.IsNullOrWhiteSpace(candidateTitle) || string.IsNullOrWhiteSpace(candidateArtists))
+            return null;
+
+        Span<char> buf = stackalloc char[512];
+        if (vn_media_metadata_format_spotify_artists(
+                candidateArtists.AsSpan(), candidateArtists.Length,
+                primaryArtist.AsSpan(), primaryArtist.Length,
+                candidateTitle.AsSpan(), candidateTitle.Length,
+                targetTitle.AsSpan(), targetTitle.Length,
+                candidateDurationMs,
+                targetDurationMs,
+                buf, buf.Length,
+                out int outLen,
+                out score) == 0 && outLen > 0 && score > 0)
+        {
+            return new string(buf[..outLen]);
+        }
+
+        return null;
+    }
+
+    public async Task<string?> TryGetSpotifyFullArtistsAsync(
+        string title,
+        string primaryArtist,
+        TimeSpan duration = default,
+        string? albumTitle = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(primaryArtist))
+            return null;
+
+        string cleanTitle = title.Trim();
+        string cleanArtist = primaryArtist.Trim();
+        string? cleanAlbum = string.IsNullOrWhiteSpace(albumTitle) ? null : albumTitle.Trim();
+        long targetDurationMs = duration > TimeSpan.Zero ? (long)duration.TotalMilliseconds : 0;
+
+        try
+        {
+            if (_spotifyLocalMetadata != null)
+            {
+                string? localArtists = await _spotifyLocalMetadata.TryGetArtistsAsync(cleanTitle, cleanArtist, ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(localArtists))
+                    return localArtists;
+            }
+            if (!_artworkAllowed()) return null;
+
+            string? spotifyMatch = await TrySearchSpotifyCatalogArtistsAsync(cleanTitle, cleanArtist, cleanAlbum, ct);
+            if (!string.IsNullOrEmpty(spotifyMatch))
+                return spotifyMatch;
+
+            string? itunesMatch = await TrySearchItunesArtistsAsync(cleanTitle, cleanArtist, cleanAlbum, targetDurationMs, "VN", ct)
+                               ?? await TrySearchItunesArtistsAsync(cleanTitle, cleanArtist, cleanAlbum, targetDurationMs, null, ct);
+            if (!string.IsNullOrEmpty(itunesMatch))
+                return itunesMatch;
+
+            return await TrySearchDeezerArtistsAsync(cleanTitle, cleanArtist, cleanAlbum, targetDurationMs, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public async Task<string?> TryGetSpotifyArtworkUrlAsync(
+        string title,
+        string primaryArtist,
+        TimeSpan duration = default,
+        string? albumTitle = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(primaryArtist) || !_artworkAllowed())
+            return null;
+
+        string cleanTitle = title.Trim();
+        string cleanArtist = primaryArtist.Trim();
+        string? cleanAlbum = string.IsNullOrWhiteSpace(albumTitle) ? null : albumTitle.Trim();
+        long targetDurationMs = duration > TimeSpan.Zero ? (long)duration.TotalMilliseconds : 0;
+
+        try
+        {
+            string? spotifyArt = await TrySearchSpotifyCatalogArtworkAsync(cleanTitle, cleanArtist, cleanAlbum, ct);
+            if (!string.IsNullOrEmpty(spotifyArt))
+                return spotifyArt;
+
+            string? itunesArt = await TrySearchItunesArtworkAsync(cleanTitle, cleanArtist, cleanAlbum, targetDurationMs, "VN", ct)
+                             ?? await TrySearchItunesArtworkAsync(cleanTitle, cleanArtist, cleanAlbum, targetDurationMs, null, ct);
+            if (!string.IsNullOrEmpty(itunesArt))
+                return itunesArt;
+
+            return await TrySearchDeezerArtworkAsync(cleanTitle, cleanArtist, cleanAlbum, targetDurationMs, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<string?> TrySearchSpotifyCatalogArtworkAsync(
+        string title,
+        string primaryArtist,
+        string? albumTitle,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(2500);
+            string? token = await _spotifyTokens.GetAccessTokenAsync(null, timeoutCts.Token).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(token))
+                return null;
+
+            return await _spotifyCatalog.ResolveTrackArtworkUrlAsync(title, primaryArtist, albumTitle, token, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<string?> TrySearchItunesArtworkAsync(
+        string title,
+        string primaryArtist,
+        string? albumTitle,
+        long targetDurationMs,
+        string? country,
+        CancellationToken ct)
+    {
+        string query = Uri.EscapeDataString($"{title} {primaryArtist}");
+        string url = string.IsNullOrEmpty(country)
+            ? $"https://itunes.apple.com/search?term={query}&entity=song&limit=5"
+            : $"https://itunes.apple.com/search?term={query}&entity=song&limit=5&country={country}";
+
+        using var body = await GetCatalogBodyAsync(url, 2200, ct).ConfigureAwait(false);
+        return body == null ? null : NativeCatalogParser.Select(body.Span, 2, title, primaryArtist, targetDurationMs, albumTitle).Key;
+    }
+
+    private async Task<string?> TrySearchDeezerArtworkAsync(
+        string title,
+        string primaryArtist,
+        string? albumTitle,
+        long targetDurationMs,
+        CancellationToken ct)
+    {
+        try
+        {
+            string query = Uri.EscapeDataString($"{title} {primaryArtist}");
+            string searchUrl = $"https://api.deezer.com/search?q={query}&limit=5";
+            using var searchBody = await GetCatalogBodyAsync(searchUrl, 2200, ct).ConfigureAwait(false);
+            if (searchBody == null) return null;
+            var tracks = YouTubeMetadataParsing.ParseUtf8(searchBody.Span, 7).Items;
+            string? bestArtwork = null;
+            int bestScore = 0;
+            foreach (var track in tracks)
+            {
+                ct.ThrowIfCancellationRequested();
+                using var detail = await GetCatalogBodyAsync($"https://api.deezer.com/track/{track.Ticks}", 2000, ct).ConfigureAwait(false);
+                if (detail == null) continue;
+                var selected = NativeCatalogParser.Select(detail.Span, 6, title, primaryArtist, targetDurationMs, albumTitle, searchBody.Span, track.Ticks);
+                if (!string.IsNullOrEmpty(selected.Key) && selected.Score > bestScore) { bestArtwork = selected.Key; bestScore = selected.Score; }
+            }
+            return bestArtwork;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<string?> TrySearchSpotifyCatalogArtistsAsync(
+        string title,
+        string primaryArtist,
+        string? albumTitle,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(2500);
+            string? token = await _spotifyTokens.GetAccessTokenAsync(null, timeoutCts.Token).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(token))
+                return null;
+
+            return await _spotifyCatalog.ResolveTrackArtistsAsync(title, primaryArtist, albumTitle, token, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static int ComputeAlbumTieBreakerBonus(string? candidateAlbum, string? expectedAlbum)
+    {
+        if (string.IsNullOrWhiteSpace(expectedAlbum) || string.IsNullOrWhiteSpace(candidateAlbum))
+            return 0;
+
+        string normCand = SpotifyTrackMatcher.NormalizeForMatch(candidateAlbum);
+        string normExp = SpotifyTrackMatcher.NormalizeForMatch(expectedAlbum);
+        if (normCand.Length == 0 || normExp.Length == 0)
+            return 0;
+
+        if (string.Equals(normCand, normExp, StringComparison.Ordinal) ||
+            normCand.StartsWith(normExp + " ", StringComparison.Ordinal))
+        {
+            return 40;
+        }
+
+        return -20;
+    }
+
+    private async Task<string?> TrySearchItunesArtistsAsync(
+        string title,
+        string primaryArtist,
+        string? albumTitle,
+        long targetDurationMs,
+        string? country,
+        CancellationToken ct)
+    {
+        string query = Uri.EscapeDataString($"{title} {primaryArtist}");
+        string url = string.IsNullOrEmpty(country)
+            ? $"https://itunes.apple.com/search?term={query}&entity=song&limit=5"
+            : $"https://itunes.apple.com/search?term={query}&entity=song&limit=5&country={country}";
+
+        using var body = await GetCatalogBodyAsync(url, 2200, ct).ConfigureAwait(false);
+        return body == null ? null : NativeCatalogParser.Select(body.Span, 2, title, primaryArtist, targetDurationMs, albumTitle).Text;
+    }
+
+    private async Task<PooledUtf8Response?> GetCatalogBodyAsync(string url, int timeoutMs, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(timeoutMs);
+        try
+        {
+            using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            return response.IsSuccessStatusCode ? await PooledUtf8Response.ReadAsync(response, YouTubeMetadataParsing.MaxJsonResponseBytes, timeout.Token).ConfigureAwait(false) : null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return null; }
+    }
+
+    private async Task<string?> TrySearchDeezerArtistsAsync(
+        string title,
+        string primaryArtist,
+        string? albumTitle,
+        long targetDurationMs,
+        CancellationToken ct)
+    {
+        string query = Uri.EscapeDataString($"{title} {primaryArtist}");
+        string searchUrl = $"https://api.deezer.com/search?q={query}&limit=5";
+        using var searchBody = await GetCatalogBodyAsync(searchUrl, 2200, ct).ConfigureAwait(false);
+        if (searchBody == null) return null;
+        var tracks = YouTubeMetadataParsing.ParseUtf8(searchBody.Span, 7).Items;
+        string? bestArtists = null;
+        int bestScore = 0;
+        foreach (var track in tracks)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var detail = await GetCatalogBodyAsync($"https://api.deezer.com/track/{track.Ticks}", 2000, ct).ConfigureAwait(false);
+            if (detail == null) continue;
+            var selected = NativeCatalogParser.Select(detail.Span, 6, title, primaryArtist, targetDurationMs, albumTitle, searchBody.Span, track.Ticks);
+            if (selected.Text != null && selected.Score > bestScore) { bestArtists = selected.Text; bestScore = selected.Score; }
+        }
+        return bestArtists;
+    }
 }

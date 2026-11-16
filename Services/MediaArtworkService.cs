@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -17,10 +18,14 @@ public interface IMediaArtworkService
     void ConfigureSmartCrop(bool enabled);
 
     SubjectBounds? GetDominantSubjectBounds(BitmapSource source);
+    void TrimMemory(bool compactWorkingSet = true) { }
 }
 
 public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposable
 {
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_memory_trim_working_set();
+
     [LibraryImport("VNotch.Native.dll")]
     private static partial int vn_media_artwork_detect_content_bounds(
         ReadOnlySpan<byte> pixels,
@@ -49,7 +54,12 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
     private const string ArtworkLogTag = "ARTWORK";
     private const string CropPathLogTag = "CROP-PATH";
     private const long MaxArtworkDownloadSizeBytes = 8 * 1024 * 1024; // 8 MiB
-    private const int MaxDecodePixelDimension = 1024;
+    private const int MaxDecodePixelDimension = 512;
+    private static readonly object DecodeCacheLock = new();
+    private static readonly Dictionary<string, WeakReference<BitmapImage>> DecodedImages = new();
+    // Keep the current artwork warm. History can be reclaimed while images still
+    // owned by a media session or transition remain reusable through weak entries.
+    private static BitmapImage? _recentDecodedImage;
 
     private static readonly HttpClient _httpClient = new(NetworkPrivacy.Handler(NetworkFeature.Artwork));
     private readonly HttpClient _client;
@@ -68,13 +78,6 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
         _smartCropAvailable = false;
     }
     public bool EnableSmartCrop { get; set; } = false;
-    public void InitializeSmartCrop()
-    {
-        if (!_smartCropAvailable)
-        {
-            _smartCropAvailable = _smartCrop.TryInitialize();
-        }
-    }
     public void ConfigureSmartCrop(bool enabled)
     {
         EnableSmartCrop = enabled;
@@ -82,13 +85,37 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
 
     public SubjectBounds? GetDominantSubjectBounds(BitmapSource source)
     {
-        if (!_smartCropAvailable)
-        {
-            _smartCropAvailable = _smartCrop.TryInitialize();
-            if (!_smartCropAvailable)
-                return null;
-        }
         return _smartCrop.GetDominantSubjectBounds(source);
+    }
+
+    public void TrimMemory(bool compactWorkingSet = true)
+    {
+        _smartCrop.ClearCaches();
+        TrimGlobalMemory(compactWorkingSet);
+    }
+
+    public static void TrimGlobalMemory(bool compactWorkingSet = true)
+    {
+        lock (DecodeCacheLock)
+        {
+            DecodedImages.Clear();
+            _recentDecodedImage = null;
+        }
+        lock (_cropCacheLock)
+        {
+            _cropCache.Clear();
+            _recentCropImage = null;
+        }
+        ArtworkAnalysisSource.ClearCache();
+        LyricsBackgroundBrightness.ClearCache();
+        DynamicIslandColorExtractor.ClearCache();
+
+        if (compactWorkingSet)
+        {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Forced, blocking: false, compacting: true);
+            _ = vn_memory_trim_working_set();
+        }
     }
 
     static MediaArtworkService()
@@ -178,9 +205,11 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
             HashCode.Combine(Fingerprint, ForceCenterCrop, SmartCropEnabled);
     }
 
-    private static readonly Dictionary<CropCacheKey, (BitmapSource Image, DateTime LastAccessedUtc)> _cropCache = new();
+    private static readonly Dictionary<CropCacheKey, (WeakReference<BitmapSource> Image, long Bytes, DateTime LastAccessedUtc)> _cropCache = new();
     private static readonly object _cropCacheLock = new();
+    private static BitmapSource? _recentCropImage;
     private const int MaxCropCacheSize = 24;
+    private const long MaxCropCacheBytes = 8 * 1024 * 1024;
 
     public BitmapSource? CropToSquare(BitmapSource source, string mediaSource, bool forceCenterCrop = false)
     {
@@ -197,10 +226,11 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
             var cacheKey = new CropCacheKey(ArtworkFingerprint.Create(source), forceCenterCrop, smartCropEnabled);
             lock (_cropCacheLock)
             {
-                if (_cropCache.TryGetValue(cacheKey, out var cached))
+                if (_cropCache.TryGetValue(cacheKey, out var cached) && cached.Image.TryGetTarget(out var image))
                 {
-                    _cropCache[cacheKey] = (cached.Image, DateTime.UtcNow);
-                    return cached.Image;
+                    _cropCache[cacheKey] = (cached.Image, cached.Bytes, DateTime.UtcNow);
+                    _recentCropImage = image;
+                    return image;
                 }
             }
 
@@ -227,9 +257,9 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
                 height = trimmed.PixelHeight;
             }
 
-            vn_media_artwork_compute_square_crop_metrics(width, height, out double aspect, out int squareSize, out _, out _);
+            vn_media_artwork_compute_square_crop_metrics(width, height, out _, out int squareSize, out _, out _);
 
-            Int32Rect rect = DetermineCropRect(workingSource, width, height, squareSize, aspect, forceCenterCrop, smartCropEnabled);
+            Int32Rect rect = DetermineCropRect(workingSource, width, height, squareSize, forceCenterCrop, smartCropEnabled);
 
             if (ReferenceEquals(workingSource, source) && rect.X == 0 && rect.Y == 0 && rect.Width == width && rect.Height == height)
             {
@@ -253,9 +283,17 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
         // A no-op crop can return a mutable caller-owned source. Never share it.
         if (!image.IsFrozen) return image;
 
+        // CroppedBitmap keeps the complete source graph alive. Materialize only
+        // the cropped pixels before retaining it across tracks.
+        if (image is CroppedBitmap) image = DetachCrop(image);
+        long imageBytes = CropImageBytes(image);
+        if (imageBytes > MaxCropCacheBytes) return image;
+
         lock (_cropCacheLock)
         {
-            if (_cropCache.Count >= MaxCropCacheSize && !_cropCache.ContainsKey(cacheKey))
+            _cropCache.Remove(cacheKey);
+            long retainedBytes = _cropCache.Values.Sum(entry => entry.Bytes);
+            while (_cropCache.Count >= MaxCropCacheSize || retainedBytes + imageBytes > MaxCropCacheBytes)
             {
                 CropCacheKey oldestKey = default;
                 DateTime oldestTime = DateTime.MaxValue;
@@ -269,24 +307,37 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
                 }
                 if (oldestTime != DateTime.MaxValue)
                 {
+                    retainedBytes -= _cropCache[oldestKey].Bytes;
                     _cropCache.Remove(oldestKey);
                 }
+                else break;
             }
-            _cropCache[cacheKey] = (image, DateTime.UtcNow);
+            _cropCache[cacheKey] = (new(image), imageBytes, DateTime.UtcNow);
+            _recentCropImage = image;
         }
 
         return image;
     }
 
-    private Int32Rect DetermineCropRect(BitmapSource workingSource, int width, int height, int squareSize, double aspect, bool forceCenterCrop, bool smartCropEnabled)
+    private static long CropImageBytes(BitmapSource image) =>
+        ((long)image.PixelWidth * image.Format.BitsPerPixel + 7) / 8 * image.PixelHeight;
+
+    internal static BitmapSource DetachCrop(BitmapSource source)
     {
-        if (smartCropEnabled && aspect > 1.4 && !forceCenterCrop)
+        var detached = new WriteableBitmap(source);
+        detached.Freeze();
+        return detached;
+    }
+
+    private Int32Rect DetermineCropRect(BitmapSource workingSource, int width, int height, int squareSize, bool forceCenterCrop, bool smartCropEnabled)
+    {
+        if (smartCropEnabled && !forceCenterCrop)
         {
             if (!_smartCropAvailable)
             {
                 _smartCropAvailable = _smartCrop.TryInitialize();
             }
-            var smartRect = _smartCrop.GetSmartCropRect(workingSource, squareSize);
+            var smartRect = _smartCrop.GetSmartCropRect(workingSource, squareSize, useObjectDetection: true);
             if (smartRect.HasValue)
             {
                 RuntimeLog.Log(CropPathLogTag, $"smart-crop OK rect=({smartRect.Value.X},{smartRect.Value.Y},{smartRect.Value.Width}x{smartRect.Value.Height})");
@@ -317,7 +368,7 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
     {
         try
         {
-            if (stream == null || stream.Size == 0)
+            if (stream == null || !stream.CanRead || stream.Size == 0)
             {
                 return null;
             }
@@ -328,15 +379,42 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
                 return null;
             }
 
-            byte[] bytes;
-            using (var reader = new DataReader(stream))
+            try
             {
-                await reader.LoadAsync((uint)stream.Size).AsTask(ct);
-                bytes = new byte[stream.Size];
-                reader.ReadBytes(bytes);
+                if (stream.Position != 0)
+                {
+                    stream.Seek(0);
+                }
+            }
+            catch
+            {
+                // Some WinRT stream implementations may not support Position or Seek(0).
             }
 
-            return await DecodeImageAsync(bytes, ct);
+            int requestedBytes = (int)stream.Size;
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(requestedBytes);
+            try
+            {
+                int bytesToRead;
+                using (var reader = new DataReader(stream))
+                {
+                    uint loaded = await reader.LoadAsync((uint)requestedBytes).AsTask(ct);
+                    if (loaded == 0)
+                    {
+                        return null;
+                    }
+
+                    bytesToRead = (int)Math.Min(loaded, (uint)buffer.Length);
+                    IBuffer dataBuffer = reader.ReadBuffer((uint)bytesToRead);
+                    dataBuffer.CopyTo(0, buffer, 0, bytesToRead);
+                }
+
+                return await DecodeImageAsync(buffer, ct, bytesToRead);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
         catch (Exception ex)
         {
@@ -353,6 +431,16 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
         {
             try
             {
+                ct.ThrowIfCancellationRequested();
+                string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes.AsSpan(0, length ?? bytes.Length)));
+                lock (DecodeCacheLock)
+                {
+                    if (DecodedImages.TryGetValue(key, out var cached) && cached.TryGetTarget(out var decoded))
+                    {
+                        _recentDecodedImage = decoded;
+                        return decoded;
+                    }
+                }
                 using var probeStream = new MemoryStream(bytes, 0, length ?? bytes.Length, writable: false);
                 var decoder = BitmapDecoder.Create(probeStream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
                 var frame = decoder.Frames.Count > 0 ? decoder.Frames[0] : null;
@@ -366,7 +454,7 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
                     return null;
                 }
 
-                using var stream = new MemoryStream(bytes, 0, length ?? bytes.Length, writable: false);
+                using var stream = new ReleasingImageStream(bytes, length ?? bytes.Length);
                 var image = new BitmapImage();
                 image.BeginInit();
                 image.CacheOption = BitmapCacheOption.OnLoad;
@@ -381,6 +469,13 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
                 image.StreamSource = stream;
                 image.EndInit();
                 image.Freeze();
+                lock (DecodeCacheLock)
+                {
+                    if (!DecodedImages.ContainsKey(key) && DecodedImages.Count >= 4)
+                        DecodedImages.Remove(DecodedImages.Keys.First());
+                    DecodedImages[key] = new(image);
+                    _recentDecodedImage = image;
+                }
                 return image;
             }
             catch (Exception ex)
@@ -394,10 +489,8 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
     private static Int32Rect DetectContentBounds(BitmapSource source, int width, int height)
     {
         const int sampleSize = 64;
-        double scaleX = (double)sampleSize / width;
-        double scaleY = (double)sampleSize / height;
-        var small = new TransformedBitmap(source, new ScaleTransform(scaleX, scaleY));
-        small.Freeze();
+        double scaleX = (double)sampleSize / width, scaleY = (double)sampleSize / height;
+        var small = ArtworkAnalysisSource.GetSample(source, sampleSize, sampleSize);
 
         int sw = small.PixelWidth;
         int sh = small.PixelHeight;
@@ -437,5 +530,24 @@ public sealed partial class MediaArtworkService : IMediaArtworkService, IDisposa
         if (_disposed) return;
         _disposed = true;
         _smartCrop.Dispose();
+    }
+
+    // BitmapImage retains StreamSource even with OnLoad. Release the encoded
+    // array when loading finishes so a cached bitmap does not retain pooled input.
+    private sealed class ReleasingImageStream(byte[] bytes, int length) : Stream
+    {
+        private MemoryStream? _stream = new(bytes, 0, length, writable: false);
+        private MemoryStream Inner => _stream ?? throw new ObjectDisposedException(nameof(ReleasingImageStream));
+        public override bool CanRead => _stream?.CanRead == true;
+        public override bool CanSeek => _stream?.CanSeek == true;
+        public override bool CanWrite => false;
+        public override long Length => Inner.Length;
+        public override long Position { get => Inner.Position; set => Inner.Position = value; }
+        public override int Read(byte[] buffer, int offset, int count) => Inner.Read(buffer, offset, count);
+        public override long Seek(long offset, SeekOrigin origin) => Inner.Seek(offset, origin);
+        public override void Flush() { }
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing) { _stream?.Dispose(); _stream = null; base.Dispose(disposing); }
     }
 }

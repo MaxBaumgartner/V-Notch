@@ -78,13 +78,13 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
                 VNotch.Services.Spotlight.SpotlightAiService.Configuration(_settings, provider)
                 != VNotch.Services.Spotlight.SpotlightAiService.Configuration(settings, provider));
 
+        bool introSeen = _settings?.HasSeenSpotlightIntro == true;
         _settings = settings.Clone();
+        _settings.HasSeenSpotlightIntro |= introSeen;
         if (glassChanged || historyChanged || languageChanged || aiChanged)
         {
             _window?.ApplySettings(_settings);
         }
-        if (settings.EnableSpotlight && (spotlightChanged || glassChanged))
-            QueuePreparation();
 
         if (_hwnd == IntPtr.Zero) return;
         UpdateStartReplacement();
@@ -230,6 +230,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
         window.OpenStateChanged -= Window_OpenStateChanged;
         window.IsVisibleChanged -= Window_IsVisibleChanged;
         window.Closed -= Window_Closed;
+        window.IntroDismissed -= Window_IntroDismissed;
         _window = null;
         UpdateKeyboardHook();
     }
@@ -240,7 +241,15 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
         window.OpenStateChanged += Window_OpenStateChanged;
         window.IsVisibleChanged += Window_IsVisibleChanged;
         window.Closed += Window_Closed;
+        window.IntroDismissed += Window_IntroDismissed;
         return window;
+    }
+
+    private void Window_IntroDismissed(object? sender, EventArgs e)
+    {
+        if (_settings != null) _settings.HasSeenSpotlightIntro = true;
+        if (_host is MainWindow host)
+            host.MarkSpotlightIntroSeenAsync().SafeFireAndForget("SPOTLIGHT-INTRO-SAVE");
     }
 
     private void RemoveKeyboardHook()
@@ -352,6 +361,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
             _window.OpenStateChanged -= Window_OpenStateChanged;
             _window.IsVisibleChanged -= Window_IsVisibleChanged;
             _window.Closed -= Window_Closed;
+            _window.IntroDismissed -= Window_IntroDismissed;
             _window.Shutdown();
             _window = null;
         }

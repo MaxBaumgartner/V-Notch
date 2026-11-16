@@ -24,6 +24,7 @@ public sealed class MoodBackdrop : Grid
     private readonly Canvas _canvas = new() { Width = Width0, Height = Height0, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
     private readonly Field[] _fields;
     private bool _drifting;
+    private bool _driftWanted;
 
     private sealed class Field
     {
@@ -47,13 +48,19 @@ public sealed class MoodBackdrop : Grid
             AddField(380, 30, 470, 320, 0.32, -80, -20, 0.92, 23),
             AddField(150, 170, 440, 280, 0.30, 40, -40, 1.15, 19)
         ];
+        IsVisibleChanged += (_, _) => ApplyDrifting();
+        _canvas.IsVisibleChanged += (_, _) => ApplyDrifting();
     }
 
     /// <summary>Hides the fields without touching the opacity the tab's transition drives (Liquid Glass has its own look).</summary>
     public bool Suppressed
     {
         get => _canvas.Visibility != Visibility.Visible;
-        set => _canvas.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+        set
+        {
+            _canvas.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+            ApplyDrifting();
+        }
     }
 
     private Field AddField(double x, double y, double w, double h, double strength, double dx, double dy, double ds, double seconds)
@@ -120,7 +127,13 @@ public sealed class MoodBackdrop : Grid
     /// </summary>
     public void SetDrifting(bool on)
     {
-        if (on && AnimationConfig.ReduceMotion) on = false;
+        _driftWanted = on;
+        ApplyDrifting();
+    }
+
+    private void ApplyDrifting()
+    {
+        bool on = _driftWanted && IsVisible && _canvas.IsVisible && !AnimationConfig.ReduceMotion;
         if (on == _drifting) return;
         _drifting = on;
         foreach (var field in _fields)

@@ -169,6 +169,12 @@ public partial class SettingsWindow
             void AttachEntranceShadow()
             {
                 if (_isClosing) return;
+                if (!(EnableShadowCheck?.IsChecked ?? _settings.EnableShadow))
+                {
+                    MainShell.Effect = null;
+                    return;
+                }
+                if (_isClosing) return;
                 if (Mouse.LeftButton == MouseButtonState.Pressed)
                 {
                     PreviewMouseLeftButtonUp += OnMouseReleasedBeforeShadow;
@@ -269,6 +275,30 @@ public partial class SettingsWindow
                 };
                 blur.BeginAnimation(BlurEffect.RadiusProperty, blurAnim);
             }
+        }
+    }
+
+    internal void ApplyWindowShadow(bool enabled)
+    {
+        if (Cpp26PromptShadowLayer != null)
+            Cpp26PromptShadowLayer.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        if (RestartPromptShadowLayer != null)
+            RestartPromptShadowLayer.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        if (MainShell == null) return;
+        if (!enabled)
+        {
+            MainShell.Effect = null;
+            return;
+        }
+        if (IsLoaded && !_isClosing && MainShell.Effect is not System.Windows.Media.Effects.DropShadowEffect)
+        {
+            MainShell.Effect = new System.Windows.Media.Effects.DropShadowEffect
+            {
+                Color = System.Windows.Media.Colors.Black,
+                BlurRadius = 30,
+                ShadowDepth = 0,
+                Opacity = 0.42
+            };
         }
     }
 
@@ -397,11 +427,13 @@ public partial class SettingsWindow
             el.Opacity = step.StartOpacity;
             translate.Y = step.StartTranslateY;
 
-            var blur = new BlurEffect
+            var blur = i < 6 ? new BlurEffect
             {
                 Radius = step.StartBlurRadius,
                 RenderingBias = RenderingBias.Performance
-            };
+            } : null;
+            // Keep the cascade's motion, but bound concurrent offscreen blur
+            // surfaces when a page contains many cards.
             el.Effect = blur;
 
             var delay = TimeSpan.FromMilliseconds(step.DelayMs);
@@ -415,7 +447,7 @@ public partial class SettingsWindow
                 BeginTime = delay,
                 EasingFunction = ease
             };
-            var blurAnim = new DoubleAnimation(step.StartBlurRadius, 0.0, TimeSpan.FromMilliseconds(step.BlurDurationMs))
+            var blurAnim = blur == null ? null : new DoubleAnimation(step.StartBlurRadius, 0.0, TimeSpan.FromMilliseconds(step.BlurDurationMs))
             {
                 BeginTime = delay,
                 EasingFunction = ease
@@ -423,9 +455,11 @@ public partial class SettingsWindow
 
             Timeline.SetDesiredFrameRate(fadeAnim, fps);
             Timeline.SetDesiredFrameRate(slideAnim, fps);
-            Timeline.SetDesiredFrameRate(blurAnim, fps);
+            if (blurAnim != null) Timeline.SetDesiredFrameRate(blurAnim, fps);
 
-            blurAnim.Completed += (_, _) =>
+            // Unblurred items finish with their last visible motion; no dummy blur clock is needed.
+            var completion = blurAnim ?? (step.SlideDurationMs >= step.FadeDurationMs ? slideAnim : fadeAnim);
+            completion.Completed += (_, _) =>
             {
                 int currentVer = isMenuList ? _progressiveMenuBlurVersion : _progressiveContentBlurVersion;
                 if (version != currentVer) return;
@@ -442,7 +476,7 @@ public partial class SettingsWindow
 
             el.BeginAnimation(OpacityProperty, fadeAnim);
             translate.BeginAnimation(TranslateTransform.YProperty, slideAnim);
-            blur.BeginAnimation(BlurEffect.RadiusProperty, blurAnim);
+            blur?.BeginAnimation(BlurEffect.RadiusProperty, blurAnim);
         }
 
         for (int i = written; i < items.Count; i++)

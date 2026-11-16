@@ -94,23 +94,15 @@ public static class TrayMotion
                 transforms.Children.Insert(0, scale);
             }
             double target = AnimationConfig.ReduceMotion ? 1 : GetScale(element);
-            double x = scale.ScaleX, y = scale.ScaleY;
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-            scale.ScaleX = scale.ScaleY = target;
-            if (!element.IsLoaded || AnimationConfig.ReduceMotion) return;
-            int duration = target < 1 ? 80 : 180;
-            AnimateScale(ScaleTransform.ScaleXProperty, x);
-            AnimateScale(ScaleTransform.ScaleYProperty, y);
-
-            void AnimateScale(DependencyProperty property, double current)
+            if (!element.IsLoaded || !element.IsVisible)
             {
-                if (Math.Abs(current - target) < 0.001) return;
-                var animation = new DoubleAnimation(current, target, TimeSpan.FromMilliseconds(duration))
-                { EasingFunction = EaseOut, FillBehavior = FillBehavior.Stop };
-                Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);
-                scale.BeginAnimation(property, animation);
+                Motion.Stop(scale, ScaleTransform.ScaleXProperty, target);
+                Motion.Stop(scale, ScaleTransform.ScaleYProperty, target);
+                return;
             }
+            var spring = target < 1 ? Motion.PressDown : Motion.Press;
+            Motion.To(scale, ScaleTransform.ScaleXProperty, target, spring);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, target, spring);
         });
     }
 
@@ -118,14 +110,10 @@ public static class TrayMotion
     {
         if (sender is not FrameworkElement { RenderTransform: TransformGroup transforms } ||
             transforms.Children.OfType<RotateTransform>().FirstOrDefault() is not { } rotation) return;
-        double current = rotation.Angle;
-        rotation.BeginAnimation(RotateTransform.AngleProperty, null);
-        rotation.Angle = (double)args.NewValue;
-        if (AnimationConfig.ReduceMotion) return;
-        var animation = new DoubleAnimation(current, rotation.Angle, TimeSpan.FromMilliseconds(180))
-        { EasingFunction = EaseOut, FillBehavior = FillBehavior.Stop };
-        Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);
-        rotation.BeginAnimation(RotateTransform.AngleProperty, animation);
+        if (sender is FrameworkElement element && !element.IsVisible)
+            Motion.Stop(rotation, RotateTransform.AngleProperty, (double)args.NewValue);
+        else
+            Motion.To(rotation, RotateTransform.AngleProperty, (double)args.NewValue, Motion.Press);
     }
 
     private static void BrushChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
@@ -135,6 +123,7 @@ public static class TrayMotion
         var previous = border.GetValue(property) as SolidColorBrush;
         if (args.NewValue is not SolidColorBrush target || previous == null || !border.IsLoaded)
         { border.SetValue(property, args.NewValue); return; }
+        if (AnimationConfig.ReduceMotion || !border.IsVisible) { border.SetValue(property, target); return; }
         var brush = new SolidColorBrush(target.Color);
         border.SetValue(property, brush);
         var animation = new ColorAnimation(previous.Color, target.Color, TimeSpan.FromMilliseconds(AnimationConfig.ReduceMotion ? 80 : 180))
@@ -152,7 +141,7 @@ public static class TrayMotion
             double target = GetOpacity(element);
             element.BeginAnimation(UIElement.OpacityProperty, null);
             element.Opacity = target;
-            if (!element.IsLoaded || Math.Abs(current - target) < 0.001) return;
+            if (!element.IsLoaded || !element.IsVisible || AnimationConfig.ReduceMotion || Math.Abs(current - target) < 0.001) return;
             var animation = new DoubleAnimation(current, target, TimeSpan.FromMilliseconds(AnimationConfig.ReduceMotion ? 80 : 140))
             { FillBehavior = FillBehavior.Stop, EasingFunction = EaseOut };
             Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);

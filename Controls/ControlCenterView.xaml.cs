@@ -83,6 +83,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     private ClaudeSessionTracker? _claude;
     private ClaudeHookServer? _hookServer;
     private ClaudeUsageClient? _usage;
+    private CodexUsageClient? _codexUsage;
     private Func<bool> _isLocalOnly = () => true;
     private Func<bool> _usesGlass = () => false;
 
@@ -115,7 +116,11 @@ public partial class ControlCenterView : UserControl, IDisposable
         ControlRoot.Children.Add(_laptopSection);
         ControlRoot.Children.Add(_networkSection);
         ControlRoot.Children.Add(_bluetoothSection);
+        ControlRoot.Children.Add(_displaysSection);
+        _expanded["displays"] = false;
         ControlRoot.Children.Add(_claudeSection);
+        Grid.SetIsSharedSizeScope(_claudeSection, true);
+        ControlRoot.Children.Add(_appsSection);
 
         _refreshTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = RefreshInterval };
         _refreshTimer.Tick += (_, _) => Refresh();
@@ -124,6 +129,29 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         IsVisibleChanged += OnIsVisibleChanged;
         Loc.LanguageChanged += OnLanguageChanged;
+        AnimationConfig.ReduceMotionChanged += OnResetMotionChanged;
+    }
+
+    /// <summary>
+    /// One quiet read while the tab is not on screen, shortly after start, so its first open shows it filled (and
+    /// sized) instead of "loading".
+    /// </summary>
+    internal void Prefetch()
+    {
+        if (_disposed || IsVisible) return;
+        switch (Page)
+        {
+            case ControlCenterPage.Pi or ControlCenterPage.School:
+                RefreshPi();
+                break;
+            case ControlCenterPage.Claude:
+                RefreshUsage(UsageViewMinAge);
+                BuildClaudeSection();
+                break;
+            default:
+                Refresh();
+                break;
+        }
     }
 
     /// <summary>Set in XAML; fixed once the view is built.</summary>
@@ -156,12 +184,13 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void RefreshOnceShellIsReady() => Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Refresh));
 
     /// <summary>For the <see cref="ControlCenterPage.Claude"/> page.</summary>
-    internal void AttachClaude(ClaudeSessionTracker tracker, ClaudeHookServer hookServer, ClaudeUsageClient usage,
+    internal void AttachClaude(ClaudeSessionTracker tracker, ClaudeHookServer hookServer, ClaudeUsageClient usage, CodexUsageClient codexUsage,
         Func<bool> isLocalOnly, Func<bool> usesGlass)
     {
         _claude = tracker;
         _hookServer = hookServer;
         _usage = usage;
+        _codexUsage = codexUsage;
         _isLocalOnly = isLocalOnly;
         _usesGlass = usesGlass;
         tracker.Changed += OnClaudeChanged;
@@ -177,9 +206,20 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        foreach (var panel in new[] { _homeLightSection, _piSchoolSection, _legionModeSection })
+            foreach (UIElement child in panel.Children)
+                if (child is SkeletonPlaceholder skeleton) skeleton.Dispose();
         _refreshTimer.Stop();
         _clockTimer.Stop();
+        _displayTimer?.Stop();
+        _expireDisplayChanges = true;
+        _displayChanges?.Tick();
+        _displayBrightness?.Dispose();
+        if (_displayApi is IDisposable displayApi) displayApi.Dispose();
         _piTimer?.Stop();
+        StopLiveTexts();
+        DetachOutput();
+        CoverColorsFile.Changed -= OnCoverColorsChanged;
         _legionTimer?.Stop();
         _legionLoops.StopAll();
         _homeLoops.StopAll();
@@ -189,10 +229,13 @@ public partial class ControlCenterView : UserControl, IDisposable
         _backdrop?.SetDrifting(false);
         StopClaudeLoops();
         StopTokenClock();
+        StopCodexClock();
+        StopResetFeedback();
         SetGpuSampling(false);
         _stats.Dispose();
         IsVisibleChanged -= OnIsVisibleChanged;
         Loc.LanguageChanged -= OnLanguageChanged;
+        AnimationConfig.ReduceMotionChanged -= OnResetMotionChanged;
         if (_claude != null)
         {
             _claude.Changed -= OnClaudeChanged;
@@ -209,8 +252,13 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (_disposed) return;
         if (IsVisible)
         {
-            if (Page == ControlCenterPage.System) ForgetStaleHistory();
+            if (Page == ControlCenterPage.System)
+            {
+                ForgetStaleHistory();
+                if (IsExpanded("displays")) BuildDisplaysSection();
+            }
             Refresh();
+            StartLiveTexts();
             if (Page == ControlCenterPage.Claude)
             {
                 RefreshUsage(UsageViewMinAge);
@@ -218,6 +266,8 @@ public partial class ControlCenterView : UserControl, IDisposable
                 StartRipples();
                 ApplyClaudeLoops();
                 StartTokenClock();
+                StartCodexClock();
+                if (_resetStates.Count > 0) StartResetFeedback();
             }
             else if (Page is ControlCenterPage.Pi or ControlCenterPage.School)
             {
@@ -241,9 +291,13 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             _refreshTimer.Stop();
             _clockTimer.Stop();
+            StopLiveTexts();
+            if (_outputOpen) SetOutputOpen(false);
             StopRipples();
             StopClaudeLoops();
             StopTokenClock();
+            StopCodexClock();
+            StopResetFeedback();
             SetGpuSampling(false);
             if (Page == ControlCenterPage.System)
             {
@@ -349,10 +403,10 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private async void RefreshUsage(TimeSpan minAge)
     {
-        if (_usage == null || _isLocalOnly() || !ClaudeUsageClient.HasCredentials) return;
+        if (_usage == null || _isLocalOnly()) return;
         try
         {
-            if (await _usage.RefreshAsync(minAge) != null) BuildClaudeSection();
+            if (await Task.Run(() => _usage.RefreshAsync(minAge)) != null && !_disposed) BuildClaudeSection();
         }
         catch (Exception ex)
         {
@@ -386,6 +440,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         public SystemStats? Stats;
         public List<ProcessLoad>? Top;
         public LaptopStatus? Laptop;
+        public List<OutputDevice>? Outputs;
+        public List<AudioSessionInfo>? Apps;
     }
 
     private Snapshot ReadSnapshot(bool? wifiOn, bool? bluetoothOn, bool rescanWifi, bool withStats, TopMode top)
@@ -404,6 +460,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         }
         if (bluetoothOn != false) s.Devices = BluetoothControl.Paired();
         if (withStats) s.Laptop = LaptopControl.Read();
+        if (Page == ControlCenterPage.System && withStats) ReadSound(s);
         return s;
     }
 
@@ -427,6 +484,11 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             _bluetoothKey = bluetoothKey;
             BuildBluetoothSection(s);
+        }
+        if (Page == ControlCenterPage.System)
+        {
+            if (_displaysSection.Children.Count == 0) BuildDisplaysSection();
+            ApplySound(s);
         }
     }
 
@@ -464,16 +526,19 @@ public partial class ControlCenterView : UserControl, IDisposable
         public TranslateTransform? Peak;
         public double PeakValue = double.NaN;
         public RollingNumber? Roll;
+        public RollingNumber? TemperatureRoll;
         public double Last = double.NaN;
         public SolidColorBrush? ValueInk;
         public Spark? Spark;
         public PingDot? Ping;
         public FrameworkElement? Down, Up;
+        public FrameworkElement? Heading;
     }
 
     private sealed class StatTiles
     {
-        public required StatTile Cpu, Gpu, Ram, Ping, Net;
+        // Ping and network made way for the sound output (AddStatTile still knows how to draw them).
+        public required StatTile Cpu, Gpu, Ram;
     }
 
     private StatTiles? _statsTiles;
@@ -486,12 +551,17 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void BuildStatsSection()
     {
         _statsSection.Children.Clear();
-        _statsSection.Children.Add(BuildSectionHeader("system", Loc.Get("control.system"), "", null, topMargin: 0));
+        var header = BuildSectionHeader("system", Loc.Get("control.system"), _keepAwakeLabel?.Invoke() ?? "",
+            _cycleKeepAwake == null ? null : () => _cycleKeepAwake(), topMargin: 0);
+        _keepAwakeText = header is Panel headerPanel ? headerPanel.Children.OfType<TextBlock>().LastOrDefault(t => Grid.GetColumn(t) == 2) : null;
+        _statsSection.Children.Add(header);
+        AddPhoneRow(_statsSection);
         _statsTiles = null;
         if (!IsExpanded("system"))
         {
             // Collapsed: a placeholder so the section is not rebuilt on every refresh.
-            _statsTiles = new StatTiles { Cpu = Dummy(), Gpu = Dummy(), Ram = Dummy(), Ping = Dummy(), Net = Dummy() };
+            _statsTiles = new StatTiles { Cpu = Dummy(), Gpu = Dummy(), Ram = Dummy() };
+            _outputTile = null;
             return;
         }
 
@@ -502,11 +572,14 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             Cpu = AddStatTile(grid, 0, "CPU", "cpu", () => ToggleTop(TopMode.Cpu)),
             Gpu = AddStatTile(grid, 2, "GPU", "gpu", () => Launch("taskmgr.exe")),
-            Ram = AddStatTile(grid, 4, "RAM", "ram", () => ToggleTop(TopMode.Memory)),
-            Ping = AddStatTile(grid, 6, "Ping", null, null),
-            Net = AddStatTile(grid, 8, Loc.Get("control.network"), null, () => Launch("ms-settings:network-status"))
+            Ram = AddStatTile(grid, 4, "RAM", "ram", () => ToggleTop(TopMode.Memory))
         };
+        _outputTile = AddOutputTile(grid, 6, 3);
         _statsSection.Children.Add(grid);
+        _outputSection.Children.Clear();
+        _statsSection.Children.Add(_outputSection);
+        _outputSection.Children.Add(_outputDrawer);
+        if (_outputOpen) BuildOutputRow(animate: false);
         _topList.Children.Clear();
         _topRows.Clear();
         _topListShown = false;
@@ -531,7 +604,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         value.Margin = new Thickness(0, 3, 0, 0);
         var stack = new StackPanel();
         stack.Children.Add(head);
-        var tile = new StatTile { Value = value, Temp = temp, ValueInk = valueInk };
+        var tile = new StatTile { Value = value, Temp = temp, ValueInk = valueInk, Heading = head };
+        tile.TemperatureRoll = new RollingNumber(v => temp.Text = $" · {Math.Round(v)}°", temp);
 
         if (isNet)
         {
@@ -544,7 +618,11 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         if (metric != null)
         {
-            tile.Roll = new RollingNumber(v => value.Text = $"{Math.Round(v)} %");
+            tile.Roll = new RollingNumber(v =>
+            {
+                if (double.IsFinite(tile.Last)) SetRollingDetailText(value, $"{Math.Round(v)} %");
+            }, value);
+            tile.Roll.To(0, 0);
             var fill = new ScaleTransform(0, 1);
             var peak = new TranslateTransform();
             var bar = new Grid
@@ -568,6 +646,12 @@ public partial class ControlCenterView : UserControl, IDisposable
             tile.Fill = fill;
             tile.Bar = bar;
             tile.Peak = peak;
+            bar.IsVisibleChanged += (_, _) =>
+            {
+                if (bar.IsVisible) return;
+                Motion.Stop(fill, ScaleTransform.ScaleXProperty, double.IsFinite(tile.Last) ? Math.Clamp(tile.Last / 100, 0, 1) : 0);
+                Motion.Stop(peak, TranslateTransform.XProperty);
+            };
             tile.Spark = NewSpark(metric);
         }
         else
@@ -602,6 +686,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             // CPU and RAM list the busiest apps, GPU opens Task Manager, the network tile its settings.
             card.Cursor = Cursors.Hand;
             Pressable(card, () => CardBg, CardHover, grow: true);
+            DetailHover(card, head, y: -1.5);
             card.MouseLeftButtonDown += (_, e) =>
             {
                 e.Handled = true;
@@ -632,15 +717,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         SetLoad(tiles.Gpu, stats.GpuPercent);
         SetLoad(tiles.Ram, stats.RamPercent);
         tiles.Ram.Value.ToolTip = $"{stats.RamUsedGb:0.0} / {stats.RamTotalGb:0.0} GB";
-
-        tiles.Ping.Value.Text = stats.PingMs is { } ping ? $"{ping} ms" : "–";
-        tiles.Ping.Detail!.Text = "1.1.1.1";
-        if (tiles.Ping.Ping != null) Ping(tiles.Ping.Ping, stats.PingMs);
-
-        tiles.Net.Value.Text = FormatRate(stats.DownBytesPerSecond);
-        tiles.Net.Detail!.Text = FormatRate(stats.UpBytesPerSecond);
-        if (tiles.Net.Down != null && stats.DownBytesPerSecond >= 256 * 1024) Nudge(tiles.Net.Down, 1);
-        if (tiles.Net.Up != null && stats.UpBytesPerSecond >= 64 * 1024) Nudge(tiles.Net.Up, -1);
     }
 
     private void SetLoad(StatTile tile, double? percent)
@@ -651,23 +727,19 @@ public partial class ControlCenterView : UserControl, IDisposable
             tile.Last = p;
             tile.Roll.To(p);
         }
-        else tile.Value.Text = "–";
+        else
+        {
+            tile.Last = double.NaN;
+            tile.Roll?.To(0, 0);
+            SetDetailText(tile.Value, "–");
+        }
         if (tile.Spark != null) DrawSpark(tile.Spark);
         if (tile.Fill == null) return;
         double target = Math.Clamp((percent ?? 0) / 100, 0, 1);
         if (percent is { } level) tile.PeakValue = double.IsNaN(tile.PeakValue) ? level : Math.Max(level, tile.PeakValue - PeakFall);
         PlacePeak(tile, animate: IsVisible);
-        if (AnimationConfig.ReduceMotion)
-        {
-            tile.Fill.ScaleX = target;
-            return;
-        }
-        var slide = new DoubleAnimation(target, new Duration(TimeSpan.FromMilliseconds(700)))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-        Timeline.SetDesiredFrameRate(slide, RippleFps);
-        tile.Fill.BeginAnimation(ScaleTransform.ScaleXProperty, slide, HandoffBehavior.SnapshotAndReplace);
+        if (!IsVisible) Motion.Stop(tile.Fill, ScaleTransform.ScaleXProperty, target);
+        else Motion.To(tile.Fill, ScaleTransform.ScaleXProperty, target, Motion.Glide, fps: RippleFps);
     }
 
     private static void PlacePeak(StatTile tile, bool animate)
@@ -690,15 +762,32 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         _temps = (cpu, gpu);
         if (_statsTiles is not { } tiles) return;
-        Set(tiles.Cpu.Temp, cpu);
-        Set(tiles.Gpu.Temp, gpu);
+        Set(tiles.Cpu, cpu);
+        Set(tiles.Gpu, gpu);
 
-        static void Set(TextBlock? label, int celsius)
+        static void Set(StatTile tile, int celsius)
         {
+            var label = tile.Temp;
             if (label == null) return;
-            label.Visibility = celsius > 0 ? Visibility.Visible : Visibility.Collapsed;
-            label.Text = $" · {celsius}°";
-            label.Foreground = celsius >= 90 ? HotTemp : Muted;
+            bool entering = label.Visibility != Visibility.Visible && celsius > 0;
+            if (celsius <= 0)
+            {
+                if (!label.IsVisible || AnimationConfig.ReduceMotion) label.Visibility = Visibility.Collapsed;
+                else Motion.To(label, OpacityProperty, 0, Motion.Exit, done: () =>
+                {
+                    if (label.Opacity <= .01) label.Visibility = Visibility.Collapsed;
+                });
+                return;
+            }
+            label.Visibility = Visibility.Visible;
+            tile.TemperatureRoll?.To(celsius);
+            if (entering) DetailArrive(label, 0);
+            else if (Motion.IsRunning(label, OpacityProperty)) Motion.To(label, OpacityProperty, 1, Motion.Tile);
+            var color = ((SolidColorBrush)(celsius >= 90 ? HotTemp : Muted)).Color;
+            if (label.Foreground is not SolidColorBrush { IsFrozen: false } ink)
+                label.Foreground = ink = new SolidColorBrush(((SolidColorBrush)label.Foreground).Color);
+            if (label.IsVisible) WeatherMotion.Tint(ink, color);
+            else { ink.BeginAnimation(SolidColorBrush.ColorProperty, null); ink.Color = color; }
         }
     }
 
@@ -710,7 +799,16 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (_statsTiles is not { } tiles) return;
         int i = 0;
         foreach (var tile in new[] { tiles.Cpu, tiles.Gpu, tiles.Ram })
-            if (tile.Spark != null) DrawSparkIn(tile.Spark, 180 + i++ * 70);
+        {
+            if (tile.Heading != null) DetailArrive(tile.Heading, i);
+            DetailArrive(tile.Value, i + 1);
+            tile.Roll?.Reveal();
+            if (tile.Fill != null && double.IsFinite(tile.Last) && !Motion.IsRunning(tile.Fill, ScaleTransform.ScaleXProperty))
+                Motion.To(tile.Fill, ScaleTransform.ScaleXProperty, Math.Clamp(tile.Last / 100, 0, 1), Motion.Glide,
+                    from: 0, delay: Motion.Stagger(i + 2), fps: RippleFps);
+            if (tile.Spark != null) DrawSparkIn(tile.Spark, Motion.Stagger(i + 2).TotalMilliseconds);
+            i++;
+        }
     }
 
     private enum TopMode
@@ -741,6 +839,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         public required Grid Row;
         public required TextBlock Title, Cpu, Memory;
         public required TranslateTransform Slot;
+        public required RollingNumber CpuRoll, MemoryRoll;
         public int Index = -1;
     }
 
@@ -795,7 +894,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             _topListShown = true;
         }
         _topHeader.Text = Loc.Get(_topMode == TopMode.Cpu ? "control.top.byCpu" : "control.top.byMemory");
-        _topCanvas.Height = TopRowHeight * top.Count;
+        if (IsVisible) Motion.To(_topCanvas, HeightProperty, TopRowHeight * top.Count, Motion.Glide);
+        else Motion.Stop(_topCanvas, HeightProperty, TopRowHeight * top.Count);
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < top.Count; i++)
@@ -809,15 +909,17 @@ public partial class ControlCenterView : UserControl, IDisposable
                 row.RenderTransform = slot;
                 if (_topCanvas.ActualWidth > 0) row.Width = _topCanvas.ActualWidth;
                 _topCanvas.Children.Add(row);
-                parts = new TopRowParts { Row = row, Title = title, Cpu = cpu, Memory = memory, Slot = slot, Index = i };
+                parts = new TopRowParts { Row = row, Title = title, Cpu = cpu, Memory = memory, Slot = slot, Index = i,
+                    CpuRoll = new RollingNumber(v => cpu.Text = $"{v:0.0} %", cpu),
+                    MemoryRoll = new RollingNumber(v => memory.Text = FormatBytes((long)Math.Max(0, v)), memory) };
                 _topRows[load.Name] = parts;
                 if (IsVisible && !AnimationConfig.ReduceMotion)
-                    row.BeginAnimation(OpacityProperty, WeatherMotion.To(0, 1, 320, WeatherMotion.Out, i * 30));
+                    PopIn(row, Motion.Stagger(i).TotalMilliseconds);
             }
-            parts.Title.Text = load.Title;
+            SetDetailText(parts.Title, load.Title);
             parts.Title.ToolTip = load.Instances > 1 ? $"{load.Name} × {load.Instances}" : null;
-            parts.Cpu.Text = $"{load.CpuPercent:0.0} %";
-            parts.Memory.Text = FormatBytes(load.MemoryBytes);
+            parts.CpuRoll.To(load.CpuPercent);
+            parts.MemoryRoll.To(load.MemoryBytes);
             parts.Cpu.Foreground = _topMode == TopMode.Cpu ? VNotch.Services.UiPalette.PrimaryBrush : Muted;
             parts.Memory.Foreground = _topMode == TopMode.Memory ? VNotch.Services.UiPalette.PrimaryBrush : Muted;
             SetEndButton(parts, load);
@@ -825,7 +927,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             // A new place in the order: glide there with a little overshoot.
             double y = i * TopRowHeight;
             if (IsVisible && !AnimationConfig.ReduceMotion)
-                parts.Slot.BeginAnimation(TranslateTransform.YProperty, WeatherMotion.To(parts.Slot.Y, y, 520, WeatherMotion.OutBack), HandoffBehavior.SnapshotAndReplace);
+                Motion.To(parts.Slot, TranslateTransform.YProperty, y, Motion.Glide);
             else
             {
                 parts.Slot.BeginAnimation(TranslateTransform.YProperty, null);
@@ -845,9 +947,7 @@ public partial class ControlCenterView : UserControl, IDisposable
                 host.Children.Remove(gone.Row);
                 continue;
             }
-            var fade = WeatherMotion.To(gone.Row.Opacity, 0, 220, WeatherMotion.Out);
-            fade.Completed += (_, _) => host.Children.Remove(gone.Row);
-            gone.Row.BeginAnimation(OpacityProperty, fade);
+            ExitElement(gone.Row, () => host.Children.Remove(gone.Row));
         }
     }
 
@@ -1190,6 +1290,38 @@ public partial class ControlCenterView : UserControl, IDisposable
     private Action<bool>? _setSounds;
 
     /// <summary>The Claude page's speaker button reads and flips the sound setting the shell owns.</summary>
+    private Func<string>? _keepAwakeLabel;
+    private Action? _cycleKeepAwake;
+    private TextBlock? _keepAwakeText;
+
+    /// <summary>The "System" header's right side: keep-awake mode or the reason it holds the PC awake; a tap steps the mode.</summary>
+    internal void AttachKeepAwake(Func<string> label, Action cycle)
+    {
+        _keepAwakeLabel = label;
+        _cycleKeepAwake = cycle;
+        RefreshKeepAwake();
+    }
+
+    /// <summary>New words in the header label, swapped with a short fade.</summary>
+    internal void RefreshKeepAwake()
+    {
+        if (_keepAwakeText is not { } label || _keepAwakeLabel == null) return;
+        string text = _keepAwakeLabel();
+        if (label.Text == text) return;
+        if (AnimationConfig.ReduceMotion || !label.IsVisible)
+        {
+            label.Text = text;
+            return;
+        }
+        var fadeOut = WeatherMotion.To(label.Opacity, 0, 70, WeatherMotion.Out);
+        fadeOut.Completed += (_, _) =>
+        {
+            label.Text = text;
+            label.BeginAnimation(OpacityProperty, WeatherMotion.To(0, 1, 110, WeatherMotion.Out));
+        };
+        label.BeginAnimation(OpacityProperty, fadeOut);
+    }
+
     internal void AttachSoundSwitch(Func<bool> soundsOn, Action<bool> setSounds)
     {
         _soundsOn = soundsOn;
@@ -1368,8 +1500,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         send.Background = _mood;
         send.BorderBrush = _mood;
         ((TextBlock)send.Child).Foreground = InkOn(_mood);
-        send.MouseEnter += (_, _) => send.Opacity = 0.85;
-        send.MouseLeave += (_, _) => send.Opacity = 1;
+        send.MouseEnter += (_, _) => WeatherMotion.Glide(send, OpacityProperty, 0.85);
+        send.MouseLeave += (_, _) => WeatherMotion.Glide(send, OpacityProperty, 1);
 
         var field = new Grid();
         field.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -1458,6 +1590,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(9, 1, 0, 0)
         };
+        Squish(remove);
         remove.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
@@ -1472,7 +1605,7 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void StartRipples()
     {
-        if (AnimationConfig.ReduceMotion) return;
+        if (AnimationConfig.ReduceMotion || !IsVisible || Page != ControlCenterPage.Claude) return;
         var grow = new DoubleAnimation(0.6, 1.7, new Duration(TimeSpan.FromMilliseconds(1600)))
         {
             RepeatBehavior = RepeatBehavior.Forever,
@@ -1510,12 +1643,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (AnimationConfig.ReduceMotion) return;
         // The Claude tab's cards move with a scale and a shift already; shake that shift.
         var shift = element.RenderTransform as TranslateTransform ?? LiftParts(element).Shift;
-        var shake = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(320) };
-        double[] offsets = { -6, 5, -3, 2, 0 };
-        for (int i = 0; i < offsets.Length; i++)
-            shake.KeyFrames.Add(new EasingDoubleKeyFrame(offsets[i], KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(64 * (i + 1)))));
-        Timeline.SetDesiredFrameRate(shake, AnimationConfig.TargetFps);
-        shift.BeginAnimation(TranslateTransform.XProperty, shake);
+        Motion.To(shift, TranslateTransform.XProperty, -6, Motion.PressDown,
+            done: () => Motion.To(shift, TranslateTransform.XProperty, 0, Motion.Press));
     }
 
     private static Border RequestCard()
@@ -1867,7 +1996,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void UpdateElapsedLabels()
     {
         DateTime now = DateTime.UtcNow;
-        foreach (var (label, started) in _elapsedLabels) label.Text = FormatElapsed(now - started);
+        foreach (var (label, started) in _elapsedLabels) SetDetailText(label, FormatElapsed(now - started));
     }
 
     internal static string FormatElapsed(TimeSpan span)
@@ -1904,6 +2033,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     private FrameworkElement BuildSectionHeader(string section, string title, string rightLabel, Action? onRightLabel, double topMargin)
     {
         bool expanded = IsExpanded(section);
+        bool builtExpanded = expanded;
         var grid = NewRowGrid();
         grid.Margin = new Thickness(0, topMargin, 0, 6);
 
@@ -1928,50 +2058,82 @@ public partial class ControlCenterView : UserControl, IDisposable
             FontFamily = ControlFont,
             VerticalAlignment = VerticalAlignment.Center
         });
+        Squish(titlePanel);
         titlePanel.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
-            _expanded[section] = !expanded;
-            var spin = new DoubleAnimation(expanded ? -90 : 0, new Duration(TimeSpan.FromMilliseconds(220)))
-            {
-                EasingFunction = KnobSpring
-            };
-            Timeline.SetDesiredFrameRate(spin, AnimationConfig.TargetFps);
-            var panel = grid.Parent as Panel;
-            if (expanded && panel != null && !AnimationConfig.ReduceMotion)
-                for (int i = panel.Children.Count - 1, n = 0; i > 0; i--, n++)
-                {
-                    var row = panel.Children[i];
-                    var lift = new TranslateTransform();
-                    row.RenderTransform = lift;
-                    row.BeginAnimation(OpacityProperty, WeatherMotion.To(row.Opacity, 0, 150, WeatherMotion.Out, n * 12));
-                    lift.BeginAnimation(TranslateTransform.YProperty, WeatherMotion.To(0, -8, 170, WeatherMotion.Out, n * 12));
-                }
-            spin.Completed += (_, _) =>
+            bool open = !IsExpanded(section);
+            _expanded[section] = open;
+            if (grid.Parent is not Panel panel) return;
+            double currentHeight = panel.ActualHeight;
+            // A section initially built closed has no rows yet. Build once; reversals retain them.
+            if (open && !builtExpanded)
             {
                 RebuildSection(section);
-                if (!expanded && panel != null && IsVisible) RevealChildren(panel, TimeSpan.Zero, 0, skip: 1);
-            };
-            rotate.BeginAnimation(RotateTransform.AngleProperty, spin);
+                builtExpanded = true;
+                if (panel.Children.Count > 0 && panel.Children[0] != grid)
+                {
+                    panel.Children.RemoveAt(0);
+                    panel.Children.Insert(0, grid);
+                }
+                panel.UpdateLayout();
+            }
+            foreach (UIElement child in grid.Children)
+                if (Grid.GetColumn(child) == 2)
+                {
+                    double from = child.Visibility == Visibility.Visible ? child.Opacity : 0;
+                    if (open) child.Visibility = Visibility.Visible;
+                    var fade = WeatherMotion.To(from, open ? 1 : 0, 160, WeatherMotion.Out);
+                    fade.Completed += (_, _) => { if (!IsExpanded(section)) child.Visibility = Visibility.Collapsed; };
+                    if (AnimationConfig.ReduceMotion) child.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+                    else child.BeginAnimation(OpacityProperty, fade);
+                }
+            foreach (UIElement child in panel.Children)
+                if (child is FrameworkElement row && row != panel.Children[0])
+                {
+                    if (open) row.Visibility = Visibility.Visible;
+                    else ExitElement(row);
+                }
+            double target = 0;
+            for (int i = 0; i < panel.Children.Count; i++)
+                if ((open || i == 0) && panel.Children[i] is FrameworkElement row)
+                {
+                    row.Measure(new Size(Math.Max(panel.ActualWidth, 1), double.PositiveInfinity));
+                    target += row.DesiredSize.Height;
+                }
+            panel.ClipToBounds = true;
+            Motion.To(rotate, RotateTransform.AngleProperty, open ? 0 : -90, Motion.Press);
+            Motion.To(panel, HeightProperty, target, Motion.Glide,
+                from: double.IsNaN(panel.Height) ? currentHeight : null,
+                done: () =>
+                {
+                    if (IsExpanded(section) != open) return;
+                    if (!open)
+                        for (int i = 1; i < panel.Children.Count; i++) panel.Children[i].Visibility = Visibility.Collapsed;
+                    Motion.Stop(panel, HeightProperty, double.NaN);
+                    panel.ClipToBounds = false;
+                });
+            if (open && IsVisible) RevealChildren(panel, TimeSpan.Zero, 0, skip: 1);
         };
         Grid.SetColumn(titlePanel, 0);
         grid.Children.Add(titlePanel);
 
-        if (expanded)
-        {
-            var label = ColumnLabel(rightLabel);
-            if (onRightLabel != null) MakeLink(label, onRightLabel);
-            Grid.SetColumn(label, 2);
-            grid.Children.Add(label);
-        }
+        var right = ColumnLabel(rightLabel);
+        right.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        if (onRightLabel != null) MakeLink(right, onRightLabel);
+        Grid.SetColumn(right, 2);
+        grid.Children.Add(right);
         return grid;
     }
 
     private void MakeLink(TextBlock label, Action onClick)
     {
         label.Cursor = Cursors.Hand;
-        label.MouseEnter += (_, _) => label.Foreground = VNotch.Services.UiPalette.PrimaryBrush;
-        label.MouseLeave += (_, _) => label.Foreground = _usesGlass() ? VNotch.Services.UiPalette.PrimaryBrush : HeaderText;
+        Squish(label);
+        var ink = new SolidColorBrush(((SolidColorBrush)label.Foreground).Color);
+        label.Foreground = ink;
+        label.MouseEnter += (_, _) => WeatherMotion.Tint(ink, ((SolidColorBrush)VNotch.Services.UiPalette.PrimaryBrush).Color);
+        label.MouseLeave += (_, _) => WeatherMotion.Tint(ink, ((SolidColorBrush)(_usesGlass() ? VNotch.Services.UiPalette.PrimaryBrush : HeaderText)).Color);
         label.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
@@ -1986,6 +2148,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             case "network": _networkKey = ""; break;
             case "bluetooth": _bluetoothKey = ""; break;
             case "laptop": _laptopKey = ""; break;
+            case "displays": BuildDisplaysSection(); return;
             case "pi.school":
             case "pi.exams":
             case "pi.todos": _piKey = ""; BuildPiPage(); return;
@@ -1997,6 +2160,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             case "legion.mode":
             case "legion.keys": ToggleLegionSection(section); return;
             case "system": _statsTiles = null; break;
+            case "apps": _appsKey = ""; break;
             case "claude": _claudeKey = ""; BuildClaudeSection(); return;
         }
         if (_snapshot != null) ApplySnapshot(_snapshot);
@@ -2045,7 +2209,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         return namePanel;
     }
 
-    private void AddStatus(Grid row, string text, Brush foreground, FrameworkElement? toggle = null)
+    private TextBlock AddStatus(Grid row, string text, Brush foreground, FrameworkElement? toggle = null)
     {
         // A grid, not a stack, so long hints trim instead of running under the buttons.
         var panel = new Grid { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
@@ -2062,6 +2226,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         panel.Children.Add(label);
         Grid.SetColumn(panel, 1);
         row.Children.Add(panel);
+        return label;
     }
 
     private static void AddAction(Grid row, FrameworkElement action)
@@ -2132,8 +2297,9 @@ public partial class ControlCenterView : UserControl, IDisposable
             Grid.SetColumn(caret, 2);
             grid.Children.Add(caret);
 
-            border.MouseEnter += (_, _) => border.Background = ComboHover;
-            border.MouseLeave += (_, _) => border.Background = ComboBg;
+            Pressable(border, () => ComboBg, ComboHover);
+            DetailHover(border, grid.Children[0] as FrameworkElement ?? caret, x: 1, y: -1);
+            DetailHover(border, caret, y: 1.5);
             border.MouseLeftButtonDown += (_, e) =>
             {
                 e.Handled = true;
@@ -2172,19 +2338,12 @@ public partial class ControlCenterView : UserControl, IDisposable
             Cursor = Cursors.Hand,
             Child = label
         };
-        button.MouseEnter += (_, _) => button.Opacity = accent ? 0.85 : 1;
-        button.MouseLeave += (_, _) => button.Opacity = 1;
-        if (!accent)
-        {
-            button.MouseEnter += (_, _) => button.Background = ComboHover;
-            button.MouseLeave += (_, _) => button.Background = ComboBg;
-        }
+        Pressable(button, () => accent ? tint : ComboBg, ComboHover, grow: true);
         button.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
             onClick();
         };
-        Squish(button);
         return button;
     }
 
@@ -2212,8 +2371,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             }
         };
         System.Windows.Automation.AutomationProperties.SetName(button, tooltip);
-        button.MouseEnter += (_, _) => button.Background = ComboHover;
-        button.MouseLeave += (_, _) => button.Background = ComboBg;
+        Pressable(button, () => ComboBg, ComboHover, grow: true);
+        DetailHover(button, (FrameworkElement)button.Child);
         button.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
@@ -2226,8 +2385,22 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private void CloseMenu()
     {
-        ControlOverlay.Children.Clear();
-        ControlOverlay.Visibility = Visibility.Collapsed;
+        if (!IsVisible || AnimationConfig.ReduceMotion)
+        {
+            ControlOverlay.Children.Clear();
+            ControlOverlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+        foreach (UIElement child in new List<UIElement>(System.Linq.Enumerable.Cast<UIElement>(ControlOverlay.Children)))
+            if (child is FrameworkElement surface)
+            {
+                surface.IsHitTestVisible = false;
+                ExitElement(surface, () =>
+                {
+                    ControlOverlay.Children.Remove(surface);
+                    if (ControlOverlay.Children.Count == 0) ControlOverlay.Visibility = Visibility.Collapsed;
+                });
+            }
     }
 
     private void ShowMenu(Border anchor, List<MenuItemSpec> items, Brush? accent = null)
@@ -2296,9 +2469,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             item.Child = g;
             if (spec.OnClick is { } onClick)
             {
-                bool selected = spec.Selected;
-                item.MouseEnter += (_, _) => { if (!selected) item.Background = ComboHover; };
-                item.MouseLeave += (_, _) => { if (!selected) item.Background = Brushes.Transparent; };
+                var rest = item.Background;
+                Pressable(item, () => rest, ComboHover, grow: true);
                 item.MouseLeftButtonDown += (_, e) =>
                 {
                     e.Handled = true;
@@ -2332,11 +2504,11 @@ public partial class ControlCenterView : UserControl, IDisposable
         container.RenderTransformOrigin = new Point(0.5, 0);
         container.RenderTransform = new TransformGroup { Children = { grow, slide } };
         container.BeginAnimation(OpacityProperty, WeatherMotion.To(0, 1, 150, WeatherMotion.Out));
-        grow.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(0.9, 1, 420, WeatherMotion.OutBack));
-        grow.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(0.7, 1, 420, WeatherMotion.OutBack));
-        slide.BeginAnimation(TranslateTransform.YProperty, WeatherMotion.To(-6, 0, 300, WeatherMotion.OutQuint));
+        Motion.To(grow, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(grow, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(slide, TranslateTransform.YProperty, 0, Motion.Tile, from: -6);
         for (int i = 0; i < list.Children.Count; i++)
-            WeatherMotion.Rise(list.Children[i], 40 + i * 28, dy: -6, ms: 320);
+            WeatherMotion.Rise(list.Children[i], Motion.Stagger(i).TotalMilliseconds, dy: -6, ms: 320);
     }
 
     private void ControlOverlay_OutsideClick(object sender, MouseButtonEventArgs e)
@@ -2363,15 +2535,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         ControlFadeBottomStop.Color = ControlScrollViewer.VerticalOffset < ControlScrollViewer.ScrollableHeight - 0.5 ? Colors.Transparent : Colors.Black;
     }
 
-    private static readonly ExponentialEase RowRevealEase = CreateRowRevealEase();
-
-    private static ExponentialEase CreateRowRevealEase()
-    {
-        var ease = new ExponentialEase { Exponent = 5, EasingMode = EasingMode.EaseOut };
-        ease.Freeze();
-        return ease;
-    }
-
     /// <summary>Rows fall in one after another, like the mixer's when its tab opens.</summary>
     public void RevealRows(TimeSpan baseDelay)
     {
@@ -2387,24 +2550,14 @@ public partial class ControlCenterView : UserControl, IDisposable
         foreach (UIElement child in ControlRoot.Children)
             if (child is Panel section && section.Visibility == Visibility.Visible)
                 index = RevealChildren(section, baseDelay, index);
+        if (Page == ControlCenterPage.School) RevealSchoolDetails();
     }
 
     private static void RevealElement(FrameworkElement row, TimeSpan delay)
     {
-        var shift = new TranslateTransform(0, 8);
-        row.RenderTransform = shift;
-        var fade = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(280))) { BeginTime = delay, EasingFunction = RowRevealEase };
-        var rise = new DoubleAnimation(8, 0, new Duration(TimeSpan.FromMilliseconds(280))) { BeginTime = delay, EasingFunction = RowRevealEase };
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(rise, AnimationConfig.TargetFps);
-        fade.Completed += (_, _) =>
-        {
-            row.BeginAnimation(OpacityProperty, null);
-            row.Opacity = 1;
-        };
-        row.Opacity = 0;
-        row.BeginAnimation(OpacityProperty, fade);
-        shift.BeginAnimation(TranslateTransform.YProperty, rise);
+        // Placeholders own their motion and keep their dimmed offline opacity.
+        if (row is SkeletonPlaceholder) return;
+        PopIn(row, delay.TotalMilliseconds);
     }
 
     /// <summary>
@@ -2418,7 +2571,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         foreach (var (key, element) in cards)
         {
             if (animate && !_shownCards.Contains(key))
-                GlideIn(element, 60 + Math.Min(index++ * 50, 200));
+                GlideIn(element, Motion.Stagger(index++).TotalMilliseconds);
         }
         _shownCards.Clear();
         foreach (var (key, _) in cards) _shownCards.Add(key);

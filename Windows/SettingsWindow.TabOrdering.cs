@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -33,6 +34,37 @@ public partial class SettingsWindow
     private readonly Dictionary<FrameworkElement, double> _settingsNavNeighborOffsets = new();
     private bool _isSyncingCameraVisibility = false;
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnNavTabTokenSlice
+    {
+        public int Offset;
+        public int Length;
+    }
+
+    [LibraryImport("VNotch.Native")]
+    private static partial int vn_nav_tabs_calculate_target_slot_hysteresis(
+        int current_target,
+        double visual_pos,
+        double pitch,
+        int total_slots,
+        out int out_slot);
+
+    [LibraryImport("VNotch.Native")]
+    private static partial int vn_nav_tabs_calculate_neighbor_offset(
+        int index,
+        int initial_slot,
+        int target_slot,
+        double pitch,
+        out double out_offset);
+
+    [LibraryImport("VNotch.Native")]
+    private static unsafe partial int vn_nav_tabs_parse_unique_tokens(
+        char* raw_ptr,
+        int raw_len,
+        VnNavTabTokenSlice* out_slices,
+        int slice_cap,
+        out int out_written);
+
     private static TranslateTransform? FindSettingsRowTranslateTransform(TransformGroup group)
     {
         var children = group.Children;
@@ -55,53 +87,56 @@ public partial class SettingsWindow
         return null;
     }
 
-    private static List<string> ParseUniqueTabTokens(string? rawOrder)
+    internal static unsafe List<string> ParseUniqueTabTokens(string? rawOrder)
     {
-        string[] parts = (rawOrder ?? DefaultNavTabs)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var orderTokens = new List<string>(parts.Length + 5);
-        for (int i = 0; i < parts.Length; i++)
+        string source = rawOrder ?? DefaultNavTabs;
+        if (source.Length == 0)
         {
-            string part = parts[i];
-            bool exists = false;
-            for (int j = 0; j < orderTokens.Count; j++)
+            return new List<string>(5);
+        }
+
+        const int stackSliceCap = 32;
+        Span<VnNavTabTokenSlice> stackSlices = stackalloc VnNavTabTokenSlice[stackSliceCap];
+
+        fixed (char* rawPtr = source)
+        fixed (VnNavTabTokenSlice* slicePtr = stackSlices)
+        {
+            int status = vn_nav_tabs_parse_unique_tokens(rawPtr, source.Length, slicePtr, stackSliceCap, out int written);
+            if (status == 0)
             {
-                if (string.Equals(orderTokens[j], part, StringComparison.OrdinalIgnoreCase))
+                var orderTokens = new List<string>(written + 5);
+                for (int i = 0; i < written; i++)
                 {
-                    exists = true;
-                    break;
+                    orderTokens.Add(source.Substring(stackSlices[i].Offset, stackSlices[i].Length));
                 }
-            }
-            if (!exists)
-            {
-                orderTokens.Add(part);
+                return orderTokens;
             }
         }
-        return orderTokens;
+
+        int fallbackCap = (source.Length / 2) + 2;
+        var heapSlices = new VnNavTabTokenSlice[fallbackCap];
+        fixed (char* rawPtr = source)
+        fixed (VnNavTabTokenSlice* slicePtr = heapSlices)
+        {
+            int status = vn_nav_tabs_parse_unique_tokens(rawPtr, source.Length, slicePtr, fallbackCap, out int written);
+            var orderTokens = new List<string>((status == 0 ? written : 0) + 5);
+            if (status == 0)
+            {
+                for (int i = 0; i < written; i++)
+                {
+                    orderTokens.Add(source.Substring(heapSlices[i].Offset, heapSlices[i].Length));
+                }
+            }
+            return orderTokens;
+        }
     }
 
-    private void PopulateNavTabsSettings()
+    private static readonly string[] SupportedNavTabKeys = [NavTabMedia, "Secondary", "Timer", "AudioMixer", "Camera", "Claude", "Pi", "School", "Weather"];
+
+    internal static List<string> ResolveFullNavTabOrder(string? rawOrder, IEnumerable<string>? knownKeys = null)
     {
-        if (NavTabsSettingsContainer == null) return;
-        NavTabsSettingsContainer.Children.Clear();
-
-        var tabMetadata = new Dictionary<string, (string title, string iconPath)>
-        {
-            [NavTabMedia] = ("Home", "M8 0L0 6V8H1V15H4V10H7V15H15V8H16V6L14 4.5V1H11V2.25L8 0ZM9 10H12V13H9V10Z"),
-            ["Secondary"] = (Loc.Get("nav.clipboard"), "M479.66,268.7l-32-151.81C441.48,83.77,417.68,64,384,64H128c-16.8,0-31,4.69-42.1,13.94s-18.37,22.31-21.58,38.89l-32,151.87A16.65,16.65,0,0,0,32,272V384a64,64,0,0,0,64,64H416a64,64,0,0,0,64-64V272A16.65,16.65,0,0,0,479.66,268.7Zm-384-145.4c0-.1,0-.19,0-.28,3.55-18.43,13.81-27,32.29-27H384c18.61,0,28.87,8.55,32.27,26.91,0,.13.05.26.07.39l26.93,127.88a4,4,0,0,1-3.92,4.82H320a15.92,15.92,0,0,0-16,15.82,48,48,0,1,1-96,0A15.92,15.92,0,0,0,192,256H72.65a4,4,0,0,1-3.92-4.82Z"),
-            ["Timer"] = (Loc.Get("nav.controls"), "M6 3H14A4 4 0 0 1 14 11H6A4 4 0 0 1 6 3ZM6 5A2 2 0 1 0 6 9A2 2 0 1 0 6 5ZM6 12H14A4 4 0 0 1 14 20H6A4 4 0 0 1 6 12ZM14 14A2 2 0 1 0 14 18A2 2 0 1 0 14 14Z"),
-            ["Claude"] = (Loc.Get("nav.claude"), ClaudeGlyph.PathData),
-            ["Pi"] = (Loc.Get("nav.pi"), PiGlyph.PathData),
-            ["School"] = (Loc.Get("nav.school"), SchoolGlyph.PathData),
-            ["Weather"] = (Loc.Get("nav.weather"), WeatherGlyph.PathData),
-            ["AudioMixer"] = ("Audio Mixer", "M13.5 2.5C13.5 2.1 13.05 1.86 12.72 2.09L6.8 6.2H3.5C2.95 6.2 2.5 6.65 2.5 7.2V12.8C2.5 13.35 2.95 13.8 3.5 13.8H6.8L12.72 17.91C13.05 18.14 13.5 17.9 13.5 17.5V2.5ZM16.04 6.05C15.74 5.79 15.28 5.82 15.02 6.13C14.76 6.43 14.79 6.89 15.1 7.15C16.0 7.93 16.5 8.93 16.5 10C16.5 11.07 16.0 12.07 15.1 12.85C14.79 13.11 14.76 13.57 15.02 13.87C15.28 14.18 15.74 14.21 16.04 13.95C17.25 12.91 18 11.5 18 10C18 8.5 17.25 7.09 16.04 6.05Z")
-            ,
-            ["Camera"] = (Loc.Get("nav.camera"), "F0 M28,4 L25,4 L24,2 C23.411,0.837 23.104,0 22,0 L10,0 C8.896,0 8.53,0.954 8,2 L7,4 L4,4 C1.791,4 0,5.791 0,8 L0,24 C0,26.209 1.791,28 4,28 L28,28 C30.209,28 32,26.209 32,24 L32,8 C32,5.791 30.209,4 28,4 Z M16,24 C11.582,24 8,20.418 8,16 C8,11.582 11.582,8 16,8 C20.418,8 24,11.582 24,16 C24,20.418 20.418,24 16,24 Z M16,10 C12.687,10 10,12.687 10,16 C10,19.313 12.687,22 16,22 C19.313,22 22,19.313 22,16 C22,12.687 19.313,10 16,10 L16,10 Z")
-        };
-
-        var orderTokens = ParseUniqueTabTokens(_settings.NavTabOrder);
-
-        foreach (string key in tabMetadata.Keys)
+        var orderTokens = ParseUniqueTabTokens(rawOrder);
+        foreach (string key in knownKeys ?? SupportedNavTabKeys)
         {
             bool exists = false;
             for (int i = 0; i < orderTokens.Count; i++)
@@ -117,10 +152,33 @@ public partial class SettingsWindow
                 orderTokens.Add(key);
             }
         }
+        return orderTokens;
+    }
+
+    private void PopulateNavTabsSettings()
+    {
+        if (NavTabsSettingsContainer == null) return;
+        InvalidateSearchIndex();
+        NavTabsSettingsContainer.Children.Clear();
+
+        var tabMetadata = new Dictionary<string, (string title, string iconPath)>
+        {
+            [NavTabMedia] = (Loc.Get("nav.media"), "M8 0L0 6V8H1V15H4V10H7V15H15V8H16V6L14 4.5V1H11V2.25L8 0ZM9 10H12V13H9V10Z"),
+            ["Secondary"] = (Loc.Get("nav.clipboard"), "M479.66,268.7l-32-151.81C441.48,83.77,417.68,64,384,64H128c-16.8,0-31,4.69-42.1,13.94s-18.37,22.31-21.58,38.89l-32,151.87A16.65,16.65,0,0,0,32,272V384a64,64,0,0,0,64,64H416a64,64,0,0,0,64-64V272A16.65,16.65,0,0,0,479.66,268.7Zm-384-145.4c0-.1,0-.19,0-.28,3.55-18.43,13.81-27,32.29-27H384c18.61,0,28.87,8.55,32.27,26.91,0,.13.05.26.07.39l26.93,127.88a4,4,0,0,1-3.92,4.82H320a15.92,15.92,0,0,0-16,15.82,48,48,0,1,1-96,0A15.92,15.92,0,0,0,192,256H72.65a4,4,0,0,1-3.92-4.82Z"),
+            ["Timer"] = (Loc.Get("nav.controls"), "M6 3H14A4 4 0 0 1 14 11H6A4 4 0 0 1 6 3ZM6 5A2 2 0 1 0 6 9A2 2 0 1 0 6 5ZM6 12H14A4 4 0 0 1 14 20H6A4 4 0 0 1 6 12ZM14 14A2 2 0 1 0 14 18A2 2 0 1 0 14 14Z"),
+            ["Claude"] = (Loc.Get("nav.claude"), ClaudeGlyph.PathData),
+            ["Pi"] = (Loc.Get("nav.pi"), PiGlyph.PathData),
+            ["School"] = (Loc.Get("nav.school"), SchoolGlyph.PathData),
+            ["Weather"] = (Loc.Get("nav.weather"), WeatherGlyph.PathData),
+            ["AudioMixer"] = (Loc.Get("nav.audio"), "M13.5 2.5C13.5 2.1 13.05 1.86 12.72 2.09L6.8 6.2H3.5C2.95 6.2 2.5 6.65 2.5 7.2V12.8C2.5 13.35 2.95 13.8 3.5 13.8H6.8L12.72 17.91C13.05 18.14 13.5 17.9 13.5 17.5V2.5ZM16.04 6.05C15.74 5.79 15.28 5.82 15.02 6.13C14.76 6.43 14.79 6.89 15.1 7.15C16.0 7.93 16.5 8.93 16.5 10C16.5 11.07 16.0 12.07 15.1 12.85C14.79 13.11 14.76 13.57 15.02 13.87C15.28 14.18 15.74 14.21 16.04 13.95C17.25 12.91 18 11.5 18 10C18 8.5 17.25 7.09 16.04 6.05Z")
+            ,
+            ["Camera"] = (Loc.Get("nav.camera"), "F0 M28,4 L25,4 L24,2 C23.411,0.837 23.104,0 22,0 L10,0 C8.896,0 8.53,0.954 8,2 L7,4 L4,4 C1.791,4 0,5.791 0,8 L0,24 C0,26.209 1.791,28 4,28 L28,28 C30.209,28 32,26.209 32,24 L32,8 C32,5.791 30.209,4 28,4 Z M16,24 C11.582,24 8,20.418 8,16 C8,11.582 11.582,8 16,8 C20.418,8 24,11.582 24,16 C24,20.418 20.418,24 16,24 Z M16,10 C12.687,10 10,12.687 10,16 C10,19.313 12.687,22 16,22 C19.313,22 22,19.313 22,16 C22,12.687 19.313,10 16,10 L16,10 Z")
+        };
+
+        var orderTokens = ResolveFullNavTabOrder(_settings.NavTabOrder, tabMetadata.Keys);
 
         var visibleTokens = new HashSet<string>(
-            (_settings.VisibleNavTabs ?? DefaultNavTabs)
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            ParseUniqueTabTokens(_settings.VisibleNavTabs),
             StringComparer.OrdinalIgnoreCase);
         visibleTokens.Add(NavTabMedia);
         if (_settings.HideCamera) visibleTokens.Remove("Camera");
@@ -173,7 +231,7 @@ public partial class SettingsWindow
                     finally { _isSyncingCameraVisibility = false; }
                 }
                 _settings.VisibleNavTabs = string.Join(",", visibleTokens);
-                _settingsAppService.ApplyAsync(_settings, _translationDownload?.Token ?? CancellationToken.None).SafeFireAndForget("SETTINGS-NAVTABS");
+                ApplySettingsFromUi(persist: false);
                 (Application.Current.MainWindow as MainWindow)?.ApplyNavTabOrderAndVisibility();
             };
             check.Unchecked += (s, e) =>
@@ -186,7 +244,7 @@ public partial class SettingsWindow
                     finally { _isSyncingCameraVisibility = false; }
                 }
                 _settings.VisibleNavTabs = string.Join(",", visibleTokens);
-                _settingsAppService.ApplyAsync(_settings, _translationDownload?.Token ?? CancellationToken.None).SafeFireAndForget("SETTINGS-NAVTABS");
+                ApplySettingsFromUi(persist: false);
                 (Application.Current.MainWindow as MainWindow)?.ApplyNavTabOrderAndVisibility();
             };
             leftStack.Children.Add(check);
@@ -385,37 +443,16 @@ public partial class SettingsWindow
 
     private static double CalculateNeighborDesiredOffset(int index, int initialSlot, int targetSlot, double pitch)
     {
-        if (targetSlot < initialSlot && index >= targetSlot && index < initialSlot)
-        {
-            // Dragged UP: rows between targetSlot and initialSlot - 1 shift DOWN (+pitch)
-            return pitch;
-        }
-
-        if (targetSlot > initialSlot && index > initialSlot && index <= targetSlot)
-        {
-            // Dragged DOWN: rows between initialSlot + 1 and targetSlot shift UP (-pitch)
-            return -pitch;
-        }
-
-        return 0.0;
+        return vn_nav_tabs_calculate_neighbor_offset(index, initialSlot, targetSlot, pitch, out double offset) == 0
+            ? offset
+            : 0.0;
     }
 
     private static int CalculateSettingsTargetSlotWithHysteresis(int currentTarget, double visualPos, double pitch, int totalSlots)
     {
-        double currentSlotCenter = currentTarget * pitch;
-        double diff = visualPos - currentSlotCenter;
-
-        int proposedSlot = currentTarget;
-        if (diff > pitch * 0.55)
-        {
-            proposedSlot = (int)Math.Floor((visualPos + pitch * 0.45) / pitch);
-        }
-        else if (diff < -pitch * 0.55)
-        {
-            proposedSlot = (int)Math.Ceiling((visualPos - pitch * 0.45) / pitch);
-        }
-
-        return Math.Clamp(proposedSlot, 0, totalSlots - 1);
+        return vn_nav_tabs_calculate_target_slot_hysteresis(currentTarget, visualPos, pitch, totalSlots, out int slot) == 0
+            ? slot
+            : Math.Clamp(currentTarget, 0, Math.Max(0, totalSlots - 1));
     }
 
     private void AnimateSettingsRowToY(FrameworkElement element, double targetY)
@@ -505,7 +542,7 @@ public partial class SettingsWindow
             return;
         }
 
-        var orderTokens = ParseUniqueTabTokens(_settings.NavTabOrder);
+        var orderTokens = ResolveFullNavTabOrder(_settings.NavTabOrder);
 
         if (_settingsNavInitialSlot < orderTokens.Count && _settingsNavTargetSlot < orderTokens.Count)
         {
@@ -514,7 +551,7 @@ public partial class SettingsWindow
             orderTokens.Insert(_settingsNavTargetSlot, movedToken);
 
             _settings.NavTabOrder = string.Join(",", orderTokens);
-            _settingsAppService.ApplyAsync(_settings, _translationDownload?.Token ?? CancellationToken.None).SafeFireAndForget("SETTINGS-NAVORDER");
+            ApplyPreview(ReadSettingsFromUi());
             (Application.Current.MainWindow as MainWindow)?.ApplyNavTabOrderAndVisibility();
         }
 

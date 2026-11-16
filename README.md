@@ -180,7 +180,20 @@ V-Notch runs on 64-bit Windows 10 build 19041 or later, or Windows 11. It requir
 <details>
 <summary><strong>Build with GitHub Actions</strong></summary>
 
-Open the Actions tab, select Release Installer, and click Run workflow. Choose `framework-dependent` (smaller, requires .NET runtime) or `self-contained` (standalone). Download the installer from Artifacts when the build finishes, or from the automated `nightly` release tag.
+The `Release Installer` workflow runs automatically via `workflow_run` after `CI` succeeds on `main` (or `master` and `v*` release branches). For `main` pushes, it publishes a beta release tag `v<version>-beta.<run>.<attempt>` containing both `V-Notch-Setup.exe` (framework-dependent) and `V-Notch-Setup-SelfContained.exe` (self-contained), plus `.sha256`, `.manifest.json`, `.sig`, and `checksums.txt`.
+
+</details>
+
+<details>
+<summary><strong>Liquid Glass GPU pipeline and validation</strong></summary>
+
+The notch is included in screenshots and recordings in every theme and view. Ghost (Invisible) mode is the only setting that excludes app windows from supported Windows capture paths. Liquid Glass uses a private window-exclusion list for its own backdrop sampling, so screenshot visibility does not depend on hotkeys or detecting a capture utility. If that backdrop source is unavailable, glass uses a plain material while it recovers. See [screen capture validation](docs/SCREEN_CAPTURE_VALIDATION.md) for coverage and the remaining desktop verification matrix.
+
+Outside Ghost mode, GPU glass uploads the exact Magnifier backdrop crop into a pooled D3D11 texture; blur, refraction and presentation remain on the GPU. In Ghost mode, GPU glass uses DXGI Desktop Duplication with Windows.Graphics.Capture fallback, D3D11 Dual-Kawase blur, and the existing refraction/RGB dispersion shader compiled for D3D11. Blur works in linear light with FP16 intermediate textures, blends between pyramid levels, then resolves to BGRA with stable sub-LSB dither. Working textures grow to a bounded peak capacity and are reused across view transitions; samplers clamp to the active rectangle so smaller views cannot read stale pixels from unused capacity. Only the blur levels in use are allocated. The Ghost-mode capture path keeps desktop pixels in GPU textures throughout processing. Two shared D3D9Ex textures feed one persistent WPF `D3DImage` back buffer through GPU copies; D3D11 completion queries and D3D9 consumer fences prevent reuse before either device finishes. Hardware presentation needs no `WriteableBitmap` or CPU blur. WPF software fallback remains enabled for explicit snapshots and software composition. The legacy CPU capture/render path remains available as a fallback.
+
+The renderer selects the window's monitor adapter. If a hybrid GPU preference redirects D3D9 to a discrete GPU that cannot duplicate the display, Windows.Graphics.Capture supplies textures on that device instead. WGC requests borderless-capture access once per process and sets `IsBorderRequired(false)` before starting capture on supported Windows versions. Windows policy or denied consent can still require the border. Target FPS caps capture attempts even during interaction wake-ups and updates WGC's `MinUpdateInterval` live when supported. Actual submissions depend on GPU load and WPF/DWM composition; static scenes can reuse a cached frame. Logs distinguish the target, worker loops, captured frames, and WPF submissions. Global capture exclusion is applied only in Ghost mode. Ordinary GPU glass avoids feedback through Magnifier's private exclusion list, including during screenshots and continuous recording. The legacy Liquid Glass capture-hiding value is retained for settings compatibility and does not override Ghost mode. Sampling outside the selected monitor extends its edge pixels. Desktop switches and duplication access loss discard the cached desktop and retry capture; device/adapter failures and a five-second wait without a usable capture use the existing fallback and retry flow. Diagnostic logs identify `DXGI` or `WGC`, the last capture HRESULT, and borderless-access status.
+
+Build with the Visual Studio x64 C++ tools installed. The native build embeds both HLSL sources automatically. Run `powershell -NoProfile -File scripts/Test-GlassGpu.ps1` for synthetic hardware checks of blur, refraction, alpha, dispersion, shared textures, and capture timeout. Add `-LiveCapture` to smoke-test Desktop Duplication or `-WindowsGraphicsCapture` to exercise WGC without reading desktop pixels back. `dotnet run --project Tools/GlassGpuProbe/WpfProbe.csproj -c Release` validates the WPF bridge across three start/stop sessions using a hidden window; add `-- --main` to check the production MainWindow's glass material with isolated settings and startup suppressed. Frame cost depends on resolution, blur radius, GPU and driver; no fixed frame-time claim is made.
 
 </details>
 
@@ -210,7 +223,7 @@ If you like V-Notch, check out other free and open-source Windows utilities by w
 V-Notch uses the Apache License 2.0. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
 
 <p align="center">
-  Made by <a href="https://w0otdev.id.vn">w0otdev</a> ·
+  Made by <a href="https://w0otdev.id.vn">w0otdev</a> &amp; <a href="https://github.com/viper1aa">viper1aa</a> ·
   <a href="https://v-notch.vercel.app">Website</a> ·
   <a href="https://github.com/w0otdev/V-Notch">GitHub</a> ·
   <a href="https://www.facebook.com/rain.107/">Facebook</a> ·

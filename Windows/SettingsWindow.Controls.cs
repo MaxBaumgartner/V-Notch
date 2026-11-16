@@ -277,6 +277,22 @@ public partial class SettingsWindow
 
 
 
+    private void EnableShadowCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        bool shadowEnabled = EnableShadowCheck.IsChecked ?? true;
+        UpdateShadowDependentControls(shadowEnabled, animate: true);
+        ApplyWindowShadow(shadowEnabled);
+        if (_isLoadingSettings) return;
+        WindowAnimationPolicy.SetShadowEnabled(shadowEnabled);
+        PushLivePreview();
+    }
+
+    private void UpdateShadowDependentControls(bool shadowEnabled, bool animate = false)
+    {
+        AnimateDependentElement(GlassShadowOpacitySlider, shadowEnabled, 0.4, animate);
+        AnimateDependentElement(GlassShadowSpreadSlider, shadowEnabled, 0.4, animate);
+    }
+
     private void DynamicIslandModeCheck_Changed(object sender, RoutedEventArgs e)
     {
         UpdateDynamicIslandDependentControls(DynamicIslandModeCheck.IsChecked ?? false, animate: true);
@@ -293,10 +309,219 @@ public partial class SettingsWindow
 
     private void UpdateLyricsDependentControls(bool lyricsEnabled, bool animate = false)
     {
+        AnimateDependentElement(LyricsProviderPanel, lyricsEnabled, 0.45, animate);
         AnimateDependentElement(BrightenDarkLyricsBackgroundCheck, lyricsEnabled, 0.45, animate);
         AnimateDependentElement(DarkOverlayLabel, lyricsEnabled, 0.45, animate);
         AnimateDependentElement(DarkOverlayHint, lyricsEnabled, 0.45, animate);
         AnimateDependentElement(BlurDarkOverlaySlider, lyricsEnabled, 0.45, animate);
+    }
+
+    private const string LyricsProviderDragFormat = "VNotch.LyricsProviderItem";
+    private Point _lyricsProviderDragStart;
+    private bool _lyricsProviderIsDragging;
+
+    internal void UpdateLyricsProviderButtonStates()
+    {
+        if (LyricsProviderList == null || LyricsProviderUp == null || LyricsProviderDown == null) return;
+        int index = LyricsProviderList.SelectedIndex;
+        int count = LyricsProviderList.Items.Count;
+        bool canMoveUp = index > 0 && count > 1;
+        bool canMoveDown = index >= 0 && index < count - 1;
+        LyricsProviderUp.Opacity = canMoveUp ? 1.0 : 0.38;
+        LyricsProviderDown.Opacity = canMoveDown ? 1.0 : 0.38;
+    }
+
+    private void LyricsProviderList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateLyricsProviderButtonStates();
+    }
+
+    private void LyricsProviderMove_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isLoadingSettings || sender is not Button button || LyricsProviderList.SelectedIndex < 0) return;
+        int index = LyricsProviderList.SelectedIndex;
+        int target = index + (button.Tag?.ToString() == "-1" ? -1 : 1);
+        MoveLyricsProviderItem(index, target);
+    }
+
+    private void LyricsProviderList_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_isLoadingSettings || LyricsProviderList.SelectedIndex < 0 || LyricsProviderList.Items.Count < 2) return;
+        int index = LyricsProviderList.SelectedIndex;
+        int target = index > 0 ? index - 1 : index + 1;
+        MoveLyricsProviderItem(index, target);
+        e.Handled = true;
+    }
+
+    private void LyricsProviderList_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (_isLoadingSettings || LyricsProviderList.SelectedIndex < 0) return;
+        if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Alt) == System.Windows.Input.ModifierKeys.Alt)
+        {
+            if (e.Key == System.Windows.Input.Key.Up || e.SystemKey == System.Windows.Input.Key.Up)
+            {
+                MoveLyricsProviderItem(LyricsProviderList.SelectedIndex, LyricsProviderList.SelectedIndex - 1);
+                e.Handled = true;
+            }
+            else if (e.Key == System.Windows.Input.Key.Down || e.SystemKey == System.Windows.Input.Key.Down)
+            {
+                MoveLyricsProviderItem(LyricsProviderList.SelectedIndex, LyricsProviderList.SelectedIndex + 1);
+                e.Handled = true;
+            }
+        }
+    }
+
+    private void LyricsProviderList_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        _lyricsProviderDragStart = e.GetPosition(LyricsProviderList);
+        _lyricsProviderIsDragging = false;
+    }
+
+    private void LyricsProviderList_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (e.LeftButton != System.Windows.Input.MouseButtonState.Pressed || _lyricsProviderIsDragging) return;
+        if (LyricsProviderList.SelectedIndex < 0) return;
+
+        Point pos = e.GetPosition(LyricsProviderList);
+        if (Math.Abs(pos.X - _lyricsProviderDragStart.X) > SystemParameters.MinimumHorizontalDragDistance ||
+            Math.Abs(pos.Y - _lyricsProviderDragStart.Y) > SystemParameters.MinimumVerticalDragDistance)
+        {
+            _lyricsProviderIsDragging = true;
+            try
+            {
+                if (LyricsProviderList.SelectedItem is string item)
+                {
+                    var data = new DataObject(LyricsProviderDragFormat, item);
+                    DragDrop.DoDragDrop(LyricsProviderList, data, DragDropEffects.Move);
+                }
+            }
+            finally
+            {
+                _lyricsProviderIsDragging = false;
+            }
+        }
+    }
+
+    private void LyricsProviderList_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(LyricsProviderDragFormat) ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void LyricsProviderList_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(LyricsProviderDragFormat)) return;
+        if (e.Data.GetData(LyricsProviderDragFormat) is not string draggedItem) return;
+
+        int count = LyricsProviderList.Items.Count;
+        int oldIndex = -1;
+        for (int i = 0; i < count; i++)
+        {
+            if (string.Equals(LyricsProviderList.Items[i] as string, draggedItem, StringComparison.Ordinal))
+            {
+                oldIndex = i;
+                break;
+            }
+        }
+        if (oldIndex < 0) return;
+
+        Point dropPos = e.GetPosition(LyricsProviderList);
+        int newIndex = GetLyricsProviderDropIndex(dropPos, count);
+        MoveLyricsProviderItem(oldIndex, newIndex);
+        e.Handled = true;
+    }
+
+    private int GetLyricsProviderDropIndex(Point dropPoint, int count)
+    {
+        double y = 0;
+        for (int i = 0; i < count; i++)
+        {
+            if (LyricsProviderList.ItemContainerGenerator.ContainerFromIndex(i) is not FrameworkElement container)
+                continue;
+
+            double itemHeight = container.ActualHeight;
+            if (dropPoint.Y < y + itemHeight * 0.5)
+                return i;
+            y += itemHeight;
+        }
+        return count > 0 ? count - 1 : 0;
+    }
+
+    private void MoveLyricsProviderItem(int index, int target)
+    {
+        int count = LyricsProviderList.Items.Count;
+        if (index < 0 || index >= count || target < 0 || target >= count || index == target) return;
+
+        var providers = new string[count];
+        var oldPositions = new double[count];
+        for (int i = 0; i < count; i++)
+        {
+            providers[i] = LyricsProviderList.Items[i]?.ToString() ?? "";
+            if (LyricsProviderList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement container && IsLoaded)
+            {
+                oldPositions[i] = container.TranslatePoint(new Point(0, 0), LyricsProviderList).Y;
+            }
+        }
+
+        string moved = providers[index];
+        if (index < target)
+        {
+            for (int i = index; i < target; i++)
+                providers[i] = providers[i + 1];
+        }
+        else
+        {
+            for (int i = index; i > target; i--)
+                providers[i] = providers[i - 1];
+        }
+        providers[target] = moved;
+
+        LyricsProviderList.ItemsSource = providers;
+        LyricsProviderList.SelectedIndex = target;
+        UpdateLyricsProviderButtonStates();
+
+        if (IsLoaded && count >= 2)
+        {
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+            {
+                AnimateLyricsProviderSwap(index, target, oldPositions);
+            });
+        }
+
+        PushLivePreview();
+    }
+
+    private void AnimateLyricsProviderSwap(int fromIndex, int toIndex, double[] oldPositions)
+    {
+        int count = LyricsProviderList.Items.Count;
+        if (fromIndex < 0 || fromIndex >= count || toIndex < 0 || toIndex >= count) return;
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+
+        for (int i = 0; i < count; i++)
+        {
+            if (LyricsProviderList.ItemContainerGenerator.ContainerFromIndex(i) is not FrameworkElement container)
+                continue;
+
+            double newY = container.TranslatePoint(new Point(0, 0), LyricsProviderList).Y;
+            int prevIndex = i == toIndex ? fromIndex : (fromIndex < toIndex && i >= fromIndex && i < toIndex ? i + 1 : (fromIndex > toIndex && i > toIndex && i <= fromIndex ? i - 1 : i));
+            if (prevIndex < 0 || prevIndex >= oldPositions.Length) continue;
+
+            double deltaY = oldPositions[prevIndex] - newY;
+            if (Math.Abs(deltaY) <= 1.0) continue;
+
+            if (container.RenderTransform is not TranslateTransform translate || translate.IsFrozen)
+            {
+                translate = new TranslateTransform();
+                container.RenderTransform = translate;
+            }
+
+            var anim = new DoubleAnimation(deltaY, 0, TimeSpan.FromMilliseconds(220))
+            {
+                EasingFunction = ease
+            };
+            Timeline.SetDesiredFrameRate(anim, AnimationConfig.TargetFps);
+            translate.BeginAnimation(TranslateTransform.YProperty, anim);
+        }
     }
 
     private void UpdateYouTubeSubtitlesDependentControls(bool subtitlesEnabled, bool animate = false)
@@ -331,12 +556,31 @@ public partial class SettingsWindow
     {
         bool enabled = HoverExpandCheck.IsChecked ?? false;
         AnimateDependentElement(HoverDelaySlider, enabled, 0.4, animate: true);
+        if (!_isLoadingSettings) PushLivePreview();
     }
 
     private void IdleAutoHideCheck_Changed(object sender, RoutedEventArgs e)
     {
         bool enabled = IdleAutoHideCheck.IsChecked ?? false;
         AnimateDependentElement(IdleAutoHideDelaySlider, enabled, 0.4, animate: true);
+        if (!_isLoadingSettings) PushLivePreview();
+    }
+
+    private void SystemNotifyCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        bool sysEnabled = SystemNotifyCheck.IsChecked ?? true;
+        bool autoDismiss = AutoDismissNotifyCheck.IsChecked ?? true;
+        AnimateDependentElement(AutoDismissNotifyCheck, sysEnabled, 0.4, animate: true);
+        AnimateDependentElement(NotificationDurationSlider, sysEnabled && autoDismiss, 0.4, animate: true);
+        if (!_isLoadingSettings) PushLivePreview();
+    }
+
+    private void AutoDismissNotifyCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        bool sysEnabled = SystemNotifyCheck.IsChecked ?? true;
+        bool autoDismiss = AutoDismissNotifyCheck.IsChecked ?? true;
+        AnimateDependentElement(NotificationDurationSlider, sysEnabled && autoDismiss, 0.4, animate: true);
+        if (!_isLoadingSettings) PushLivePreview();
     }
 
     private void LanguageCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -348,10 +592,8 @@ public partial class SettingsWindow
 
             _settings.Language = lang;
             Loc.SetLanguage(lang);
-            _settingsAppService.ApplyAsync(_settings, _translationDownload?.Token ?? CancellationToken.None).SafeFireAndForget("SETTINGS-LANG");
-            _editSession.Commit(_settings);
             AnimateLocalizationChange();
-            SettingsChanged?.Invoke(this, _settings);
+            ApplyPreview(ReadSettingsFromUi());
         }
     }
 
@@ -444,7 +686,7 @@ public partial class SettingsWindow
         _settings.NavTabOrder = DefaultNavTabs;
         _settings.VisibleNavTabs = DefaultNavTabs;
         PopulateNavTabsSettings();
-        ApplySettingsFromUi(persist: true);
+        ApplySettingsFromUi(persist: false);
     }
 
 
@@ -464,11 +706,17 @@ public partial class SettingsWindow
         AnimateDependentElement(ManualCityTextBox, enabled, 0.45, animate);
     }
 
+    private void ManualCityTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_isLoadingSettings) PushLivePreview();
+    }
+
     private void YouTubeApiCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (_isLoadingSettings) return;
         bool enabled = YouTubeApiCheck.IsChecked ?? false;
         AnimateCollapsibleRow(YouTubeApiKeyRow, enabled, animate: true);
+        PushLivePreview();
     }
 
     private void YouTubeApiKeyPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
@@ -477,6 +725,7 @@ public partial class SettingsWindow
         if (YouTubeApiKeyTextBox.Visibility == Visibility.Collapsed)
             YouTubeApiKeyTextBox.Text = YouTubeApiKeyPasswordBox.Password;
         UpdateYouTubeApiKeyStatus();
+        PushLivePreview();
     }
 
     private void YouTubeApiKeyTextBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
@@ -485,6 +734,7 @@ public partial class SettingsWindow
         if (YouTubeApiKeyTextBox.Visibility == Visibility.Visible)
             YouTubeApiKeyPasswordBox.Password = YouTubeApiKeyTextBox.Text;
         UpdateYouTubeApiKeyStatus();
+        PushLivePreview();
     }
 
     private void ProcessPriorityCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -531,6 +781,12 @@ public partial class SettingsWindow
 
                 if (BackupStatusText != null)
                 {
+                    if (BackupStatusText.Tag is UiScheduledTimer existingTimer)
+                    {
+                        existingTimer.Stop();
+                        existingTimer.Dispose();
+                        BackupStatusText.Tag = null;
+                    }
                     BackupStatusText.Text = Loc.Get("settings.export.success");
                     BackupStatusText.Foreground = BackupSuccessBrush;
                     BackupStatusText.Visibility = Visibility.Visible;
@@ -540,8 +796,13 @@ public partial class SettingsWindow
                     {
                         timer.Stop();
                         timer.Dispose();
+                        if (ReferenceEquals(BackupStatusText.Tag, timer))
+                        {
+                            BackupStatusText.Tag = null;
+                        }
                         BackupStatusText.Visibility = Visibility.Collapsed;
                     };
+                    BackupStatusText.Tag = timer;
                     timer.Start();
                 }
             }
@@ -571,17 +832,16 @@ public partial class SettingsWindow
             if (dialog.ShowDialog(this) == true)
             {
                 var (imported, _) = await _settingsAppService.ImportAsync(dialog.FileName, _settings, _translationDownload?.Token ?? CancellationToken.None);
-
-                _settings = imported.Clone();
-                _editSession.Reset(imported);
-
-                LoadSettings();
-                _editSession.Preview(ReadSettingsFromUi());
-                _settings = _editSession.Applied;
-                SettingsChanged?.Invoke(this, _settings);
+                await ApplyImportedSettingsAsync(imported, _translationDownload?.Token ?? CancellationToken.None);
 
                 if (BackupStatusText != null)
                 {
+                    if (BackupStatusText.Tag is UiScheduledTimer existingTimer)
+                    {
+                        existingTimer.Stop();
+                        existingTimer.Dispose();
+                        BackupStatusText.Tag = null;
+                    }
                     BackupStatusText.Text = Loc.Get("settings.import.success");
                     BackupStatusText.Foreground = BackupSuccessBrush;
                     BackupStatusText.Visibility = Visibility.Visible;
@@ -591,8 +851,13 @@ public partial class SettingsWindow
                     {
                         timer.Stop();
                         timer.Dispose();
+                        if (ReferenceEquals(BackupStatusText.Tag, timer))
+                        {
+                            BackupStatusText.Tag = null;
+                        }
                         BackupStatusText.Visibility = Visibility.Collapsed;
                     };
+                    BackupStatusText.Tag = timer;
                     timer.Start();
                 }
 
@@ -939,16 +1204,28 @@ public partial class SettingsWindow
             {
                 Interval = TimeSpan.FromMilliseconds(32)
             };
-            _livePreviewDebounce.Tick += (s, e) =>
-            {
-                _livePreviewDebounce.Stop();
-                var snapshot = ReadSettingsFromUi();
-                ApplyPreview(snapshot);
-            };
+            _livePreviewDebounce.Tick += (_, _) => FlushLivePreview();
         }
 
-        _livePreviewDebounce.Stop();
+        // Keep the first deadline while edits arrive. Restarting it on every
+        // pointer packet starves the preview for the entire slider drag.
         _livePreviewDebounce.Start();
+    }
+
+    internal void FlushLivePreview()
+    {
+        if (_livePreviewDebounce?.IsEnabled != true) return;
+        _livePreviewDebounce.Stop();
+        if (_isLoadingSettings || _isClosing) return;
+        ApplyPreview(ReadSettingsFromUi());
+    }
+
+    private void LivePreview_MouseUp(object sender, MouseButtonEventArgs e) => FlushLivePreview();
+
+    private void LivePreview_KeyUp(object sender, KeyEventArgs e)
+    {
+        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown)
+            FlushLivePreview();
     }
 
     #endregion

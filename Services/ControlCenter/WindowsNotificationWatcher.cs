@@ -12,11 +12,27 @@ namespace VNotch.Services.ControlCenter;
 public sealed record NotificationApp(string Key, string Name);
 
 /// <summary>What the settings window lists: whether Windows grants access, and the apps that notified lately.</summary>
-public sealed record AppNotificationState(bool Allowed, IReadOnlyList<NotificationApp> Recent);
+public sealed record AppNotificationState(bool Allowed, IReadOnlyList<NotificationApp> Recent)
+{
+    public IReadOnlyDictionary<string, int?>? BannerRestore { get; init; }
+}
 
-/// <summary>A toast another app showed: who sent it and its first two lines.</summary>
+/// <summary>A toast another app showed: who sent it, its text and any available artwork.</summary>
 internal sealed record WindowsNotification(uint Id, string AppName, string? AppUserModelId, string Title, string? Body,
-    RandomAccessStreamReference? Logo);
+    RandomAccessStreamReference? Logo, IReadOnlyList<string> Lines, RandomAccessStreamReference? Image);
+
+internal static class ToastText
+{
+    internal static (string Title, IReadOnlyList<string> Lines) Split(IReadOnlyList<string> texts)
+    {
+        var lines = new List<string>();
+        for (int i = 1; i < texts.Count; i++)
+        {
+            if (!string.IsNullOrWhiteSpace(texts[i])) lines.Add(texts[i].Trim());
+        }
+        return (texts.Count > 0 ? texts[0].Trim() : "", lines);
+    }
+}
 
 /// <summary>
 /// Notices new Windows toasts by reading the notification list now and then (the change event is for
@@ -37,7 +53,7 @@ internal sealed class WindowsNotificationWatcher
             {
                 return UserNotificationListener.Current.GetAccessStatus() == UserNotificationListenerAccessStatus.Allowed;
             }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or System.Runtime.InteropServices.COMException)
+            catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.Runtime.InteropServices.COMException)
             {
                 return false;
             }
@@ -75,13 +91,12 @@ internal sealed class WindowsNotificationWatcher
         try
         {
             var binding = notification.Notification?.Visual?.GetBinding(KnownNotificationBindings.ToastGeneric);
-            string title = "", body = "";
+            var texts = new List<string>();
             if (binding != null)
             {
-                var texts = binding.GetTextElements();
-                if (texts.Count > 0) title = texts[0].Text ?? "";
-                if (texts.Count > 1) body = texts[1].Text ?? "";
+                foreach (var text in binding.GetTextElements()) texts.Add(text.Text ?? "");
             }
+            var (title, lines) = ToastText.Split(texts);
             var app = notification.AppInfo;
             string name = app?.DisplayInfo?.DisplayName ?? "";
             if (name.Length == 0 && title.Length == 0) return null;
@@ -94,8 +109,9 @@ internal sealed class WindowsNotificationWatcher
             {
                 // Some desktop apps register no logo; the pill shows a bell instead.
             }
-            return new WindowsNotification(notification.Id, name, app?.AppUserModelId, title.Trim(),
-                body.Trim() is { Length: > 0 } text ? text : null, logo);
+            // UserNotificationListener exposes text only; NotificationBinding has no image API.
+            return new WindowsNotification(notification.Id, name, app?.AppUserModelId, title,
+                lines.Count > 0 ? lines[0] : null, logo, lines, Image: null);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or System.Runtime.InteropServices.COMException)
         {

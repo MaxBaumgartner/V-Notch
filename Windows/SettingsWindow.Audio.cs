@@ -22,6 +22,11 @@ namespace VNotch;
 
 public partial class SettingsWindow
 {
+    private void ShowMutedMicGlyphCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_isLoadingSettings) PushLivePreview();
+    }
+
     #region Visualizer Audio Device
 
     private void SetVisualizerAudioDevicePlaceholder()

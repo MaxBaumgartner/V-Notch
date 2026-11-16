@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
@@ -63,10 +64,7 @@ internal static class ClaudeSessionWindow
     /// <summary>False when the session's process or its window is gone.</summary>
     public static bool TryActivate(string sessionId, string? title)
     {
-        int processId = FindProcessId(sessionId);
-        if (processId == 0) return false;
-        IntPtr window = ConsoleHostWindow(processId);
-        if (window == IntPtr.Zero) window = AncestorWindow(processId);
+        IntPtr window = FindWindow(sessionId);
         if (window == IntPtr.Zero) return false;
 
         if (Win32Interop.IsIconic(window)) ShowWindow(window, SW_RESTORE);
@@ -75,6 +73,27 @@ internal static class ClaudeSessionWindow
         if (title is { Length: > 0 } && Win32Interop.WindowClassContains(window, TerminalWindowClass))
             _ = Task.Run(() => SelectTerminalTab(window, title));
         return true;
+    }
+
+    /// <summary>The window the session shows in: its terminal, or the app that started it. Zero when it is gone.</summary>
+    public static IntPtr FindWindow(string sessionId)
+    {
+        int processId = FindProcessId(sessionId);
+        if (processId == 0) return IntPtr.Zero;
+        IntPtr window = ConsoleHostWindow(processId);
+        return window != IntPtr.Zero ? window : AncestorWindow(processId);
+    }
+
+    /// <summary>
+    /// True while that window is in front and, in Windows Terminal, the session's tab is the selected one:
+    /// the terminal's window title follows its selected tab, which Claude Code titles with the session title.
+    /// </summary>
+    public static bool IsInFront(IntPtr window, string? title)
+    {
+        if (window == IntPtr.Zero || Win32Interop.GetForegroundWindow() != window) return false;
+        if (title is not { Length: > 0 } || !Win32Interop.WindowClassContains(window, TerminalWindowClass)) return true;
+        var text = new StringBuilder(512);
+        return Win32Interop.GetWindowText(window, text, 512) > 0 && text.ToString().Contains(title, StringComparison.Ordinal);
     }
 
     /// <summary>Claude Code keeps a small file per running session, named after its process id.</summary>

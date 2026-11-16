@@ -64,6 +64,7 @@ public sealed class ElasticSliderPresentationTests
         Assert.Equal(21, ticks.Children.Count);
         Assert.Equal(14, ((Rectangle)ticks.Children[0]).Height);
         Assert.Equal(8, ((Rectangle)ticks.Children[1]).Height);
+        Assert.NotSame(((Rectangle)ticks.Children[0]).Fill, ((Rectangle)ticks.Children[5]).Fill);
         slider.Description = "";
         Assert.Equal(Visibility.Collapsed, Part<TextBlock>(slider, "PART_Description").Visibility);
         slider.Unit = "%";
@@ -100,6 +101,23 @@ public sealed class ElasticSliderPresentationTests
         var scale = Assert.IsType<ScaleTransform>(root.RenderTransform);
         Assert.Equal(1, scale.ScaleX);
         Assert.Equal(1, scale.ScaleY);
+    });
+
+    [Fact]
+    public void FractionalSecondsRemainVisibleWhenTheValueOrFormatChanges() => SharedStaTestRunner.Run(() =>
+    {
+        var slider = Create();
+        slider.Minimum = 0.1;
+        slider.Maximum = 30;
+        slider.TickFrequency = 0.1;
+        slider.Unit = " s";
+        slider.ValueFormat = "0.#";
+        slider.Value = 0.5;
+        Assert.Equal(0.5.ToString("0.#") + " s", Part<TextBlock>(slider, "PART_Value").Text);
+        slider.Value = 0.1;
+        Assert.Equal(0.1.ToString("0.#") + " s", Part<TextBlock>(slider, "PART_Value").Text);
+        slider.Value = 5;
+        Assert.Equal("5 s", Part<TextBlock>(slider, "PART_Value").Text);
     });
 
     [Fact]

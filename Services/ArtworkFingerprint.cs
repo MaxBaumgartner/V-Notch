@@ -8,6 +8,8 @@ namespace VNotch.Services;
 
 internal readonly partial record struct ArtworkFingerprint(ulong ContentHash, int PixelWidth, int PixelHeight)
 {
+    private sealed record Cached(ArtworkFingerprint Value);
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<BitmapSource, Cached> Fingerprints = new();
     private const int SampleEdge = 64;
 
     [LibraryImport("VNotch.Native.dll")]
@@ -23,6 +25,12 @@ internal readonly partial record struct ArtworkFingerprint(ulong ContentHash, in
     public static unsafe ArtworkFingerprint Create(BitmapSource source)
     {
         ArgumentNullException.ThrowIfNull(source);
+        return source.IsFrozen ? Fingerprints.GetValue(source, static bitmap => new(Calculate(bitmap))).Value : Calculate(source);
+    }
+
+    private static unsafe ArtworkFingerprint Calculate(BitmapSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
 
         int sourceWidth = source.PixelWidth;
         int sourceHeight = source.PixelHeight;
@@ -34,14 +42,14 @@ internal readonly partial record struct ArtworkFingerprint(ulong ContentHash, in
         if (scale < 1.0)
         {
             var resized = new TransformedBitmap(source, new ScaleTransform(scale, scale));
-            resized.Freeze();
+            // Do not freeze temporary resize wrapper; freezing propagates to mutable caller sources.
             sampled = resized;
         }
 
         if (sampled.Format != PixelFormats.Bgra32)
         {
             var converted = new FormatConvertedBitmap(sampled, PixelFormats.Bgra32, null, 0);
-            converted.Freeze();
+            // Do not freeze temporary format conversion wrapper.
             sampled = converted;
         }
 

@@ -16,6 +16,9 @@ public static partial class Loc
 {
     private const string NativeDll = "VNotch.Native.dll";
 
+    internal const long MaxExternalLocaleFileBytes = 2 * 1024 * 1024;
+    private static readonly JsonDocumentOptions LocaleJsonOptions = new() { MaxDepth = 8 };
+
     [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_localization_resolve_default_culture(
         ReadOnlySpan<char> lang,
@@ -32,15 +35,6 @@ public static partial class Loc
         out int outLen,
         out byte outMatched);
 
-    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int vn_localization_should_store_entry(
-        ReadOnlySpan<char> propName,
-        int propNameLen,
-        ReadOnlySpan<char> text,
-        int textLen,
-        byte keyExists,
-        out byte outShouldStore);
-
     // Where one locale's strings come from. A code can have several sources (embedded resource, locale folder next
     // to the app, community folder in AppData); they are merged in discovery order.
     private sealed record LocaleSource(string? ResourceName, string? FilePath);
@@ -54,28 +48,38 @@ public static partial class Loc
     private static readonly Dictionary<string, LocaleMetadata> _metadata = new(StringComparer.OrdinalIgnoreCase);
     // Only the fallback and the active language are kept in memory. Published as an immutable snapshot
     // (copy on write) so readers on any thread never observe a dictionary that is being modified.
-    private static volatile Dictionary<string, Dictionary<string, string>> _strings = new(StringComparer.OrdinalIgnoreCase);
+    private static volatile Dictionary<string, NativeLocaleTable> _strings = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] DefaultLanguageOrder = { "en", "vi", "zh", "pt", "ru", "ar", "ko", "es", "fr", "de", "ja", "hi", "it", "tr", "pl", "nl", "id" };
     // Cross-language reverse lookup used only by the settings search. It is built on first use (or prewarmed by
     // the settings window) and released when that window closes, so it does not occupy memory the rest of the time.
-    private static Lazy<Dictionary<string, IReadOnlyList<string>>> _translationsByText = NewTranslationIndex();
-
-    private static Lazy<Dictionary<string, IReadOnlyList<string>>> NewTranslationIndex() =>
-        new(BuildTranslationLookup, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly object TranslationLock = new();
+    private static int _translationGeneration;
+    private static NativeTranslationIndex? _translationsByText;
 
     /// <summary>Starts building the cross-language search index on a worker thread.</summary>
     public static void PrewarmTranslationIndex()
     {
-        ThreadPool.QueueUserWorkItem(static index =>
+        ThreadPool.QueueUserWorkItem(static generation =>
         {
-            try { _ = ((Lazy<Dictionary<string, IReadOnlyList<string>>>)index!).Value; }
-            catch { /* the index is rebuilt on demand if this fails */ }
-        }, _translationsByText);
+            lock (TranslationLock)
+            {
+                if (generation != _translationGeneration) return;
+                try { _translationsByText ??= BuildTranslationLookup(); }
+                catch { /* The next lookup can retry a failed prewarm. */ }
+            }
+        }, Volatile.Read(ref _translationGeneration), preferLocal: false);
     }
 
-    /// <summary>Drops the cross-language search index. It is rebuilt on the next lookup.</summary>
-    public static void ReleaseTranslationIndex() =>
-        Interlocked.Exchange(ref _translationsByText, NewTranslationIndex());
+    /// <summary>Releases the native search index and its nonresident locale tables.</summary>
+    public static void ReleaseTranslationIndex()
+    {
+        lock (TranslationLock)
+        {
+            _translationGeneration++;
+            _translationsByText?.Dispose();
+            _translationsByText = null;
+        }
+    }
 
     static Loc()
     {
@@ -115,7 +119,7 @@ public static partial class Loc
     }
 
     internal static IReadOnlyCollection<string> GetKeys(string language) =>
-        GetOrLoadStrings(language)?.Keys ?? (IReadOnlyCollection<string>)Array.Empty<string>();
+        GetOrLoadStrings(language)?.Keys() ?? (IReadOnlyCollection<string>)Array.Empty<string>();
 
     public static List<(string Code, string Name)> GetAvailableLanguages()
     {
@@ -152,10 +156,10 @@ public static partial class Loc
     public static string Get(string key)
     {
         var strings = _strings;
-        if (strings.TryGetValue(_currentLanguage, out var langDict) && langDict.TryGetValue(key, out var value))
+        if (strings.TryGetValue(_currentLanguage, out var langDict) && langDict.Get(key) is { } value)
             return value;
 
-        if (_currentLanguage != FallbackLanguage && strings.TryGetValue(FallbackLanguage, out var enDict) && enDict.TryGetValue(key, out var enValue))
+        if (_currentLanguage != FallbackLanguage && strings.TryGetValue(FallbackLanguage, out var enDict) && enDict.Get(key) is { } enValue)
             return enValue;
 
         return key;
@@ -172,9 +176,22 @@ public static partial class Loc
     {
         if (string.IsNullOrWhiteSpace(text)) return new List<string>();
 
-        return _translationsByText.Value.TryGetValue(text, out var translations)
-            ? new List<string>(translations)
-            : new List<string> { text };
+        lock (TranslationLock)
+            return (_translationsByText ??= BuildTranslationLookup()).Find(text);
+    }
+
+    internal static bool IsValidExternalLocaleFile(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath)) return false;
+        try
+        {
+            var info = new FileInfo(filePath);
+            return info.Exists && info.Length > 0 && info.Length <= MaxExternalLocaleFileBytes;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // Registers every available locale and its metadata. Strings are not kept: each file is parsed once here
@@ -207,30 +224,36 @@ public static partial class Loc
 
         foreach (var dir in candidateDirectories)
         {
-            if (!Directory.Exists(dir)) continue;
+            DiscoverExternalDirectory(dir);
+        }
+    }
 
-            try
+    internal static void DiscoverExternalDirectory(string dir)
+    {
+        if (!Directory.Exists(dir)) return;
+
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(dir, "*.json", SearchOption.TopDirectoryOnly))
             {
-                foreach (string file in Directory.EnumerateFiles(dir, "*.json", SearchOption.TopDirectoryOnly))
-                {
-                    string code = Path.GetFileNameWithoutExtension(file);
-                    if (string.IsNullOrWhiteSpace(code)) continue;
+                string code = Path.GetFileNameWithoutExtension(file);
+                if (string.IsNullOrWhiteSpace(code)) continue;
+                if (!IsValidExternalLocaleFile(file)) continue;
 
-                    try
-                    {
-                        using var stream = File.OpenRead(file);
-                        RegisterSource(code, new LocaleSource(null, file), stream);
-                    }
-                    catch
-                    {
-                        // Ignore corrupted community files and keep fallback
-                    }
+                try
+                {
+                    using var stream = File.OpenRead(file);
+                    RegisterSource(code, new LocaleSource(null, file), stream);
+                }
+                catch
+                {
+                    // Ignore corrupted community files and keep fallback
                 }
             }
-            catch
-            {
-                // Ignore directory enumeration failures
-            }
+        }
+        catch
+        {
+            // Ignore directory enumeration failures
         }
     }
 
@@ -238,7 +261,7 @@ public static partial class Loc
     {
         try
         {
-            using var doc = JsonDocument.Parse(stream);
+            using var doc = JsonDocument.Parse(stream, LocaleJsonOptions);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return;
 
@@ -273,7 +296,7 @@ public static partial class Loc
     }
 
     // Returns the strings for a locale, loading and publishing them on first use. Null when the locale is unknown.
-    private static Dictionary<string, string>? GetOrLoadStrings(string code)
+    private static NativeLocaleTable? GetOrLoadStrings(string code)
     {
         if (_strings.TryGetValue(code, out var loaded)) return loaded;
         if (!_sources.ContainsKey(code)) return null;
@@ -283,7 +306,7 @@ public static partial class Loc
             if (_strings.TryGetValue(code, out loaded)) return loaded;
 
             var dict = LoadLocaleStrings(code);
-            var next = new Dictionary<string, Dictionary<string, string>>(_strings, StringComparer.OrdinalIgnoreCase)
+            var next = new Dictionary<string, NativeLocaleTable>(_strings, StringComparer.OrdinalIgnoreCase)
             {
                 [code] = dict
             };
@@ -292,11 +315,14 @@ public static partial class Loc
         }
     }
 
-    // Parses every source of a locale into a fresh dictionary, in discovery order.
-    private static Dictionary<string, string> LoadLocaleStrings(string code)
+    // Sources merge into one native arena before the table is published.
+    private static NativeLocaleTable LoadLocaleStrings(string code)
     {
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (!_sources.TryGetValue(code, out var sources)) return dict;
+        ApplyBuiltInDefaults(code, dict);
+        var table = new NativeLocaleTable();
+        table.Merge(JsonSerializer.SerializeToUtf8Bytes(dict));
+        if (!_sources.TryGetValue(code, out var sources)) return table;
 
         var assembly = typeof(Loc).Assembly;
         foreach (var source in sources)
@@ -305,10 +331,19 @@ public static partial class Loc
             {
                 using Stream? stream = source.ResourceName is not null
                     ? assembly.GetManifestResourceStream(source.ResourceName)
-                    : File.OpenRead(source.FilePath!);
+                    : (source.FilePath is not null && IsValidExternalLocaleFile(source.FilePath)
+                        ? File.OpenRead(source.FilePath)
+                        : null);
                 if (stream != null)
                 {
-                    LoadLocaleFromStream(dict, stream);
+                    int length = checked((int)stream.Length);
+                    byte[] json = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+                    try
+                    {
+                        stream.ReadExactly(json.AsSpan(0, length));
+                        table.Merge(json.AsSpan(0, length));
+                    }
+                    finally { System.Buffers.ArrayPool<byte>.Shared.Return(json); }
                 }
             }
             catch
@@ -317,7 +352,7 @@ public static partial class Loc
             }
         }
 
-        return dict;
+        return table;
     }
 
     // Drops every loaded language except the fallback and the active one so a switch does not accumulate memory.
@@ -325,103 +360,150 @@ public static partial class Loc
     {
         lock (LoadLock)
         {
-            var kept = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (code, dict) in _strings)
+            var previous = _strings;
+            var kept = new Dictionary<string, NativeLocaleTable>(StringComparer.OrdinalIgnoreCase);
+            List<NativeLocaleTable>? evicted = null;
+            foreach (var (code, dict) in previous)
             {
                 if (string.Equals(code, FallbackLanguage, StringComparison.OrdinalIgnoreCase)
                     || string.Equals(code, active, StringComparison.OrdinalIgnoreCase))
                 {
                     kept[code] = dict;
                 }
+                else
+                {
+                    (evicted ??= new List<NativeLocaleTable>()).Add(dict);
+                }
             }
 
             _strings = kept;
+            if (evicted is not null)
+            {
+                ReleaseTranslationIndex();
+                foreach (var table in evicted)
+                {
+                    table.Dispose();
+                }
+            }
         }
     }
 
-    private static void LoadLocaleFromStream(Dictionary<string, string> dict, Stream stream)
+    private static NativeTranslationIndex BuildTranslationLookup()
     {
+        var resident = _strings;
+        var codes = DefaultLanguageOrder.Where(_sources.ContainsKey).Concat(_sources.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var tables = new List<NativeLocaleTable>();
+        var owned = new List<NativeLocaleTable>();
         try
         {
-            using var doc = JsonDocument.Parse(stream);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return;
-
-            foreach (var prop in root.EnumerateObject())
+            foreach (string code in codes)
             {
-                if (!prop.Name.StartsWith('_') && prop.Value.ValueKind == JsonValueKind.String)
+                if (!resident.TryGetValue(code, out var table))
                 {
-                    string? text = prop.Value.GetString();
-                    ReadOnlySpan<char> propSpan = prop.Name.AsSpan();
-                    ReadOnlySpan<char> textSpan = text is not null ? text.AsSpan() : ReadOnlySpan<char>.Empty;
-                    bool keyExists = dict.ContainsKey(prop.Name);
-                    byte existsFlag = keyExists ? (byte)1 : (byte)0;
-                    bool shouldStore = vn_localization_should_store_entry(
-                        propSpan, propSpan.Length, textSpan, textSpan.Length, existsFlag, out byte outStore) == 0
-                        ? outStore != 0
-                        : (text != prop.Name && (!string.IsNullOrWhiteSpace(text) || !keyExists));
-                    if (shouldStore)
-                        dict[prop.Name] = text ?? string.Empty;
+                    table = LoadLocaleStrings(code);
+                    owned.Add(table);
                 }
+                tables.Add(table);
             }
+            return new NativeTranslationIndex(tables.ToArray(), owned.ToArray());
         }
         catch
         {
-            // Keep existing loaded strings if parse fails
+            foreach (var table in owned) table.Dispose();
+            throw;
         }
     }
 
-    private static Dictionary<string, IReadOnlyList<string>> BuildTranslationLookup()
+    private static void ApplyBuiltInDefaults(string code, Dictionary<string, string> dict)
     {
-        // Every language is needed here. Languages that are not resident are loaded into a local map and released
-        // once the lookup is built, so only the lookup itself stays alive.
-        var all = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-        var resident = _strings;
-        foreach (string code in _sources.Keys)
+        switch (code.ToLowerInvariant())
         {
-            all[code] = resident.TryGetValue(code, out var dict) ? dict : LoadLocaleStrings(code);
+            case "vi":
+                SeedBuiltInDefaults(dict, "MỚI", "Đóng", "Thư mục cài đặt không hợp lệ để gỡ cài đặt.", "Tiến trình tải mô hình", "Đang chuẩn bị tải xuống...", "Đang phát", "Không có nhạc đang phát", "Nghệ sĩ không xác định", "Phương tiện", "Hẹn giờ", "Âm thanh");
+                break;
+            case "es":
+                SeedBuiltInDefaults(dict, "NUEVO", "Cerrar", "Directorio de instalación no válido para desinstalar.", "Progreso de descarga del modelo", "Preparando descarga...", "Reproduciendo ahora", "No hay multimedia en reproducción", "Artista desconocido", "Multimedia", "Temporizador", "Audio");
+                break;
+            case "fr":
+                SeedBuiltInDefaults(dict, "NOUVEAU", "Fermer", "Répertoire d'installation non valide pour la désinstallation.", "Progression du téléchargement du modèle", "Préparation du téléchargement...", "Lecture en cours", "Aucun média en cours de lecture", "Artiste inconnu", "Médias", "Minuteur", "Audio");
+                break;
+            case "de":
+                SeedBuiltInDefaults(dict, "NEU", "Schließen", "Ungültiges Installationsverzeichnis für die Deinstallation.", "Fortschritt beim Modell-Download", "Download wird vorbereitet...", "Aktuelle Wiedergabe", "Keine Medienwiedergabe", "Unbekannter Künstler", "Medien", "Timer", "Audio");
+                break;
+            case "ja":
+                SeedBuiltInDefaults(dict, "新着", "閉じる", "アンインストール用のインストール先フォルダーが無効です。", "モデルのダウンロード進行状況", "ダウンロードを準備しています...", "再生中", "再生中のメディアはありません", "不明なアーティスト", "メディア", "タイマー", "オーディオ");
+                break;
+            case "zh":
+                SeedBuiltInDefaults(dict, "新", "关闭", "用于卸载的安装目录无效。", "模型下载进度", "正在准备下载...", "正在播放", "当前无媒体播放", "未知艺术家", "媒体", "计时器", "音频");
+                break;
+            case "ko":
+                SeedBuiltInDefaults(dict, "신규", "닫기", "제거할 설치 디렉터리가 올바르지 않습니다.", "모델 다운로드 진행률", "다운로드 준비 중...", "지금 재생 중", "재생 중인 미디어 없음", "알 수 없는 아티스트", "미디어", "타이머", "오디오");
+                break;
+            case "pt":
+                SeedBuiltInDefaults(dict, "NOVO", "Fechar", "Diretório de instalação inválido para desinstalação.", "Progresso do download do modelo", "Preparando download...", "Reproduzindo agora", "Nenhuma mídia em reprodução", "Artista desconhecido", "Mídia", "Temporizador", "Áudio");
+                break;
+            case "ru":
+                SeedBuiltInDefaults(dict, "НОВОЕ", "Закрыть", "Недопустимый каталог установки для удаления.", "Ход загрузки модели", "Подготовка к загрузке...", "Сейчас играет", "Нет воспроизводимого медиа", "Неизвестный исполнитель", "Медиа", "Таймер", "Аудио");
+                break;
+            case "ar":
+                SeedBuiltInDefaults(dict, "جديد", "إغلاق", "مسار التثبيت غير صالح لإلغاء التثبيت.", "تقدم تنزيل النموذج", "جاري تحضير التنزيل...", "قيد التشغيل الآن", "لا توجد وسائط قيد التشغيل", "فنان غير معروف", "الوسائط", "المؤقت", "الصوت");
+                break;
+            case "hi":
+                SeedBuiltInDefaults(dict, "नया", "बंद करें", "अनइंस्टॉल के लिए अमान्य इंस्टॉलेशन निर्देशिका।", "मॉडल डाउनलोड प्रगति", "डाउनलोड की तैयारी हो रही है...", "अभी चल रहा है", "कोई मीडिया नहीं चल रहा है", "अज्ञात कलाकार", "मीडिया", "टाइमर", "ऑडियो");
+                break;
+            case "it":
+                SeedBuiltInDefaults(dict, "NUOVO", "Chiudi", "Directory di installazione non valida per la disinstallazione.", "Avanzamento download del modello", "Preparazione del download...", "In riproduzione", "Nessun contenuto in riproduzione", "Artista sconosciuto", "Multimedia", "Timer", "Audio");
+                break;
+            case "tr":
+                SeedBuiltInDefaults(dict, "YENİ", "Kapat", "Kaldırma işlemi için geçersiz kurulum dizini.", "Model indirme ilerlemesi", "İndirme hazırlanıyor...", "Şimdi Oynatılıyor", "Oynatılan medya yok", "Bilinmeyen Sanatçı", "Medya", "Zamanlayıcı", "Ses");
+                break;
+            case "pl":
+                SeedBuiltInDefaults(dict, "NOWOŚĆ", "Zamknij", "Nieprawidłowy katalog instalacyjny do odinstalowania.", "Postęp pobierania modelu", "Przygotowywanie pobierania...", "Teraz odtwarzane", "Brak odtwarzanych multimediów", "Nieznany wykonawca", "Multimedia", "Minutnik", "Dźwięk");
+                break;
+            case "nl":
+                SeedBuiltInDefaults(dict, "NIEUW", "Sluiten", "Ongeldige installatiemap voor verwijderen.", "Voortgang modeldownload", "Download voorbereiden...", "Nu afspelend", "Geen media wordt afgespeeld", "Onbekende artiest", "Media", "Timer", "Audio");
+                break;
+            case "id":
+                SeedBuiltInDefaults(dict, "BARU", "Tutup", "Direktori instalasi tidak valid untuk pencopotan.", "Progres unduhan model", "Menyiapkan unduhan...", "Sedang Diputar", "Tidak ada media yang diputar", "Artis Tidak Dikenal", "Media", "Pengatur Waktu", "Audio");
+                break;
+            default:
+                SeedBuiltInDefaults(dict, "NEW", "Close", "Invalid installation directory for uninstall.", "Model download progress", "Preparing download...", "Now Playing", "No media playing", "Unknown Artist", "Media", "Timer", "Audio");
+                break;
         }
-
-        var keysByText = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (string language in all.Keys)
-        {
-            foreach (var (key, value) in all[language])
-            {
-                if (string.IsNullOrWhiteSpace(value)) continue;
-
-                if (!keysByText.TryGetValue(value, out var keys))
-                {
-                    keys = new HashSet<string>(StringComparer.Ordinal);
-                    keysByText[value] = keys;
-                }
-
-                keys.Add(key);
-            }
-        }
-
-        var lookup = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (sourceText, matchingKeys) in keysByText)
-        {
-            var translations = new List<string>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (string key in matchingKeys.OrderBy(key => key, StringComparer.Ordinal))
-            {
-                foreach (string language in DefaultLanguageOrder.Concat(all.Keys))
-                {
-                    if (all.TryGetValue(language, out var langDict)
-                        && langDict.TryGetValue(key, out string? translation)
-                        && !string.IsNullOrWhiteSpace(translation)
-                        && seen.Add(translation))
-                    {
-                        translations.Add(translation);
-                    }
-                }
-            }
-
-            lookup[sourceText] = translations;
-        }
-
-        return lookup;
     }
+
+    private static void SeedBuiltInDefaults(
+        Dictionary<string, string> dict,
+        string commonNew,
+        string commonClose,
+        string uninstallInvalidDir,
+        string modelDownloadProgress,
+        string preparingDownload,
+        string nowPlaying,
+        string noMedia,
+        string unknownArtist,
+        string navMedia,
+        string navTimer,
+        string navAudio)
+    {
+        dict["common.new"] = commonNew;
+        dict["common.close"] = commonClose;
+        dict["setup.uninstall.invalidDir"] = uninstallInvalidDir;
+        dict["settings.translation.modelDownloadProgress"] = modelDownloadProgress;
+        dict["update.preparingDownload"] = preparingDownload;
+        dict["media.nowPlaying"] = nowPlaying;
+        dict["media.noMedia"] = noMedia;
+        dict["media.unknownArtist"] = unknownArtist;
+        dict["nav.media"] = navMedia;
+        dict["nav.timer"] = navTimer;
+        dict["nav.audio"] = navAudio;
+    }
+}
+
+internal static class LocalizationService
+{
+    internal const long MaxExternalLocaleFileBytes = Loc.MaxExternalLocaleFileBytes;
+    internal static bool IsValidExternalLocaleFile(string filePath) => Loc.IsValidExternalLocaleFile(filePath);
+    internal static void DiscoverExternalDirectory(string dir) => Loc.DiscoverExternalDirectory(dir);
 }

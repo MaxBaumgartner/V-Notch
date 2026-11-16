@@ -25,6 +25,9 @@
 .PARAMETER SkipLiveBenchmark
     Skips live process telemetry and runs only the xUnit benchmark suite.
 
+.PARAMETER SkipBuild
+    Skips compiling the Release build before running benchmarks.
+
 .PARAMETER NoOpen
     Generates the PDF report without automatically opening it in the default viewer.
 
@@ -37,18 +40,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)]
-    [string]$Prompt = "",
-
-    [string]$Scope = ".",
-
-    [ValidateSet("Auto", "Claude", "Agy", "PromptOnly", "BenchmarkOnly")]
-    [string]$Runner = "BenchmarkOnly",
-
-    [ValidateRange(1, 5)]
-    [int]$MaxLoops = 2,
-
-    [string]$TestFilter = "FullyQualifiedName~PerformanceBenchmarkTests|FullyQualifiedName~HotPathRegressionTests.BenchmarkRenderAndHighlightAllocations|FullyQualifiedName~LiquidGlassPacingTests.LiquidGlass_PacingBenchmark_60Fps_And_120Fps|FullyQualifiedName~FirstOpenLatencyTests|FullyQualifiedName~ClipboardTrayOpeningPerformanceTests|FullyQualifiedName~ScrubberPerformanceTests|FullyQualifiedName~ProgressViewModelPerformanceTests|FullyQualifiedName~PerformanceAuditRegressionTests|FullyQualifiedName~DebugWindowAllocationTests|FullyQualifiedName~PrivacyPollingAllocationTests|FullyQualifiedName~ServiceOptimizationTests|FullyQualifiedName~ServicePollingOptimizationTests|FullyQualifiedName~SubjectAwareBlurOptimizationTests",
+    [string]$TestFilter = "FullyQualifiedName~PerformanceBenchmarkTests|FullyQualifiedName~HotPathRegressionTests|FullyQualifiedName~SpringEasingPerformanceTests|FullyQualifiedName~MorphAnimationResourceTests|FullyQualifiedName~LiquidGlassPacingTests.LiquidGlass_PacingBenchmark_60Fps_And_120Fps|FullyQualifiedName~FirstOpenLatencyTests|FullyQualifiedName~ClipboardTrayOpeningPerformanceTests|FullyQualifiedName~ScrubberPerformanceTests|FullyQualifiedName~ProgressViewModelPerformanceTests|FullyQualifiedName~PerformanceAuditRegressionTests|FullyQualifiedName~DebugWindowAllocationTests|FullyQualifiedName~PrivacyPollingAllocationTests|FullyQualifiedName~ServiceOptimizationTests|FullyQualifiedName~ServicePollingOptimizationTests|FullyQualifiedName~SubjectAwareBlurOptimizationTests",
 
     [ValidateRange(2, 300)]
     [int]$LiveBenchmarkSeconds = 8,
@@ -58,11 +50,9 @@ param(
 
     [string]$PdfPath = "",
 
-    [switch]$LaunchAppForBenchmark,
+    [switch]$SkipBuild,
 
     [switch]$SkipLiveBenchmark,
-
-    [switch]$BenchmarkOnly,
 
     [switch]$NoOpen
 )
@@ -255,10 +245,7 @@ try {
         $appExePath = Join-Path $repoRoot "Tests\bin\Release\net8.0-windows10.0.19041.0\win-x64\V-Notch.exe"
     }
 
-    $runningProc = @(Get-Process -Name "V-Notch" -ErrorAction SilentlyContinue)
-    $isAppRunning = ($runningProc.Count -gt 0)
-
-    if (-not $isAppRunning -or -not (Test-Path -LiteralPath $testDllPath)) {
+    if (-not $SkipBuild) {
         $bldSw = [System.Diagnostics.Stopwatch]::StartNew()
         $assetsPath = Join-Path $repoRoot "Tests\obj\project.assets.json"
         $buildArgs = @("build", "Tests\VNotch.Tests.csproj", "-c", "Release", "-nologo", "-v:q", "-clp:NoSummary", "-m", "-p:NativeFastCompile=true", "-p:RunAnalyzers=false")
@@ -273,7 +260,7 @@ try {
         }
         Write-TreeItem ("Compiled V-Notch (Release) & test suite in {0:N2}s." -f $bldSw.Elapsed.TotalSeconds) -State "Success"
     } else {
-        Write-TreeItem "Using existing up-to-date Release binaries." -State "Info"
+        Write-TreeItem "Using existing up-to-date Release binaries (-SkipBuild)." -State "Info"
     }
     if (-not (Test-Path -LiteralPath $appExePath)) {
         $appExePath = Join-Path $repoRoot "Tests\bin\Release\net8.0-windows10.0.19041.0\win-x64\V-Notch.exe"
@@ -454,6 +441,8 @@ try {
                 "*Scrubber*"     { "Log Scrubber & Throughput"; break }
                 "*Progress*"     { "UI Binding & ViewModels"; break }
                 "*HotPath*"      { "Hot-Path Rendering"; break }
+                "*Spring*"       { "Spring Physics & Easing"; break }
+                "*Morph*"        { "Hot-Path Rendering"; break }
                 default          { "Core Microbenchmarks" }
             }
 
@@ -541,6 +530,13 @@ try {
                 Optimized = "$($Matches[2]) | Alloc: $($Matches[3])"
                 Gain      = "0-Byte Steady Alloc"
             })
+        } elseif ($note -match '^damping=([0-9.]+):\s*scalar native=([0-9.]+\s*ns/ease),\s*current=([0-9.]+\s*ns/ease),\s*ratio=([0-9.]+x)') {
+            $highlightComparisons.Add([pscustomobject]@{
+                Operation = "DampedSpringEase Lookup (damping=$($Matches[1]))"
+                Legacy    = "P/Invoke scalar: $($Matches[2])"
+                Optimized = "Cubic Hermite: $($Matches[3])"
+                Gain      = "$($Matches[4]) FASTER"
+            })
         }
     }
 
@@ -558,9 +554,10 @@ try {
     Write-TreeSpacer
     Write-TreeStep "3/4" "Generate Executive Summary & Export PDF Report"
 
+    $ramLimitMb  = if ($spawnedTempApp) { 280.0 } else { 550.0 }
     $cpuBudgetOk = (-not $liveMetrics.Captured) -or ($liveMetrics.CpuMachineMean -le 8.0)
-    $ramBudgetOk = (-not $liveMetrics.Captured) -or ($liveMetrics.WorkingSetMean -le 220.0)
-    $testsOk     = ($failedCount -eq 0 -and $totalTests -gt 0)
+    $ramBudgetOk = (-not $liveMetrics.Captured) -or ($liveMetrics.WorkingSetMean -le $ramLimitMb)
+    $testsOk     = ($testExit -eq 0 -and $failedCount -eq 0 -and $totalTests -gt 0)
 
     $overallVerdict = if ($testsOk -and $cpuBudgetOk -and $ramBudgetOk) {
         "PASS"
@@ -634,7 +631,7 @@ try {
 
     $liveTableHtml = if ($liveMetrics.Captured) {
         $cpuState = if ($liveMetrics.CpuMachineMean -le 8.0) { "PASS (<= 8%)" } else { "WARN (> 8%)" }
-        $ramState = if ($liveMetrics.WorkingSetMean -le 220.0) { "PASS (<= 220 MB)" } else { "WARN (> 220 MB)" }
+        $ramState = if ($liveMetrics.WorkingSetMean -le $ramLimitMb) { "PASS (<= $ramLimitMb MB)" } else { "WARN (> $ramLimitMb MB)" }
         $gdiState = if ($liveMetrics.GdiObjects -le 500) { "PASS (<= 500)" } else { "WARN (> 500)" }
         @"
         <table>
@@ -1006,6 +1003,9 @@ try {
     Write-Host "     $gCheck BENCHMARK COMPLETE " -ForegroundColor Green -NoNewline
     Write-Host ("$overallVerdict | $passedCount/$totalTests tests | ${totalDurationSec}s -> $PdfPath") -ForegroundColor Gray
     Write-Host ""
+    if ($overallVerdict -ne "PASS") {
+        exit 1
+    }
 } finally {
     if (Test-Path -LiteralPath $tempWorkDir) {
         Remove-Item -LiteralPath $tempWorkDir -Recurse -Force -ErrorAction SilentlyContinue

@@ -179,6 +179,126 @@ public sealed class LyricsMultilineLayoutTests
         });
     }
 
+    [Theory]
+    [InlineData(96)]
+    [InlineData(120)]
+    [InlineData(144)]
+    [InlineData(192)]
+    public void GlyphPositionsStayFixedWhenTheEntranceStops(int dpi) => SharedStaTestRunner.Run(() =>
+    {
+        var source = LoadSource();
+        XNamespace ui = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var resources = source.Descendants(ui + "Window.Resources").Single();
+        var host = new XElement(ui + "Grid",
+            new XAttribute(XNamespace.Xmlns + "x", x),
+            new XAttribute(XNamespace.Xmlns + "svc", "clr-namespace:VNotch.Services;assembly=V-Notch"),
+            new XElement(ui + "Grid.Resources",
+                resources.Elements().Where(e => (string?)e.Attribute(x + "Key") is "MainSystemFont" or "SubtitleText")),
+            new XElement(source.Descendants(ui + "TextBlock").Single(e => (string?)e.Attribute(x + "Name") == "LyricTextA")));
+        var grid = (Grid)XamlReader.Parse(host.ToString());
+        var block = (TextBlock)grid.Children[0];
+        block.Text = "Chờ một ngày người ta\ntrở về để nói lời hứa";
+        block.Opacity = 1;
+        grid.Measure(new Size(151.85, 130));
+        grid.Arrange(new Rect(0, 0, 151.85, 130));
+        grid.UpdateLayout();
+        var transform = (TranslateTransform)block.RenderTransform;
+        var slide = new DoubleAnimation(14, 0, TimeSpan.FromMilliseconds(450))
+        { EasingFunction = new ExponentialEase { Exponent = 5, EasingMode = EasingMode.EaseOut } };
+        var clock = (AnimationClock)slide.CreateClock(true);
+        transform.ApplyAnimationClock(TranslateTransform.YProperty, clock);
+        clock.Controller!.SeekAlignedToLastTick(TimeSpan.FromMilliseconds(449.999), TimeSeekOrigin.BeginTime);
+        var moving = Render();
+        clock.Controller.SeekAlignedToLastTick(TimeSpan.FromMilliseconds(450), TimeSeekOrigin.BeginTime);
+        var stopped = Render();
+        Assert.Equal(moving, stopped);
+
+        byte[] Render()
+        {
+            var bitmap = new RenderTargetBitmap((int)Math.Ceiling(160 * dpi / 96d), (int)Math.Ceiling(140 * dpi / 96d), dpi, dpi, PixelFormats.Pbgra32);
+            bitmap.Render(grid);
+            var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+            bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
+            return pixels;
+        }
+    });
+
+    [Theory]
+    [InlineData(96)]
+    [InlineData(120)]
+    [InlineData(144)]
+    [InlineData(168)]
+    [InlineData(192)]
+    [InlineData(216)]
+    [InlineData(240)]
+    public void VietnameseDiacriticsAndRightEdgeHornsAreNeverClippedAcrossDpiAndWidths(double dpi)
+    {
+        SharedStaTestRunner.Run(() =>
+        {
+            var source = LoadSource();
+            XNamespace ui = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+            XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+            var resources = source.Descendants(ui + "Window.Resources").Single();
+            var host = new XElement(ui + "Grid",
+                new XAttribute(XNamespace.Xmlns + "x", x),
+                new XAttribute(XNamespace.Xmlns + "svc", "clr-namespace:VNotch.Services;assembly=V-Notch"),
+                new XElement(ui + "Grid.Resources",
+                    resources.Elements().Where(e => (string?)e.Attribute(x + "Key") is "MainSystemFont" or "SubtitleText")),
+                new XElement(source.Descendants(ui + "Border").Single(e => (string?)e.Attribute(x + "Name") == "LyricsWidget")));
+            var root = (Grid)XamlReader.Parse(host.ToString());
+            var widget = (Border)root.FindName("LyricsWidget");
+            var innerGrid = (Grid)widget.Child;
+            var layer = (Grid)root.FindName("AnimatedLyricsLayer");
+            var lyricA = (TextBlock)root.FindName("LyricTextA");
+            widget.Visibility = Visibility.Visible;
+            widget.Opacity = 1;
+            lyricA.Opacity = 1;
+
+            string[] samples =
+            [
+                "Chờ một ngày người ta\ntrở về để nói lời hứa từ\nlâu mà ai nỡ quên",
+                "Nhưng sao linh tính\ncủa anh đang thật tệ",
+                "Bình thường anh don't\ncare",
+                "Ẩn ức ở phương trời tư\nnhớ thương người dưng ừ\nửng hồng giấc mơ xưa"
+            ];
+
+            foreach (double width in new[] { 130d, 151.85d, 190d })
+                foreach (string sample in samples)
+                {
+                    lyricA.Text = sample;
+                    SetClipping(true);
+                    byte[] clipped = Render(width);
+                    SetClipping(false);
+                    byte[] unclipped = Render(width);
+                    for (int i = 0; i < clipped.Length; i++)
+                        Assert.True(Math.Abs(clipped[i] - unclipped[i]) <= 2, $"Clipped pixel at byte {i} (dpi={dpi}, width={width}): clipped={clipped[i]}, unclipped={unclipped[i]}");
+                }
+
+            void SetClipping(bool clip)
+            {
+                widget.ClipToBounds = clip;
+                innerGrid.ClipToBounds = clip;
+                layer.ClipToBounds = clip;
+                lyricA.ClipToBounds = clip;
+            }
+
+            byte[] Render(double width)
+            {
+                root.Measure(new Size(width, 130));
+                root.Arrange(new Rect(0, 0, width, 130));
+                root.UpdateLayout();
+                int pxW = (int)Math.Ceiling((width + 16) * dpi / 96.0);
+                int pxH = (int)Math.Ceiling(146 * dpi / 96.0);
+                var bmp = new RenderTargetBitmap(pxW, pxH, dpi, dpi, PixelFormats.Pbgra32);
+                bmp.Render(root);
+                var buf = new byte[pxW * pxH * 4];
+                bmp.CopyPixels(buf, pxW * 4, 0);
+                return buf;
+            }
+        });
+    }
+
     private static XDocument LoadSource()
     {
         var document = XDocument.Load(SourcePath());

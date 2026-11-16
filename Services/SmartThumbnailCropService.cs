@@ -9,7 +9,6 @@ using System.Runtime.InteropServices.WindowsRuntime;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace VNotch.Services;
@@ -19,67 +18,21 @@ public sealed partial class SmartThumbnailCropService : IDisposable
     private const string LogCategory = "SMART-CROP";
     private readonly object _lock = new();
 
-    private const int ModelInputSize = 416;
-
     private readonly Dictionary<(ArtworkFingerprint Artwork, int Size, bool ObjectDetection), Int32Rect> _cropCache = new();
     private readonly Queue<(ArtworkFingerprint Artwork, int Size, bool ObjectDetection)> _cropCacheOrder = new();
 
     private bool _disposed;
     private bool _modelExists;
     private bool _modelExistsChecked;
-    private InferenceSession? _cachedSession;
+    private NativeCropSession? _cachedSession;
 
     private const int MaxInferenceCacheEntries = 24;
     private readonly Dictionary<ArtworkFingerprint, InferenceCacheEntry> _inferenceCache = new();
     private readonly ConditionalWeakTable<BitmapSource, FingerprintHolder> _fingerprintCache = new();
     private long _inferenceCacheAccess;
 
-    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(5);
 
-    [LibraryImport("ucrtbase.dll")]
-    private static partial int _heapmin();
-
-    [LibraryImport("kernel32.dll")]
-    private static partial IntPtr GetCurrentProcess();
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool K32EmptyWorkingSet(IntPtr hProcess);
-
-    private static long _lastWorkingSetTrimTicks;
-
-    internal static void TryMinimizeNativeHeap(bool trimWorkingSet = false)
-    {
-        try
-        {
-            _ = _heapmin();
-        }
-        catch
-        {
-            // Best-effort CRT heap compaction.
-        }
-
-        if (!trimWorkingSet)
-            return;
-
-        long now = Environment.TickCount64;
-        long last = System.Threading.Interlocked.Read(ref _lastWorkingSetTrimTicks);
-        if (now - last < 30_000 || System.Threading.Interlocked.CompareExchange(ref _lastWorkingSetTrimTicks, now, last) != last)
-            return;
-
-        try
-        {
-#pragma warning disable S1215 // Intentional non-blocking gen2 trim after heavy ONNX inference idle timeout
-            GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: false);
-#pragma warning restore S1215
-            _ = _heapmin();
-            _ = K32EmptyWorkingSet(GetCurrentProcess());
-        }
-        catch
-        {
-            // Best-effort working-set trim.
-        }
-    }
     private DateTime _lastUsedUtc;
     private System.Threading.Timer? _idleTimer;
 
@@ -106,9 +59,28 @@ public sealed partial class SmartThumbnailCropService : IDisposable
     }
 
     [LibraryImport("VNotch.Native.dll")]
-    private static partial int vn_smartcrop_fill_tensor_from_bgra32(
-        ReadOnlySpan<byte> pixels, int scaledW, int scaledH, int stride,
-        Span<float> tensorBuffer);
+    private static partial int vn_smartcrop_preprocess_bgra32(ReadOnlySpan<byte> pixels,
+        int length, int width, int height, int stride, Span<float> tensor, int capacity, out float scale);
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_smartcrop_session_create(string model, int modelLength,
+        string directory, int directoryLength, byte preferDml, out long handle, out byte dml);
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_smartcrop_session_destroy(long handle);
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_smartcrop_session_infer(NativeCropSession handle, ReadOnlySpan<byte> pixels,
+        int length, int width, int height, int stride, Span<Detection> detections, int capacity,
+        out int count, out byte dml);
+
+    private sealed class NativeCropSession : SafeHandle
+    {
+        public NativeCropSession() : base(IntPtr.Zero, true) { }
+        internal NativeCropSession(long value) : this() => SetHandle((IntPtr)value);
+        public override bool IsInvalid => handle == IntPtr.Zero;
+        protected override bool ReleaseHandle() => vn_smartcrop_session_destroy((long)handle) == 0;
+    }
 
     [LibraryImport("VNotch.Native.dll")]
     private static partial int vn_smartcrop_apply_nms(
@@ -156,16 +128,15 @@ public sealed partial class SmartThumbnailCropService : IDisposable
         out VnCropRect outRect);
 
     [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_smartcrop_compute_saliency_subject_bounds(
+        ReadOnlySpan<byte> pixels, int w, int h, int stride,
+        out VnSubjectBounds outBounds, out byte outFound);
+
+    [LibraryImport("VNotch.Native.dll")]
     private static partial int vn_smartcrop_try_detect_text_crop_rect(
         ReadOnlySpan<byte> pixels, int w, int h, int stride,
         int imgWidth, int imgHeight, int cropSize,
         out VnCropRect outRect, out byte outFound);
-
-    [LibraryImport("VNotch.Native.dll")]
-    private static partial int vn_smartcrop_detect_text_regions(
-        ReadOnlySpan<byte> pixels, int w, int h, int stride,
-        int imgWidth, int imgHeight,
-        Span<VnCropRect> outRegions, int outCap, out int outCount);
 
     public bool TryInitialize()
     {
@@ -194,6 +165,18 @@ public sealed partial class SmartThumbnailCropService : IDisposable
         }
     }
 
+    public void ClearCaches()
+    {
+        lock (_lock)
+        {
+            _cropCache.Clear();
+            _cropCacheOrder.Clear();
+            _inferenceCache.Clear();
+            _fingerprintCache.Clear();
+            Unload();
+        }
+    }
+
     private void MarkSessionUsed()
     {
         _lastUsedUtc = DateTime.UtcNow;
@@ -218,17 +201,13 @@ public sealed partial class SmartThumbnailCropService : IDisposable
                 _idleTimer?.Dispose();
                 _idleTimer = null;
                 VNotch.Services.RuntimeLog.Log(LogCategory, "Session unloaded after idle timeout");
-                TryMinimizeNativeHeap(trimWorkingSet: true);
             }
         }
     }
 
     public SubjectBounds? GetDominantSubjectBounds(BitmapSource source)
     {
-        if (_disposed) return null;
-        if (!_modelExists && !TryInitialize()) return null;
-        if (!_modelExists) return null;
-        if (source == null) return null;
+        if (_disposed || source == null) return null;
 
         int imgWidth = source.PixelWidth;
         int imgHeight = source.PixelHeight;
@@ -236,29 +215,89 @@ public sealed partial class SmartThumbnailCropService : IDisposable
 
         lock (_lock)
         {
+            if (_disposed) return null;
             try
             {
-                var detections = GetOrRunInferenceLocked(source, imgWidth, imgHeight);
-                if (detections.Length == 0) return null;
+                ArtworkFingerprint fingerprint = _fingerprintCache
+                    .GetValue(source, static bitmap => new FingerprintHolder(ArtworkFingerprint.Create(bitmap)))
+                    .Value;
 
-                if (vn_smartcrop_find_best_subject_bounds(detections, detections.Length, imgWidth, imgHeight, out var bounds, out byte found) == 0 && found != 0)
+                if (_inferenceCache.TryGetValue(fingerprint, out var cached))
                 {
-                    return new SubjectBounds(bounds.CenterX, bounds.CenterY, bounds.Width, bounds.Height, bounds.Confidence, bounds.ClassId);
+                    cached.LastAccess = ++_inferenceCacheAccess;
+                    if (cached.Detections.Length > 0 &&
+                        vn_smartcrop_find_best_subject_bounds(cached.Detections, cached.Detections.Length, imgWidth, imgHeight, out var cachedBounds, out byte cachedFound) == 0 &&
+                        cachedFound != 0)
+                    {
+                        return new SubjectBounds(cachedBounds.CenterX, cachedBounds.CenterY, cachedBounds.Width, cachedBounds.Height, cachedBounds.Confidence, cachedBounds.ClassId);
+                    }
                 }
-                return null;
+                else if (source is CroppedBitmap crop && TryGetCachedCropDetections(crop, out var croppedDetections) && croppedDetections.Length > 0)
+                {
+                    if (vn_smartcrop_find_best_subject_bounds(croppedDetections, croppedDetections.Length, imgWidth, imgHeight, out var cropBounds, out byte cropFound) == 0 &&
+                        cropFound != 0)
+                    {
+                        return new SubjectBounds(cropBounds.CenterX, cropBounds.CenterY, cropBounds.Width, cropBounds.Height, cropBounds.Confidence, cropBounds.ClassId);
+                    }
+                }
             }
             catch (Exception ex)
             {
-                VNotch.Services.RuntimeLog.Error("SUBJECT-BOUNDS", $"Inference failed: {ex.GetType().Name}: {ex.Message}");
-                _cachedSession?.Dispose();
-                _cachedSession = null;
-                return null;
+                VNotch.Services.RuntimeLog.Error("SUBJECT-BOUNDS", $"Cached detection lookup failed: {ex.GetType().Name}: {ex.Message}");
             }
+        }
+
+        // Backdrop blur must not load YOLOX/DirectML. Reuse detections only when
+        // already cached; cold artwork uses bounded C++ saliency analysis.
+        if (!ArtworkFrameDetector.RentDownscaledPixels(source, out byte[]? pixels, out int w, out int h, out int stride, 96.0) || pixels == null)
+            return null;
+
+        try
+        {
+            if (w >= 8 && h >= 8 &&
+                vn_smartcrop_compute_saliency_subject_bounds(pixels.AsSpan(0, h * stride), w, h, stride, out var salBounds, out byte salFound) == 0 &&
+                salFound != 0)
+            {
+                return new SubjectBounds(salBounds.CenterX, salBounds.CenterY, salBounds.Width, salBounds.Height, salBounds.Confidence, salBounds.ClassId);
+            }
+            return null;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pixels);
         }
     }
 
-    public Int32Rect? GetSmartCropRect(BitmapSource source, int targetSquareSize) =>
-        GetCpuCropRect(source, targetSquareSize, useObjectDetection: false);
+    public Int32Rect? GetSmartCropRect(BitmapSource source, int targetSquareSize, bool useObjectDetection = false) =>
+        GetCpuCropRect(source, targetSquareSize, useObjectDetection);
+
+    internal static Int32Rect? Analyze(BitmapSource source, int targetSquareSize = 120)
+    {
+        if (source == null || targetSquareSize <= 0) return null;
+        int imgWidth = source.PixelWidth;
+        int imgHeight = source.PixelHeight;
+        if (imgWidth < 64 || imgHeight < 64) return null;
+
+        if (!ArtworkFrameDetector.RentDownscaledPixels(source, out byte[]? pixels, out int w, out int h, out int stride, 120.0) || pixels == null)
+            return null;
+
+        try
+        {
+            var frame = ArtworkFrameDetector.DetectFrameFromPixels(pixels, w, h, imgWidth, imgHeight);
+            if (frame.HasValue && frame.Value.Width > 0 && frame.Value.Height > 0)
+                return frame.Value;
+
+            if (w >= 4 && h >= 4 && vn_smartcrop_compute_saliency_crop_rect(pixels.AsSpan(0, h * stride), w, h, stride, imgWidth, imgHeight, targetSquareSize, out var rect) == 0)
+                return rect.ToRect();
+
+            int cropSize = Math.Min(targetSquareSize, Math.Min(imgWidth, imgHeight));
+            return new Int32Rect((imgWidth - cropSize) / 2, (imgHeight - cropSize) / 2, cropSize, cropSize);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pixels);
+        }
+    }
 
     private Int32Rect? GetCpuCropRect(BitmapSource source, int targetSquareSize, bool useObjectDetection)
     {
@@ -277,6 +316,7 @@ public sealed partial class SmartThumbnailCropService : IDisposable
 
             var rect = useObjectDetection
                 ? ComputeSmartCropRectCore(source, targetSquareSize)
+                    ?? GetSaliencyCropRect(source, width, height, targetSquareSize)
                 : GetSaliencyCropRect(source, width, height, targetSquareSize);
             if (rect.HasValue)
             {
@@ -306,8 +346,7 @@ public sealed partial class SmartThumbnailCropService : IDisposable
             var fallback = GetCpuCropRect(bitmap, targetSquareSize, useObjectDetection);
             cancellationToken.ThrowIfCancellationRequested();
             int width = bitmap.PixelWidth, height = bitmap.PixelHeight;
-            if (!fallback.HasValue || !useObjectDetection || targetSquareSize <= 96 ||
-                (width < 400 && height < 400)) return fallback;
+            if (!fallback.HasValue || !useObjectDetection || targetSquareSize <= 96) return fallback;
             Detection[] persons;
             lock (_lock)
             {
@@ -353,14 +392,8 @@ public sealed partial class SmartThumbnailCropService : IDisposable
                     return null;
                 }
 
-                if (imgWidth < 400 && imgHeight < 400)
-                {
-                    int maxCrop = Math.Min(imgWidth, imgHeight);
-                    int cropSz = Math.Min(targetSquareSize, maxCrop);
-                    VNotch.Services.RuntimeLog.Log(LogCategory, $"GetSmartCropRect: small image {imgWidth}x{imgHeight} -> saliency only");
-                    return GetSaliencyCropRect(source, imgWidth, imgHeight, cropSz);
-                }
-
+                // Decoded video thumbnails are commonly 320x180 or 384x288.
+                // They still contain useful person detections after model preprocessing.
                 var detections = GetOrRunInferenceLocked(source, imgWidth, imgHeight);
 
                 if (detections.Length == 0)
@@ -406,33 +439,23 @@ public sealed partial class SmartThumbnailCropService : IDisposable
         EnsureSessionLoadedLocked();
         MarkSessionUsed();
 
-        float[]? tensorBuffer = null;
+        int stride = checked(imgWidth * 4);
+        int length = checked(stride * imgHeight);
+        byte[] pixels = ArrayPool<byte>.Shared.Rent(length);
         try
         {
-            int requiredLength = 3 * ModelInputSize * ModelInputSize;
-            tensorBuffer = ArrayPool<float>.Shared.Rent(requiredLength);
-
-            float scale = PreprocessImageFast(source, tensorBuffer);
-            var tensor = new DenseTensor<float>(
-                new Memory<float>(tensorBuffer, 0, requiredLength),
-                new[] { 1, 3, ModelInputSize, ModelInputSize });
-            var inputs = new List<NamedOnnxValue>(1)
-            {
-                NamedOnnxValue.CreateFromTensor(_cachedSession!.InputNames[0], tensor)
-            };
-
-            using var results = _cachedSession.Run(inputs);
-            var output = results[0].AsTensor<float>();
-            Detection[] detections = ParseYoloxOutput(output, imgWidth, imgHeight, scale).ToArray();
-
+            CopyBgraPixels(source, pixels, stride);
+            Span<Detection> output = stackalloc Detection[3549];
+            if (vn_smartcrop_session_infer(_cachedSession!, pixels.AsSpan(0, length), length,
+                imgWidth, imgHeight, stride, output, output.Length, out int count, out _) != 0)
+                throw new InvalidOperationException("Native YOLOX inference failed.");
+            Detection[] detections = output[..count].ToArray();
             AddInferenceCacheEntryLocked(fingerprint, detections);
             return detections;
         }
         finally
         {
-            if (tensorBuffer != null)
-                ArrayPool<float>.Shared.Return(tensorBuffer);
-            TryMinimizeNativeHeap();
+            ArrayPool<byte>.Shared.Return(pixels);
         }
     }
 
@@ -441,26 +464,13 @@ public sealed partial class SmartThumbnailCropService : IDisposable
         if (_cachedSession != null)
             return;
 
-        using var options = new SessionOptions
-        {
-            GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-            ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
-            InterOpNumThreads = 1,
-            IntraOpNumThreads = 2,
-            EnableMemoryPattern = false,
-            EnableCpuMemArena = false
-        };
-
-        var session = new InferenceSession(GetModelPath(), options);
-        if (session.InputMetadata.Count != 1 || session.OutputMetadata.Count != 1 ||
-            !session.InputMetadata.Single().Value.Dimensions.SequenceEqual(new[] { 1, 3, ModelInputSize, ModelInputSize }) ||
-            !session.OutputMetadata.Single().Value.Dimensions.SequenceEqual(new[] { 1, 3549, 85 }))
-        {
-            session.Dispose();
-            throw new InvalidDataException("Smart crop requires the bundled YOLOX-Nano raw-output model.");
-        }
-        _cachedSession = session;
-        System.Diagnostics.Debug.WriteLine("[SmartCrop] Model loaded (cached session).");
+        string path = GetModelPath(), directory = AppContext.BaseDirectory;
+        // DirectML initializes D3D12 + DirectML heaps (+130-160 MB working set that persists across unloads).
+        // YOLOX-Nano 416x416 runs in ~8ms on AVX2 CPU without GPU driver memory retention.
+        if (vn_smartcrop_session_create(path, path.Length, directory, directory.Length, 0, out long handle, out byte dml) != 0)
+            throw new InvalidDataException("Could not load the bundled YOLOX-Nano model in the native runtime.");
+        _cachedSession = new NativeCropSession(handle);
+        RuntimeLog.Log(LogCategory, dml != 0 ? "Native YOLOX loaded (DirectML)" : "Native YOLOX loaded (CPU)");
     }
 
     private bool TryGetCachedCropDetections(CroppedBitmap crop, out Detection[] detections)
@@ -513,41 +523,33 @@ public sealed partial class SmartThumbnailCropService : IDisposable
         int imgWidth = source.PixelWidth;
         int imgHeight = source.PixelHeight;
 
-        float scale = Math.Min((float)ModelInputSize / imgWidth, (float)ModelInputSize / imgHeight);
-        int newWidth = Math.Max(1, (int)(imgWidth * scale));
-        int newHeight = Math.Max(1, (int)(imgHeight * scale));
-
-        var scaled = new TransformedBitmap(source, new ScaleTransform(
-            (double)newWidth / imgWidth,
-            (double)newHeight / imgHeight));
-        scaled.Freeze();
-
-        int scaledW = scaled.PixelWidth;
-        int scaledH = scaled.PixelHeight;
-        int stride = scaledW * 4;
-
-        byte[] pixels = ArrayPool<byte>.Shared.Rent(scaledH * stride);
+        int stride = checked(imgWidth * 4);
+        int length = checked(imgHeight * stride);
+        byte[] pixels = ArrayPool<byte>.Shared.Rent(length);
         try
         {
-            if (scaled.Format != PixelFormats.Bgra32)
-            {
-                var formatted = new FormatConvertedBitmap(scaled, PixelFormats.Bgra32, null, 0);
-                formatted.Freeze();
-                formatted.CopyPixels(pixels, stride, 0);
-            }
-            else
-            {
-                scaled.CopyPixels(pixels, stride, 0);
-            }
-
-            vn_smartcrop_fill_tensor_from_bgra32(pixels.AsSpan(0, scaledH * stride), scaledW, scaledH, stride, tensorBuffer);
+            CopyBgraPixels(source, pixels, stride);
+            if (vn_smartcrop_preprocess_bgra32(pixels.AsSpan(0, length), length, imgWidth, imgHeight,
+                stride, tensorBuffer, tensorBuffer.Length, out float scale) != 0)
+                throw new ArgumentException("Invalid image or tensor capacity.");
+            return scale;
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(pixels);
         }
 
-        return scale;
+    }
+
+    private static void CopyBgraPixels(BitmapSource source, byte[] pixels, int stride)
+    {
+        if (source.Format != PixelFormats.Bgra32)
+        {
+            var formatted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+            formatted.Freeze();
+            formatted.CopyPixels(pixels, stride, 0);
+        }
+        else source.CopyPixels(pixels, stride, 0);
     }
 
     internal static List<Detection> ParseYoloxOutput(Tensor<float> output, int imgWidth, int imgHeight, float scale)
@@ -629,28 +631,12 @@ public sealed partial class SmartThumbnailCropService : IDisposable
     {
         try
         {
-            const int analysisSize = 128;
-            double scaleX = (double)analysisSize / imgWidth;
-            double scaleY = (double)analysisSize / imgHeight;
-            var scaled = new TransformedBitmap(source, new ScaleTransform(scaleX, scaleY));
-            scaled.Freeze();
+            if (!ArtworkFrameDetector.RentDownscaledPixels(source, out byte[]? pixels, out int w, out int h, out int stride, 128.0) || pixels == null)
+                return null;
 
-            int w = scaled.PixelWidth;
-            int h = scaled.PixelHeight;
-            if (w < 8 || h < 8) return null;
-
-            int stride = w * 4;
-            byte[] pixels = ArrayPool<byte>.Shared.Rent(h * stride);
             try
             {
-                BitmapSource scaledSource = scaled;
-                if (scaled.Format != PixelFormats.Bgra32)
-                {
-                    var converted = new FormatConvertedBitmap(scaled, PixelFormats.Bgra32, null, 0);
-                    converted.Freeze();
-                    scaledSource = converted;
-                }
-                scaledSource.CopyPixels(pixels, stride, 0);
+                if (w < 8 || h < 8) return null;
 
                 if (vn_smartcrop_try_detect_text_crop_rect(pixels.AsSpan(0, h * stride), w, h, stride, imgWidth, imgHeight, cropSize, out var rect, out byte found) == 0 && found != 0)
                 {
@@ -704,18 +690,30 @@ public sealed partial class SmartThumbnailCropService : IDisposable
             return objRect.ToRect();
         }
 
-        var textRect = TryDetectTextCropRect(source, imgWidth, imgHeight, cropSize);
-        if (textRect.HasValue)
+        if (ArtworkFrameDetector.RentDownscaledPixels(source, out byte[]? pixels, out int w, out int h, out int stride, 128.0) && pixels != null)
         {
-            VNotch.Services.RuntimeLog.Log(LogCategory, "text path -> centered text crop");
-            return textRect.Value;
-        }
+            try
+            {
+                ReadOnlySpan<byte> pixelSpan = pixels.AsSpan(0, h * stride);
+                if (w >= 8 && h >= 8 &&
+                    vn_smartcrop_try_detect_text_crop_rect(pixelSpan, w, h, stride, imgWidth, imgHeight, cropSize, out var textRect, out byte found) == 0 &&
+                    found != 0)
+                {
+                    VNotch.Services.RuntimeLog.Log(LogCategory, "text path -> centered text crop");
+                    return textRect.ToRect();
+                }
 
-        VNotch.Services.RuntimeLog.Log(LogCategory, "no person/object/text -> saliency fallback");
-        var saliencyRect = GetSaliencyCropRect(source, imgWidth, imgHeight, targetSize);
-        if (saliencyRect.HasValue)
-        {
-            return saliencyRect.Value;
+                VNotch.Services.RuntimeLog.Log(LogCategory, "no person/object/text -> saliency fallback");
+                if (w >= 4 && h >= 4 &&
+                    vn_smartcrop_compute_saliency_crop_rect(pixelSpan, w, h, stride, imgWidth, imgHeight, targetSize, out var salRect) == 0)
+                {
+                    return salRect.ToRect();
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(pixels);
+            }
         }
 
         int cropX = Math.Max(0, Math.Min((imgWidth - cropSize) / 2, imgWidth - cropSize));
@@ -805,28 +803,12 @@ public sealed partial class SmartThumbnailCropService : IDisposable
     {
         try
         {
-            const int analysisSize = 64;
-            double scaleX = (double)analysisSize / imgWidth;
-            double scaleY = (double)analysisSize / imgHeight;
-            var scaled = new TransformedBitmap(source, new ScaleTransform(scaleX, scaleY));
-            scaled.Freeze();
+            if (!ArtworkFrameDetector.RentDownscaledPixels(source, out byte[]? pixels, out int w, out int h, out int stride, 64.0) || pixels == null)
+                return null;
 
-            int w = scaled.PixelWidth;
-            int h = scaled.PixelHeight;
-            if (w < 4 || h < 4) return null;
-
-            int stride = w * 4;
-            byte[] pixels = ArrayPool<byte>.Shared.Rent(h * stride);
             try
             {
-                BitmapSource scaledSource = scaled;
-                if (scaled.Format != PixelFormats.Bgra32)
-                {
-                    var converted = new FormatConvertedBitmap(scaled, PixelFormats.Bgra32, null, 0);
-                    converted.Freeze();
-                    scaledSource = converted;
-                }
-                scaledSource.CopyPixels(pixels, stride, 0);
+                if (w < 4 || h < 4) return null;
 
                 if (vn_smartcrop_compute_saliency_crop_rect(pixels.AsSpan(0, h * stride), w, h, stride, imgWidth, imgHeight, targetSize, out var rect) == 0)
                 {

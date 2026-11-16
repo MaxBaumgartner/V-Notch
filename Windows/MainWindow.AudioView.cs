@@ -107,7 +107,8 @@ public partial class MainWindow
         }
         if (fromPrimary)
         {
-            HideMediaBackground();
+            ClearGlassMediaTint();
+            HideMediaBackgroundOverlay();
             if (LyricsBlurBackground != null && LyricsBlurBackground.Visibility == Visibility.Visible)
             {
                 LyricsBlurBackground.BeginAnimation(OpacityProperty, null);
@@ -158,6 +159,7 @@ public partial class MainWindow
         double openWindowHeight = Math.Max(fromH, _audioViewHeight);
         ResizeHostWindowHeight(openWindowHeight);
 
+        _shellState.UpdateExpandedWidth(IsNoWidgetMode, _isLyricsActive, _isMusicExpanded);
         AnimateAudioViewSwap(
             outgoing, AudioContent,
             new Size(fromW, fromH), new Size(_audioViewWidth, _audioViewHeight),
@@ -218,11 +220,13 @@ public partial class MainWindow
         double fromW = NotchBorder.ActualWidth > 0 ? NotchBorder.ActualWidth : _audioViewWidth;
         double fromH = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : _audioViewHeight;
 
+        _shellState.UpdateExpandedWidth(IsNoWidgetMode, _isLyricsActive, _isMusicExpanded);
         AnimateAudioViewSwap(
             AudioContent, ExpandedContent,
             new Size(fromW, fromH), new Size(_expandedWidth, _expandedHeight),
             prepIncoming: () =>
             {
+                CancelMediaWidthAnimation();
                 ExpandedContent.Effect = null;
                 ExpandedContent.Width = _expandedWidth - 16;
                 ExpandedContent.Height = _expandedHeight - 10;
@@ -260,6 +264,7 @@ public partial class MainWindow
         double fromW = NotchBorder.ActualWidth > 0 ? NotchBorder.ActualWidth : _audioViewWidth;
         double fromH = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : _audioViewHeight;
 
+        _shellState.UpdateExpandedWidth(IsNoWidgetMode, _isLyricsActive, _isMusicExpanded);
         AnimateAudioViewSwap(
             AudioContent, TimerContent,
             new Size(fromW, fromH), new Size(_clockViewWidth, _clockViewHeight),
@@ -286,7 +291,7 @@ public partial class MainWindow
         int activeGen = generation ?? _viewTransitionGeneration;
         NotchBorder.IsHitTestVisible = false;
 
-        var durOut = new Duration(TimeSpan.FromMilliseconds(170));
+        var durOut = new Duration(TimeSpan.FromMilliseconds(190));
         var durIn = new Duration(TimeSpan.FromMilliseconds(440));
         var inDelay = TimeSpan.FromMilliseconds(40);
         int fps = AnimationConfig.TargetFps;
@@ -299,7 +304,7 @@ public partial class MainWindow
             var closeTranslate = new TranslateTransform(0, 0);
             outgoing.RenderTransform = closeTranslate;
 
-            var aFade = MakeAnim(1, 0, durOut, _easeAppleIn);
+            var aFade = MakeAnim(1, 0, durOut, _easeQuadInOut);
             var aSlide = MakeAnim(0, 10, durOut, _easeAppleIn);
             Timeline.SetDesiredFrameRate(aSlide, fps);
 
@@ -336,7 +341,7 @@ public partial class MainWindow
             var outTranslate = new TranslateTransform(0, outRestY);
             outgoing.RenderTransform = outTranslate;
 
-            var fadeOut = MakeAnim(1, 0, durOut, _easeAppleIn);
+            var fadeOut = MakeAnim(1, 0, durOut, _easeQuadInOut);
             var slideUp = MakeAnim(outRestY, outRestY - 10, durOut, _easeAppleIn);
             Timeline.SetDesiredFrameRate(slideUp, fps);
 
@@ -510,34 +515,22 @@ public partial class MainWindow
         bool growing = target > current;
         if (growing) ResizeHostWindowHeight(target);
 
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        AudioScrollViewer.BeginAnimation(HeightProperty, null);
-        NotchBorder.Height = current;
-        AudioScrollViewer.Height = currentScrollHeight;
-
         _isAnimating = true;
 
-        var notchAnim = MakeAnim(current, target, dur, ease);
-        var scrollAnim = MakeAnim(currentScrollHeight, Math.Max(0.0, target - _audioViewChrome), dur, ease);
-        Timeline.SetDesiredFrameRate(notchAnim, fps);
-        Timeline.SetDesiredFrameRate(scrollAnim, fps);
-
-        notchAnim.Completed += (_, _) =>
+        // One spring pair: a group that opens while the last one still settles takes its speed over.
+        Motion.To(AudioScrollViewer, HeightProperty, Math.Max(0.0, target - _audioViewChrome), Motion.Glide,
+            from: Motion.IsRunning(AudioScrollViewer, HeightProperty) ? null : currentScrollHeight, fps: fps);
+        Motion.To(NotchBorder, HeightProperty, target, Motion.Glide,
+            from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : current, fps: fps, done: () =>
         {
             if (generation != _audioNotchHeightGeneration) return;
             _isAnimating = false;
-            if (generation != _audioNotchHeightGeneration || !_isAudioView)
-                return;
+            if (!_isAudioView) return;
 
-            NotchBorder.BeginAnimation(HeightProperty, null);
-            NotchBorder.Height = target;
-            AudioScrollViewer.BeginAnimation(HeightProperty, null);
-            AudioScrollViewer.Height = target - _audioViewChrome;
+            Motion.Stop(NotchBorder, HeightProperty, target);
+            Motion.Stop(AudioScrollViewer, HeightProperty, target - _audioViewChrome);
             if (!growing) ResizeHostWindowHeight(target);
-        };
-
-        NotchBorder.BeginAnimation(HeightProperty, notchAnim, HandoffBehavior.SnapshotAndReplace);
-        AudioScrollViewer.BeginAnimation(HeightProperty, scrollAnim, HandoffBehavior.SnapshotAndReplace);
+        });
     }
 
 }

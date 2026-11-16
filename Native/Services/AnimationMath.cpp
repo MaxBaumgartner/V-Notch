@@ -38,7 +38,7 @@ constexpr double kMaxRate = 3.0;
 
 // Step response of a second-order system with the given damping ratio at normalized time t.
 double StepResponse(double damping_ratio, double damped_frequency, double t) noexcept {
-    if (damping_ratio == 1.0)
+    if (damping_ratio >= 1.0 || damped_frequency <= 1e-9)
         return 1.0 - std::exp(-kNaturalFrequency * t) * (1.0 + kNaturalFrequency * t);
     const double decay = std::exp(-damping_ratio * kNaturalFrequency * t);
     const double phase = damped_frequency * t;
@@ -47,9 +47,10 @@ double StepResponse(double damping_ratio, double damped_frequency, double t) noe
 
 // Core easing used for EaseIn; WPF mirrors it for EaseOut (1 - core(1 - t)).
 double DampedSpringCore(double damping_ratio, double normalized_time) noexcept {
+    if (!std::isfinite(normalized_time)) return normalized_time > 0.0 ? 1.0 : 0.0;
     const double time = std::clamp(normalized_time, 0.0, 1.0);
     if (time == 0.0 || time == 1.0) return time;
-    const double damped_frequency = kNaturalFrequency * std::sqrt(1.0 - damping_ratio * damping_ratio);
+    const double damped_frequency = kNaturalFrequency * std::sqrt(std::max(0.0, 1.0 - damping_ratio * damping_ratio));
     const double end_response = StepResponse(damping_ratio, damped_frequency, 1.0);
     // Normalizing by the end response lands the last frame exactly on the target.
     return 1.0 - StepResponse(damping_ratio, damped_frequency, 1.0 - time) / end_response;
@@ -72,6 +73,60 @@ VN_EXPORT int32_t __stdcall vn_damped_spring_ease(double damping_ratio, double n
     return VN_OK;
 }
 
+// Build the immutable easing table once. Hoist invariant spring coefficients
+// out of the sample loop; WPF can interpolate without native transitions per tick.
+VN_EXPORT int32_t __stdcall vn_damped_spring_sample_curve(
+    double damping_ratio, double* out_samples, int32_t sample_count) noexcept {
+    if (!out_samples || sample_count < 2 || !std::isfinite(damping_ratio) ||
+        damping_ratio <= 0.0 || damping_ratio > 1.0) return VN_ERR_INVALID_ARG;
+
+    const double frequency = anim::kNaturalFrequency * std::sqrt(std::max(0.0, 1.0 - damping_ratio * damping_ratio));
+    const double end_response = anim::StepResponse(damping_ratio, frequency, 1.0);
+    const double interval = 1.0 / static_cast<double>(sample_count - 1);
+    out_samples[0] = 0.0;
+    for (int32_t i = 1; i < sample_count - 1; ++i) {
+        out_samples[i] = 1.0 - anim::StepResponse(damping_ratio, frequency, 1.0 - i * interval) / end_response;
+    }
+    out_samples[sample_count - 1] = 1.0;
+    return VN_OK;
+}
+
+// Cubic Hermite coefficients preserve the analytic curve using a much smaller
+// immutable table. Each segment stores a + b*t + c*t^2 + d*t^3, t in [0, 1].
+VN_EXPORT int32_t __stdcall vn_damped_spring_build_segments(
+    double damping_ratio, double* out_coefficients, int32_t coefficient_count) noexcept {
+    if (!out_coefficients || coefficient_count < 4 || coefficient_count % 4 != 0 ||
+        !std::isfinite(damping_ratio) || damping_ratio <= 0.0 || damping_ratio > 1.0)
+        return VN_ERR_INVALID_ARG;
+
+    const int32_t segments = coefficient_count / 4;
+    const double interval = 1.0 / static_cast<double>(segments);
+    const double frequency = anim::kNaturalFrequency * std::sqrt(std::max(0.0, 1.0 - damping_ratio * damping_ratio));
+    const double end_response = anim::StepResponse(damping_ratio, frequency, 1.0);
+    double previous_value = 0.0, previous_slope = 0.0;
+    for (int32_t i = 0; i <= segments; ++i) {
+        const double time = i == segments ? 0.0 : 1.0 - i * interval;
+        const double value = i == 0 ? 0.0 : i == segments ? 1.0
+            : 1.0 - anim::StepResponse(damping_ratio, frequency, time) / end_response;
+        const double decay = std::exp(-damping_ratio * anim::kNaturalFrequency * time);
+        const double derivative = frequency <= 1e-9
+            ? anim::kNaturalFrequency * anim::kNaturalFrequency * time * decay
+            : anim::kNaturalFrequency * anim::kNaturalFrequency * decay * std::sin(frequency * time) / frequency;
+        const double slope = derivative * interval / end_response;
+        if (i > 0) {
+            const double delta = value - previous_value;
+            const int32_t offset = (i - 1) * 4;
+            out_coefficients[offset] = previous_value;
+            out_coefficients[offset + 1] = previous_slope;
+            out_coefficients[offset + 2] = 3.0 * delta - 2.0 * previous_slope - slope;
+            out_coefficients[offset + 3] = -2.0 * delta + previous_slope + slope;
+        }
+        previous_value = value;
+        previous_slope = slope;
+    }
+    return VN_OK;
+}
+
 // One integration step of the progress spring. frame_seconds is the raw time since the previous frame,
 // elapsed_ms the time since the animation started. out_finished = 1 when the spring settled or timed out.
 VN_EXPORT int32_t __stdcall vn_progress_spring_step(
@@ -79,6 +134,19 @@ VN_EXPORT int32_t __stdcall vn_progress_spring_step(
     uint8_t* out_finished) noexcept {
     if (!state || !out_finished) return VN_ERR_INVALID_ARG;
     *out_finished = 0;
+
+    state->target_ratio = std::isfinite(state->target_ratio) ? std::clamp(state->target_ratio, 0.0, 1.0) : 0.0;
+    if (!std::isfinite(state->display_ratio) ||
+        !std::isfinite(state->spring_target_ratio) ||
+        !std::isfinite(state->velocity)) {
+        state->display_ratio = state->target_ratio;
+        state->spring_target_ratio = state->target_ratio;
+        state->velocity = 0.0;
+        state->settle_frames = 0;
+        *out_finished = 1;
+        return VN_OK;
+    }
+    if (state->settle_frames < 0) state->settle_frames = 0;
 
     const double dt = std::clamp(std::isfinite(frame_seconds) ? frame_seconds : anim::kMinFrameSeconds,
                                  anim::kMinFrameSeconds, anim::kMaxFrameSeconds);
@@ -112,7 +180,8 @@ VN_EXPORT int32_t __stdcall vn_progress_spring_step(
     else
         state->settle_frames = 0;
 
-    if (state->settle_frames >= anim::kSettleFramesRequired || elapsed_ms > anim::kTimeoutMs) {
+    const bool timed_out = !std::isfinite(elapsed_ms) || elapsed_ms > anim::kTimeoutMs;
+    if (state->settle_frames >= anim::kSettleFramesRequired || timed_out) {
         state->display_ratio = state->target_ratio;
         state->velocity = 0.0;
         state->settle_frames = 0;
@@ -180,9 +249,9 @@ VN_EXPORT int32_t __stdcall vn_animation_compute_volume_hud_state(
         else codepoint = 0xE995;
     }
 
-    double safe_track = (std::isfinite(track_width) && track_width > 0.0) ? track_width : 160.0;
-    double safe_label = (std::isfinite(label_width) && label_width > 0.0) ? label_width : 28.0;
-    double safe_min_x = (std::isfinite(min_left_x) && min_left_x >= 0.0) ? min_left_x : 30.0;
+    double safe_track = (std::isfinite(track_width) && track_width > 0.0) ? std::min(track_width, 1e6) : 160.0;
+    double safe_label = (std::isfinite(label_width) && label_width > 0.0) ? std::min(label_width, 1e6) : 28.0;
+    double safe_min_x = (std::isfinite(min_left_x) && min_left_x >= 0.0) ? std::min(min_left_x, 1e6) : 30.0;
 
     double edge_ratio = static_cast<double>(active) / static_cast<double>(tick_count);
     double raw_x = (edge_ratio * safe_track) - safe_label;
@@ -273,7 +342,7 @@ VN_EXPORT int32_t __stdcall vn_animation_compute_volume_overscroll_spring(
 {
     if (!out_overscroll) return VN_ERR_INVALID_ARG;
     double vol = std::isfinite(current_volume) ? std::clamp(current_volume, 0.0, 1.0) : 0.0;
-    double delta = std::isfinite(step_delta) ? step_delta : 0.0;
+    double delta = std::isfinite(step_delta) ? std::clamp(step_delta, -10.0, 10.0) : 0.0;
 
     double raw = vol + delta;
     if (raw > 1.0001) {
@@ -308,9 +377,9 @@ VN_EXPORT int32_t __stdcall vn_animation_compute_volume_hud_transition(
 {
     if (!out_params) return VN_ERR_INVALID_ARG;
 
-    double base_w = (std::isfinite(collapsed_width) && collapsed_width > 0.0) ? collapsed_width : 196.0;
-    double base_h = (std::isfinite(collapsed_height) && collapsed_height > 0.0) ? collapsed_height : 32.0;
-    double base_r = (std::isfinite(collapsed_radius) && collapsed_radius >= 0.0) ? collapsed_radius : 14.0;
+    double base_w = (std::isfinite(collapsed_width) && collapsed_width > 0.0) ? std::min(collapsed_width, 1e6) : 196.0;
+    double base_h = (std::isfinite(collapsed_height) && collapsed_height > 0.0) ? std::min(collapsed_height, 1e6) : 32.0;
+    double base_r = (std::isfinite(collapsed_radius) && collapsed_radius >= 0.0) ? std::min(collapsed_radius, 1e6) : 14.0;
 
     constexpr double kExtraWidth = 44.0;
     constexpr double kExtraHeight = 20.0;
@@ -406,10 +475,10 @@ VN_EXPORT int32_t __stdcall vn_animation_compute_category_pill_motion(
         return VN_OK;
     }
 
-    const double dx = (std::isfinite(current_x) && std::isfinite(target_x))
-        ? std::abs(target_x - current_x)
+    const double raw_ratio = (std::isfinite(current_x) && std::isfinite(target_x))
+        ? (std::abs(target_x - current_x) / std::max(target_width, 48.0))
         : 0.0;
-    const double travel = std::clamp(dx / std::max(target_width, 48.0), 0.0, 6.0);
+    const double travel = std::isfinite(raw_ratio) ? std::clamp(raw_ratio, 0.0, 6.0) : 6.0;
 
     const double stretch_delta = std::clamp(0.065 + travel * 0.042, 0.065, 0.24);
     const double base_peak_x = std::lerp(start_scale_x, 1.0, 0.45);
@@ -439,9 +508,10 @@ VN_EXPORT int32_t __stdcall vn_animation_compute_settings_switch_motion(
 {
     if (!out_motion) return VN_ERR_INVALID_ARG;
 
-    const double safe_track = std::max(0.0, track_width);
-    const double safe_thumb = std::max(1.0, thumb_width);
-    const double travel = std::max(0.0, safe_track - safe_thumb - margin_x * 2.0);
+    const double safe_track = (std::isfinite(track_width) && track_width > 0.0) ? std::min(track_width, 1e6) : 0.0;
+    const double safe_thumb = (std::isfinite(thumb_width) && thumb_width > 1.0) ? std::min(thumb_width, 1e6) : 1.0;
+    const double safe_margin = std::isfinite(margin_x) ? std::clamp(margin_x, -1e6, 1e6) : 0.0;
+    const double travel = std::max(0.0, safe_track - safe_thumb - safe_margin * 2.0);
     const bool checked = is_checked != 0;
     const bool pressed = is_pressed != 0;
 
@@ -473,6 +543,125 @@ VN_EXPORT int32_t __stdcall vn_animation_compute_settings_switch_motion(
     out_motion->peak_time_ms = 75;
     out_motion->rebound_time_ms = 175;
     out_motion->duration_ms = 250;
+    return VN_OK;
+}
+
+VN_EXPORT int32_t __stdcall vn_animation_compute_nav_tab_motion(
+    double current_y,
+    double target_y,
+    double item_height,
+    uint8_t reduced_motion,
+    VnNavTabMotionOut* out_motion) noexcept
+{
+    if (!out_motion) return VN_ERR_INVALID_ARG;
+
+    const double safe_h = (std::isfinite(item_height) && item_height > 24.0) ? std::min(item_height, 1e6) : 24.0;
+    const double safe_target_y = (std::isfinite(target_y) && target_y > 0.0) ? std::min(target_y, 1e6) : 0.0;
+    const double safe_current_y = std::isfinite(current_y) ? std::clamp(current_y, -1e6, 1e6) : safe_target_y;
+    out_motion->target_y = safe_target_y;
+    out_motion->target_height = safe_h;
+
+    if (reduced_motion != 0)
+    {
+        out_motion->peak_scale_y = 1.0;
+        out_motion->dip_scale_x = 1.0;
+        out_motion->rebound_scale_y = 1.0;
+        out_motion->rebound_scale_x = 1.0;
+        out_motion->content_shift_x = 0.0;
+        out_motion->peak_time_ms = 0;
+        out_motion->rebound_time_ms = 0;
+        out_motion->duration_ms = 0;
+        return VN_OK;
+    }
+
+    const double dist = std::abs(safe_target_y - safe_current_y);
+    const double slots = std::clamp(dist / safe_h, 0.0, 8.0);
+
+    out_motion->peak_scale_y = 1.0 + std::clamp(0.16 + slots * 0.065, 0.16, 0.60);
+    out_motion->dip_scale_x = 1.0 - std::clamp(0.020 + slots * 0.007, 0.020, 0.060);
+    out_motion->rebound_scale_y = 1.0;
+    out_motion->rebound_scale_x = 1.0;
+    out_motion->content_shift_x = 2.5;
+    // Stretch in the direction of travel, then contract into the destination
+    // without a separate bounce after the background has arrived.
+    out_motion->duration_ms = 280 + static_cast<int32_t>(std::min(slots, 6.0) * 12.0);
+    out_motion->peak_time_ms = out_motion->duration_ms / 3;
+    out_motion->rebound_time_ms = out_motion->duration_ms * 4 / 5;
+    return VN_OK;
+}
+
+VN_EXPORT int32_t __stdcall vn_animation_compute_elastic_slider_overscroll(
+    double overflow_px,
+    double usable_width,
+    uint8_t reduced_motion,
+    double* out_scale_x,
+    double* out_scale_y) noexcept
+{
+    if (!out_scale_x || !out_scale_y) return VN_ERR_INVALID_ARG;
+    if (reduced_motion != 0 || !std::isfinite(overflow_px) || std::abs(overflow_px) < 0.5)
+    {
+        *out_scale_x = 1.0;
+        *out_scale_y = 1.0;
+        return VN_OK;
+    }
+
+    const double abs_over = std::min(std::abs(overflow_px), 1e6);
+    const double safe_usable = (std::isfinite(usable_width) && usable_width > 0.0) ? std::min(usable_width, 1e6) : 0.0;
+    const double max_over = std::max(40.0, safe_usable * 0.22);
+    const double entry = abs_over / max_over;
+    const double sigmoid = 2.0 * (1.0 / (1.0 + std::exp(-entry * 1.6)) - 0.5);
+
+    *out_scale_x = 1.0 + std::clamp(sigmoid * 0.048, 0.0, 0.055);
+    *out_scale_y = 1.0 - std::clamp(sigmoid * 0.075, 0.0, 0.085);
+    return VN_OK;
+}
+
+VN_EXPORT int32_t __stdcall vn_animation_compute_spotlight_quick_actions_motion(
+    uint8_t entering,
+    double viewport_width,
+    uint8_t reduced_motion,
+    VnQuickActionsSlideMotionOut* out_motion) noexcept
+{
+    if (!out_motion) return VN_ERR_INVALID_ARG;
+
+    if (reduced_motion != 0)
+    {
+        out_motion->results_from_x = 0.0;
+        out_motion->results_to_x = 0.0;
+        out_motion->actions_from_x = 0.0;
+        out_motion->actions_to_x = 0.0;
+        out_motion->item_slide_x = 0.0;
+        out_motion->exit_duration_ms = 0;
+        out_motion->enter_duration_ms = 0;
+        out_motion->stagger_step_ms = 0;
+        return VN_OK;
+    }
+
+    const double safe_w = (std::isfinite(viewport_width) && viewport_width > 120.0) ? std::min(viewport_width, 1e6) : 720.0;
+    const double travel = std::clamp(safe_w * 0.08, 42.0, 64.0);
+
+    if (entering != 0)
+    {
+        out_motion->results_from_x = 0.0;
+        out_motion->results_to_x = -travel;
+        out_motion->actions_from_x = travel;
+        out_motion->actions_to_x = 0.0;
+        out_motion->item_slide_x = 14.0;
+        out_motion->exit_duration_ms = 200;
+        out_motion->enter_duration_ms = 280;
+        out_motion->stagger_step_ms = 18;
+    }
+    else
+    {
+        out_motion->results_from_x = -travel;
+        out_motion->results_to_x = 0.0;
+        out_motion->actions_from_x = 0.0;
+        out_motion->actions_to_x = travel;
+        out_motion->item_slide_x = 0.0;
+        out_motion->exit_duration_ms = 190;
+        out_motion->enter_duration_ms = 270;
+        out_motion->stagger_step_ms = 0;
+    }
     return VN_OK;
 }
 

@@ -1,5 +1,7 @@
 using System.IO;
+using System.Text;
 using VNotch.Models;
+using VNotch.Services;
 using VNotch.Services.Clipboard;
 using VNotch.ViewModels;
 using Xunit;
@@ -71,7 +73,7 @@ public sealed class ClipboardSensitiveDataTests
     [InlineData("66ff0f75-4ccd-4414-bb16-65a8bd714442")]
     [InlineData("e60ccc4")]
     [InlineData("#FF0000")]
-    [InlineData("C:\\Users\\gauze\\Documents\\project.cs")]
+    [InlineData("C:\\Users\\alice\\Documents\\project.cs")]
     [InlineData("int count = list.Count;")]
     [InlineData("Xin chào bạn, hôm nay thế nào?")]
     public void LeavesOrdinaryTextVisible(string text) => Assert.False(ClipboardSensitiveData.IsSensitive(text));
@@ -157,7 +159,7 @@ public sealed class ClipboardSensitiveDataTests
                 Assert.Single(await store.SearchAsync("Test Editor", "All"));
             }
             string metadata = Path.Combine(root, "items", id.ToString("N"), "entry.json");
-            var old = System.Text.Json.JsonSerializer.Deserialize<ClipboardEntry>(await File.ReadAllTextAsync(metadata))!;
+            var old = ClipboardRecordTestReader.Read<ClipboardEntry>(root, metadata);
             await File.WriteAllTextAsync(metadata, System.Text.Json.JsonSerializer.Serialize(old with { MaskedPreview = "A00i-M00" }));
             await using (var reopened = new ClipboardHistoryStore(root))
             {
@@ -165,7 +167,7 @@ public sealed class ClipboardSensitiveDataTests
                 Assert.Empty(await reopened.SearchAsync("hidden-needle", "All"));
                 Assert.Equal(ClipboardSensitiveData.Mask, reopened.GetEntry(id)!.MaskedPreview);
             }
-            Assert.DoesNotContain("A00i-M00", await File.ReadAllTextAsync(metadata));
+            Assert.NotEqual("A00i-M00", ClipboardRecordTestReader.Read<ClipboardEntry>(root, metadata).MaskedPreview);
             // Current metadata allows startup without reopening content for classification.
             File.Delete(Path.Combine(root, "items", id.ToString("N"), "content.json"));
             await using var final = new ClipboardHistoryStore(root);
@@ -186,11 +188,11 @@ public sealed class ClipboardSensitiveDataTests
             var entry = (await store.ImportAsync(new ClipboardCapture { Text = "password: hidden-needle" })).Entry!;
             var card = new ClipboardCardViewModel(entry);
             string path = Path.Combine(root, "items", entry.Id.ToString("N"), "content.json");
-            string content = await File.ReadAllTextAsync(path);
+            byte[] content = await File.ReadAllBytesAsync(path);
             File.Delete(path);
             await Assert.ThrowsAsync<FileNotFoundException>(() => card.RevealAsync(store));
             Assert.False(card.IsRevealed);
-            await File.WriteAllTextAsync(path, content);
+            await File.WriteAllBytesAsync(path, content);
             await card.RevealAsync(store);
             Assert.True(card.IsRevealed);
             Assert.Equal("password: hidden-needle", card.Title);
@@ -266,6 +268,11 @@ public sealed class ClipboardSensitiveDataTests
             Assert.Equal(maskedWidth, overlay.ActualWidth, 1);
             card.ReleaseMaskedPreviewSize();
             Assert.True(double.IsNaN(card.MaskedPreviewWidth));
+            int redundantNotifications = 0;
+            card.PropertyChanged += (_, _) => redundantNotifications++;
+            card.ReleaseMaskedPreviewSize();
+            card.ReleaseMaskedPreviewSize();
+            Assert.Equal(0, redundantNotifications);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     });
@@ -297,8 +304,9 @@ public sealed class ClipboardSensitiveDataTests
             await store.ExpireSensitiveAsync(now.AddSeconds(61));
             Assert.NotNull(store.GetEntry(entry.Id));
             store.AutoDeleteSensitive = true;
-            await store.ExpireSensitiveAsync(now.AddSeconds(59));
+            await store.ExpireSensitiveAsync(now.AddSeconds(61));
             Assert.NotNull(store.GetEntry(entry.Id));
+            await store.UpdateAsync(entry.Id, pinned: false, archived: false);
             await store.ImportAsync(capture with { CopiedUtc = now.AddSeconds(30) });
             await store.ExpireSensitiveAsync(now.AddSeconds(60));
             Assert.NotNull(store.GetEntry(entry.Id));
@@ -310,7 +318,7 @@ public sealed class ClipboardSensitiveDataTests
     }
 
     [Fact]
-    public async Task LockedPersonalExpiresAfterRestart()
+    public async Task LockedPersonalIsPreservedAcrossSensitiveExpiryAfterRestart()
     {
         string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         using var pin = new System.Security.SecureString();
@@ -329,9 +337,10 @@ public sealed class ClipboardSensitiveDataTests
             await using var reopened = new ClipboardHistoryStore(root) { AutoDeleteSensitive = true };
             await reopened.InitializeAsync();
             await reopened.ExpireSensitiveAsync(now.AddSeconds(60));
-            Assert.False(Directory.Exists(Path.Combine(root, "personal", id.ToString("N"))));
+            Assert.True(Directory.Exists(Path.Combine(root, "personal", id.ToString("N"))));
+            Assert.False(File.Exists(Path.Combine(root, "sensitive-expiry", id.ToString("N"))));
             Assert.True(await reopened.UnlockPersonalAsync(pin));
-            Assert.Empty(reopened.Snapshot(personal: true));
+            Assert.Single(reopened.Snapshot(personal: true));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
@@ -355,7 +364,7 @@ public sealed class ClipboardSensitiveDataTests
                 Assert.True(rich.IsSensitive);
             }
             string metadata = Path.Combine(root, "items", id.ToString("N"), "entry.json");
-            var old = System.Text.Json.JsonSerializer.Deserialize<ClipboardEntry>(await File.ReadAllTextAsync(metadata))!;
+            var old = ClipboardRecordTestReader.Read<ClipboardEntry>(root, metadata);
             await File.WriteAllTextAsync(metadata, System.Text.Json.JsonSerializer.Serialize(old with { SensitivityVersion = 0, IsSensitive = false, Title = "old title", Preview = "old preview" }));
             await using var reopened = new ClipboardHistoryStore(root);
             await reopened.InitializeAsync();
@@ -366,7 +375,7 @@ public sealed class ClipboardSensitiveDataTests
     }
 
     [Fact]
-    public async Task MovingToPersonalKeepsExpiryAndOrdinaryItemsSurvive()
+    public async Task MovingToPersonalClearsExpiryMarkerAndPreservesVaultAndOrdinaryItems()
     {
         string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         using var pin = new System.Security.SecureString();
@@ -380,11 +389,42 @@ public sealed class ClipboardSensitiveDataTests
             var ordinary = (await store.ImportAsync(new ClipboardCapture { Text = "ordinary note", CopiedUtc = now })).Entry!;
             Assert.True(await store.UnlockPersonalAsync(pin, create: true));
             await store.MovePersonalAsync(secret.Id, true);
+            Assert.False(File.Exists(Path.Combine(root, "sensitive-expiry", secret.Id.ToString("N"))));
             await store.LockPersonalAsync();
             await store.ExpireSensitiveAsync(now.AddSeconds(60));
             Assert.NotNull(store.GetEntry(ordinary.Id));
-            Assert.False(Directory.Exists(Path.Combine(root, "personal", secret.Id.ToString("N"))));
+            Assert.True(Directory.Exists(Path.Combine(root, "personal", secret.Id.ToString("N"))));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void ScrubberRedactsAwsGitHubAndPrefixedSessionFields()
+    {
+        string awsKey = string.Concat("AKIA", "IOSFODNN7EXAMPLE");
+        string ghPat = string.Concat("ghp_", "1234567890abcdefghijklmnopqrstuvwxyz");
+        string jsonToken = "{ \"my_access_token\": \"secret123456\" }";
+
+        string scrubbedAws = SensitiveDataScrubber.Scrub(awsKey);
+        Assert.DoesNotContain("IOSFODNN7EXAMPLE", scrubbedAws);
+        Assert.Contains("[REDACTED]", scrubbedAws);
+
+        string scrubbedGh = SensitiveDataScrubber.Scrub(ghPat);
+        Assert.DoesNotContain("1234567890abcdefghijklmnopqrstuvwxyz", scrubbedGh);
+        Assert.Contains("[REDACTED]", scrubbedGh);
+
+        string scrubbedJson = SensitiveDataScrubber.Scrub(jsonToken);
+        Assert.DoesNotContain("secret123456", scrubbedJson);
+        Assert.Contains("[REDACTED]", scrubbedJson);
+    }
+
+    [Fact]
+    public void RecognizesLargeHexEncodedBearerTokenPayload()
+    {
+        string prefix = "Bearer abcdefghijklmnopqrstuvwxyz012345 ";
+        string payloadText = prefix + new string('x', 5000 - prefix.Length);
+        string hexPayload = Convert.ToHexString(Encoding.UTF8.GetBytes(payloadText));
+        Assert.Equal(10_000, hexPayload.Length);
+        Assert.True(ClipboardSensitiveData.IsSensitive(hexPayload));
     }
 }

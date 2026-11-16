@@ -17,6 +17,7 @@ namespace VNotch.Controllers;
 public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
 {
     private readonly Dispatcher _dispatcher;
+    private readonly Func<byte[], Task<BitmapSource>> _decodeOriginalImage;
     internal const int MaxPendingCaptures = 8;
     private readonly SemaphoreSlim _captureSlots = new(MaxPendingCaptures, MaxPendingCaptures);
     private readonly Channel<Task<ClipboardCapture>> _captures = Channel.CreateBounded<Task<ClipboardCapture>>(
@@ -49,6 +50,8 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
     public bool IsDragging { get; private set; }
     public IReadOnlyList<ClipboardEntry> DraggedEntries { get; private set; } = [];
     public const string EntryDragFormat = "VNotch.ClipboardEntries";
+    public const int MaxRichTextCaptureChars = 2 * 1024 * 1024;
+    public const int MaxTextCaptureChars = 10 * 1024 * 1024;
     public event Action<ClipboardCapture, long>? ApprovalRequired;
     public event Action<string>? StatusChanged;
     public event Action? DropImported;
@@ -57,10 +60,19 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
 
     private static uint GetClipboardSequenceNumber() => Win32Interop.GetClipboardSequenceNumber();
     private static IntPtr GetClipboardOwner() => Win32Interop.GetClipboardOwner();
+    private static bool IsPersonalCategory(string? category) =>
+        string.Equals(category, "Personal", StringComparison.OrdinalIgnoreCase);
 
     public ClipboardHistoryController(Dispatcher dispatcher, ClipboardHistoryStore? store = null)
+        : this(dispatcher, store, input => ClipboardOriginalImage.DecodeAsync(input))
+    {
+    }
+
+    internal ClipboardHistoryController(Dispatcher dispatcher, ClipboardHistoryStore? store,
+        Func<byte[], Task<BitmapSource>> decodeOriginalImage)
     {
         _dispatcher = dispatcher;
+        _decodeOriginalImage = decodeOriginalImage;
         Store = store ?? new ClipboardHistoryStore();
         try
         {
@@ -173,9 +185,6 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
                 {
                     var data = System.Windows.Clipboard.GetDataObject();
                     if (data == null || ShouldIgnoreClipboardData(data)) return;
-                    string text = (data.GetDataPresent(DataFormats.UnicodeText) ? data.GetData(DataFormats.UnicodeText) as string : null)
-                        ?? (data.GetDataPresent(DataFormats.Text) ? data.GetData(DataFormats.Text) as string : null)
-                        ?? "";
                     string[] paths = data.GetDataPresent(DataFormats.FileDrop)
                         ? data.GetData(DataFormats.FileDrop) as string[] ?? []
                         : [];
@@ -190,19 +199,33 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
                     // Filter the original payload type; disabled file/image captures must not
                     // fall through into an incidental text representation of the same copy.
                     if (paths.Length > 0 && !_captureFiles || image != null && !_captureImages) return;
-                    if (!_captureText) text = "";
+                    string text = _captureText
+                        ? (data.GetDataPresent(DataFormats.UnicodeText) ? data.GetData(DataFormats.UnicodeText) as string : null)
+                            ?? (data.GetDataPresent(DataFormats.Text) ? data.GetData(DataFormats.Text) as string : null)
+                            ?? ""
+                        : "";
+                    if (text.Length > MaxTextCaptureChars) { Report("clipboard.readError"); return; }
                     if (image != null)
                     {
                         if ((long)image.PixelWidth * image.PixelHeight > 32_000_000) { Report("clipboard.readError"); return; }
                         image = image.Clone();
                         image.Freeze();
                     }
+                    string html = "";
+                    string rtf = "";
+                    if (_captureText && text.Length <= MaxRichTextCaptureChars)
+                    {
+                        if (data.GetDataPresent(DataFormats.Html) && data.GetData(DataFormats.Html) is string rawHtml && rawHtml.Length <= MaxRichTextCaptureChars)
+                            html = rawHtml;
+                        if (data.GetDataPresent(DataFormats.Rtf) && data.GetData(DataFormats.Rtf) is string rawRtf && rawRtf.Length <= MaxRichTextCaptureChars)
+                            rtf = rawRtf;
+                    }
                     var source = ClipboardSource();
                     var capture = new ClipboardCapture
                     {
                         Text = text,
-                        Html = _captureText && data.GetDataPresent(DataFormats.Html) ? data.GetData(DataFormats.Html) as string ?? "" : "",
-                        Rtf = _captureText && data.GetDataPresent(DataFormats.Rtf) ? data.GetData(DataFormats.Rtf) as string ?? "" : "",
+                        Html = html,
+                        Rtf = rtf,
                         FilePaths = paths,
                         SourceApp = source.Name,
                         SourceExecutable = source.Executable
@@ -234,11 +257,12 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(image));
         encoder.Save(stream);
-        return capture with { ImagePng = stream.ToArray() };
+        return capture with { ImagePng = stream.ToArray(), ImagePixelFingerprint = ClipboardHistoryStore.FingerprintPixels(image) };
     });
 
     internal async Task ImportDropAsync(System.Windows.IDataObject data, string? category = null)
     {
+        if (IsPersonalCategory(category) && !Store.IsPersonalUnlocked) { Report("clipboard.saveError"); return; }
         try
         {
             var payload = ClipboardDropReader.Read(data);
@@ -250,10 +274,11 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
 
     internal async Task ImportDropPayloadAsync(ClipboardDropReader.Payload payload, string? category = null)
     {
+        if (IsPersonalCategory(category) && !Store.IsPersonalUnlocked) { Report("clipboard.saveError"); return; }
         try
         {
             var capture = await ClipboardDropReader.ResolveAsync(payload);
-            await ImportAsync(capture with { TargetCategory = category }, notifyDrop: true);
+            await ImportAsync(capture with { TargetCategory = IsPersonalCategory(category) ? "Personal" : category }, notifyDrop: true);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or System.Net.Http.HttpRequestException or OperationCanceledException or
             NotSupportedException or FormatException or ArgumentException or InvalidOperationException)
@@ -265,6 +290,16 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         // Keep this choice on the capture so approving a large drop retains
         // one card per file. Passive clipboard captures still represent one copy.
         if (notifyDrop && capture.FilePaths.Length > 1) capture = capture with { SeparateFiles = true };
+        if (IsPersonalCategory(capture.TargetCategory) && capture.TargetCategory != "Personal")
+            capture = capture with { TargetCategory = "Personal" };
+        if (capture.Html.Length > MaxRichTextCaptureChars || capture.Rtf.Length > MaxRichTextCaptureChars)
+        {
+            capture = capture with
+            {
+                Html = capture.Html.Length <= MaxRichTextCaptureChars ? capture.Html : "",
+                Rtf = capture.Rtf.Length <= MaxRichTextCaptureChars ? capture.Rtf : ""
+            };
+        }
         try
         {
             await Store.InitializeAsync();
@@ -317,12 +352,13 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
                 if (png == null) return;
                 try
                 {
-                    using var stream = new MemoryStream(png);
-                    var bitmap = new BitmapImage();
-                    bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
+                    var bitmap = await _decodeOriginalImage(png);
+                    var latest = Store.GetEntry(entry.Id) ?? throw new InvalidOperationException("Clipboard item is unavailable.");
+                    if (_disposed || (entry.IsPersonal || latest.IsPersonal) && !Store.IsPersonalUnlocked)
+                        throw new InvalidOperationException("Clipboard is unavailable or Personal is locked.");
                     data.SetImage(bitmap);
                 }
-                finally { if (entry.IsPersonal) System.Security.Cryptography.CryptographicOperations.ZeroMemory(png); }
+                finally { if (entry.IsPersonal || Store.GetEntry(entry.Id)?.IsPersonal != false) System.Security.Cryptography.CryptographicOperations.ZeroMemory(png); }
             }
             else
             {
@@ -353,7 +389,8 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
                 texts.Add(content.Text ?? string.Empty);
                 if (entries.Count == 1) singleText = content;
             }
-            personal |= Store.GetEntry(entry.Id)?.IsPersonal != false;
+            var latest = Store.GetEntry(entry.Id) ?? throw new KeyNotFoundException("Clipboard item is unavailable.");
+            personal |= latest.IsPersonal;
         }
         var data = new DataObject();
         if (paths.Count > 0) { var files = new StringCollection(); files.AddRange(paths.ToArray()); data.SetFileDropList(files); }
@@ -442,7 +479,7 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
 
     public async Task AssignCategoryAsync(ClipboardEntry entry, string category)
     {
-        if (category == "Personal") { await Store.MovePersonalAsync(entry.Id, true); return; }
+        if (IsPersonalCategory(category)) { await Store.MovePersonalAsync(entry.Id, true); return; }
         if (entry.IsPersonal) await Store.MovePersonalAsync(entry.Id, false);
         if (category == "Pin") await Store.UpdateAsync(entry.Id, pinned: true);
         else if (category == "Archive") await Store.UpdateAsync(entry.Id, archived: true);
@@ -459,7 +496,7 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
             await AssignCategoryAsync(entries[0], category);
             return;
         }
-        if (category == "Personal")
+        if (IsPersonalCategory(category))
         {
             for (int i = 0; i < entries.Count; i++)
                 await Store.MovePersonalAsync(entries[i].Id, true);

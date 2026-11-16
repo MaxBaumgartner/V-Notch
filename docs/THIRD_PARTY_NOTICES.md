@@ -38,15 +38,17 @@ is implied. Verify **each file** against its original source URL, creator, preci
 | LLamaSharp.Backend.Cpu / LLamaSharp.Backend.Vulkan.Windows 0.27.0 | MIT core; included native dependency notices in `Assets/Translation/Licenses/` | <https://github.com/SciSharp/LLamaSharp/tree/v0.27.0> |
 | Markdig 0.41.3 | BSD-2-Clause | <https://github.com/xoofx/markdig> |
 | Microsoft.Extensions.DependencyInjection 8.0.1 | MIT | <https://dot.net/> |
-| Microsoft.ML.OnnxRuntime 1.31.0 | MIT | <https://github.com/microsoft/onnxruntime> |
+| Microsoft.ML.OnnxRuntime.DirectML 1.24.4 | MIT | <https://github.com/microsoft/onnxruntime> |
+| Microsoft.AI.DirectML 1.15.4 | Microsoft Software License; bundled terms in `licenses/DirectML-1.15.4.txt` | <https://github.com/microsoft/DirectML> |
 | Microsoft.Web.WebView2 1.0.4078.44 | Microsoft Software License | <https://github.com/MicrosoftEdge/WebView2Feedback> |
-| System.Data.OleDb 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
 | Vortice.Direct3D9 3.8.3 | MIT | <https://github.com/amerkoleci/Vortice.Windows> |
 | Vortice.DXGI 3.8.3 | MIT | <https://github.com/amerkoleci/Vortice.Windows> |
 
 **Distribution requirements:** A source link and license label are not substitutes for including the applicable complete license/copyright texts and any mandatory NOTICE or attribution statements in each distribution where required. Audit direct **and transitive** dependencies and bundled native/runtime assets against the exact shipped binaries; classifications other than the specifically checked NotifyIcon package remain inherited from the supplied inventory and are **not independently verified**. Review Microsoft/WebView2 redistribution conditions. Keep corresponding permission records and an SBOM in release records.
 
 ## External APIs and retrieved content (not bundled open-source assets)
+
+[AMLL TTML DB](https://github.com/amll-dev/amll-ttml-db) supplies community TTML timing through GitHub raw files, looked up by Spotify track ID. Contributor-authored portions use [CC0 1.0](https://github.com/amll-dev/amll-ttml-db/blob/main/LICENSE); externally sourced data retains its original provider terms, as stated in the [upstream README](https://github.com/amll-dev/amll-ttml-db#共享协议). V-Notch retrieves individual files on demand and keeps parsed lyrics in memory; it does not bundle the database.
 
 Spotify Canvas, YouTube thumbnails/captions, album artwork, lyrics, Musixmatch, LRCLIB and weather content may be subject to separate provider terms, copyright, trademark, access and caching conditions. A notice, user consent or non-affiliation disclaimer does not authorize scraping, reuse, redistribution or access through unofficial credentials. Review each implementation against the provider's current conditions, and disable functionality that lacks a defensible authorization basis.
 

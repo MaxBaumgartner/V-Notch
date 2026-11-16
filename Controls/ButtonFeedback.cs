@@ -2,7 +2,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using static VNotch.Services.AnimationPrimitives;
+using VNotch.Services;
+using Path = System.Windows.Shapes.Path;
 
 namespace VNotch.Controls;
 
@@ -23,177 +24,84 @@ internal static class ButtonFeedback
 
     internal static void AnimateIconSwitch(Canvas fromIcon, Canvas toIcon, TimeSpan duration, EasingFunctionBase easing)
     {
+        if (ReferenceEquals(fromIcon, toIcon)) return;
         int fromVersion = NextTransitionVersion(fromIcon);
-        _ = NextTransitionVersion(toIcon);
-
+        int toVersion = NextTransitionVersion(toIcon);
         var fromTransform = fromIcon.RenderTransform as ScaleTransform ?? new ScaleTransform(1, 1);
-        fromIcon.RenderTransform = fromTransform;
-        fromTransform.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        fromTransform.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        fromIcon.BeginAnimation(UIElement.OpacityProperty, null);
-
         var toTransform = toIcon.RenderTransform as ScaleTransform ?? new ScaleTransform(1, 1);
+        fromIcon.RenderTransform = fromTransform;
         toIcon.RenderTransform = toTransform;
-        toTransform.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        toTransform.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        toIcon.BeginAnimation(UIElement.OpacityProperty, null);
-
-        fromIcon.Visibility = Visibility.Visible;
-        fromTransform.ScaleX = 1;
-        fromTransform.ScaleY = 1;
-        fromIcon.Opacity = 1;
-
+        bool entering = toIcon.Visibility != Visibility.Visible;
         toIcon.Visibility = Visibility.Visible;
-        toTransform.ScaleX = 0.3;
-        toTransform.ScaleY = 0.3;
-        toIcon.Opacity = 0;
-
-        var dur = new Duration(duration);
-        var scaleDown = new DoubleAnimation(1, 0.3, dur) { EasingFunction = easing };
-        var fadeOut = new DoubleAnimation(1, 0, dur) { EasingFunction = easing };
-        var scaleUp = new DoubleAnimation(0.3, 1, dur) { EasingFunction = easing };
-        var fadeIn = new DoubleAnimation(0, 1, dur) { EasingFunction = easing };
-
-        var capturedFromIcon = fromIcon;
-        var capturedFromTransform = fromTransform;
-
-        fadeOut.Completed += (s, e) =>
+        int leaving = 3, arriving = 3;
+        void Left()
         {
-            if (!IsTransitionVersionCurrent(capturedFromIcon, fromVersion)) return;
-
-            capturedFromTransform.ScaleX = 1;
-            capturedFromTransform.ScaleY = 1;
-            capturedFromIcon.Opacity = 1;
-
-            capturedFromIcon.Visibility = Visibility.Collapsed;
-            capturedFromTransform.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            capturedFromTransform.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-            capturedFromIcon.BeginAnimation(UIElement.OpacityProperty, null);
-        };
-
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(scaleDown, VNotch.Services.AnimationConfig.TargetFps);
-        fromTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scaleDown);
-        fromTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scaleDown);
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(fadeOut, VNotch.Services.AnimationConfig.TargetFps);
-        fromIcon.BeginAnimation(UIElement.OpacityProperty, fadeOut);
-
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(scaleUp, VNotch.Services.AnimationConfig.TargetFps);
-        toTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scaleUp);
-        toTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scaleUp);
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(fadeIn, VNotch.Services.AnimationConfig.TargetFps);
-        toIcon.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+            if (--leaving != 0 || !IsTransitionVersionCurrent(fromIcon, fromVersion)) return;
+            fromIcon.Visibility = Visibility.Collapsed;
+            Motion.Stop(fromTransform, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(fromTransform, ScaleTransform.ScaleYProperty, 1);
+            Motion.Stop(fromIcon, UIElement.OpacityProperty, 1);
+        }
+        void Arrived()
+        {
+            if (--arriving != 0 || !IsTransitionVersionCurrent(toIcon, toVersion)) return;
+            Motion.Stop(toTransform, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(toTransform, ScaleTransform.ScaleYProperty, 1);
+            Motion.Stop(toIcon, UIElement.OpacityProperty, 1);
+        }
+        Motion.To(fromTransform, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit, done: Left);
+        Motion.To(fromTransform, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit, done: Left);
+        Motion.To(fromIcon, UIElement.OpacityProperty, 0, Motion.Exit, done: Left);
+        Motion.To(toTransform, ScaleTransform.ScaleXProperty, 1, Motion.Press,
+            from: entering ? Motion.TileFromScale : null, done: Arrived);
+        Motion.To(toTransform, ScaleTransform.ScaleYProperty, 1, Motion.Press,
+            from: entering ? Motion.TileFromScale : null, done: Arrived);
+        Motion.To(toIcon, UIElement.OpacityProperty, 1, Motion.Press, from: entering ? 0 : null, done: Arrived);
     }
 
-    internal static void PlayButtonPressAnimation(Border button)
+    internal static void PlayButtonPressAnimation(Border button, double pressedScale = 0.82)
     {
         var transform = button.RenderTransform as ScaleTransform ?? new ScaleTransform(1, 1);
         button.RenderTransform = transform;
         button.RenderTransformOrigin = new Point(0.5, 0.5);
-
-        transform.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        transform.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-
-        var squish = MakeAnim(1d, 0.82d, _dur80, _easeQuadIn, null);
-
-        var bounce = new DoubleAnimation(0.82, 1.0, _dur250)
+        int version = NextTransitionVersion(button);
+        Motion.To(transform, ScaleTransform.ScaleYProperty, pressedScale, Motion.PressDown);
+        Motion.To(transform, ScaleTransform.ScaleXProperty, pressedScale, Motion.PressDown, done: () =>
         {
-            EasingFunction = _easeHapticBounce,
-            BeginTime = TimeSpan.Zero
-        };
-        Timeline.SetDesiredFrameRate(bounce, VNotch.Services.AnimationConfig.TargetFps);
-
-        squish.Completed += (s, e) =>
-        {
-            transform.BeginAnimation(ScaleTransform.ScaleXProperty, bounce);
-            transform.BeginAnimation(ScaleTransform.ScaleYProperty, bounce);
-        };
-
-        transform.BeginAnimation(ScaleTransform.ScaleXProperty, squish);
-        transform.BeginAnimation(ScaleTransform.ScaleYProperty, squish);
+            if (!IsTransitionVersionCurrent(button, version)) return;
+            Motion.To(transform, ScaleTransform.ScaleXProperty, 1, Motion.Press,
+                done: () => Motion.Stop(transform, ScaleTransform.ScaleXProperty, 1));
+            Motion.To(transform, ScaleTransform.ScaleYProperty, 1, Motion.Press,
+                done: () => Motion.Stop(transform, ScaleTransform.ScaleYProperty, 1));
+        });
     }
 
-    internal static void PlayNextSkipAnimation(System.Windows.Shapes.Path arrow0, System.Windows.Shapes.Path arrow1)
+    internal static void PlayNextSkipAnimation(Path arrow0, Path arrow1) => PlaySkipAnimation(arrow0, arrow1, 220);
+
+    internal static void PlayPrevSkipAnimation(Path arrow0, Path arrow2) => PlaySkipAnimation(arrow0, arrow2, -220);
+
+    private static void PlaySkipAnimation(Path incoming, Path outgoing, double distance)
     {
-        const double slideDistance = 220;
-        int version = NextTransitionVersion(arrow1);
-
-        var arrow1Transform = arrow1.RenderTransform as TranslateTransform ?? new TranslateTransform();
-        arrow1.RenderTransform = arrow1Transform;
-
-        var slideOut1 = new DoubleAnimation(0, slideDistance, _dur250) { EasingFunction = _easeQuadOut };
-        var fadeOut1 = new DoubleAnimation(1, 0, _dur250) { EasingFunction = _easeQuadOut };
-
-        var arrow0Transform = arrow0.RenderTransform as TranslateTransform ?? new TranslateTransform();
-        arrow0.RenderTransform = arrow0Transform;
-
-        var slideIn0 = new DoubleAnimation(-slideDistance, 0, _dur250) { EasingFunction = _easeQuadOut };
-        var fadeIn0 = new DoubleAnimation(0, 1, _dur250) { EasingFunction = _easeQuadOut };
-
-        fadeOut1.Completed += (s, e) =>
+        int version = NextTransitionVersion(outgoing);
+        var outgoingTransform = outgoing.RenderTransform as TranslateTransform ?? new TranslateTransform();
+        var incomingTransform = incoming.RenderTransform as TranslateTransform ?? new TranslateTransform();
+        outgoing.RenderTransform = outgoingTransform;
+        incoming.RenderTransform = incomingTransform;
+        bool entering = incoming.Opacity <= 0 && !incoming.HasAnimatedProperties;
+        int pending = 4;
+        void Finished()
         {
-            if (!IsTransitionVersionCurrent(arrow1, version)) return;
-
-            arrow1Transform.X = 0;
-            arrow1.Opacity = 1;
-            arrow0Transform.X = 0;
-            arrow0.Opacity = 0;
-
-            arrow1Transform.BeginAnimation(TranslateTransform.XProperty, null);
-            arrow1.BeginAnimation(UIElement.OpacityProperty, null);
-            arrow0Transform.BeginAnimation(TranslateTransform.XProperty, null);
-            arrow0.BeginAnimation(UIElement.OpacityProperty, null);
-        };
-
-        Timeline.SetDesiredFrameRate(slideOut1, VNotch.Services.AnimationConfig.TargetFps);
-        arrow1Transform.BeginAnimation(TranslateTransform.XProperty, slideOut1);
-        Timeline.SetDesiredFrameRate(fadeOut1, VNotch.Services.AnimationConfig.TargetFps);
-        arrow1.BeginAnimation(UIElement.OpacityProperty, fadeOut1);
-        Timeline.SetDesiredFrameRate(slideIn0, VNotch.Services.AnimationConfig.TargetFps);
-        arrow0Transform.BeginAnimation(TranslateTransform.XProperty, slideIn0);
-        Timeline.SetDesiredFrameRate(fadeIn0, VNotch.Services.AnimationConfig.TargetFps);
-        arrow0.BeginAnimation(UIElement.OpacityProperty, fadeIn0);
-    }
-
-    internal static void PlayPrevSkipAnimation(System.Windows.Shapes.Path arrow0, System.Windows.Shapes.Path arrow2)
-    {
-        const double slideDistance = 220;
-        int version = NextTransitionVersion(arrow2);
-
-        var arrow2Transform = arrow2.RenderTransform as TranslateTransform ?? new TranslateTransform();
-        arrow2.RenderTransform = arrow2Transform;
-
-        var slideOut2 = new DoubleAnimation(0, -slideDistance, _dur250) { EasingFunction = _easeQuadOut };
-        var fadeOut2 = new DoubleAnimation(1, 0, _dur250) { EasingFunction = _easeQuadOut };
-
-        var arrow0Transform = arrow0.RenderTransform as TranslateTransform ?? new TranslateTransform();
-        arrow0.RenderTransform = arrow0Transform;
-
-        var slideIn0 = new DoubleAnimation(slideDistance, 0, _dur250) { EasingFunction = _easeQuadOut };
-        var fadeIn0 = new DoubleAnimation(0, 1, _dur250) { EasingFunction = _easeQuadOut };
-
-        fadeOut2.Completed += (s, e) =>
-        {
-            if (!IsTransitionVersionCurrent(arrow2, version)) return;
-
-            arrow2Transform.X = 0;
-            arrow2.Opacity = 1;
-            arrow0Transform.X = 0;
-            arrow0.Opacity = 0;
-
-            arrow2Transform.BeginAnimation(TranslateTransform.XProperty, null);
-            arrow2.BeginAnimation(UIElement.OpacityProperty, null);
-            arrow0Transform.BeginAnimation(TranslateTransform.XProperty, null);
-            arrow0.BeginAnimation(UIElement.OpacityProperty, null);
-        };
-
-        Timeline.SetDesiredFrameRate(slideOut2, VNotch.Services.AnimationConfig.TargetFps);
-        arrow2Transform.BeginAnimation(TranslateTransform.XProperty, slideOut2);
-        Timeline.SetDesiredFrameRate(fadeOut2, VNotch.Services.AnimationConfig.TargetFps);
-        arrow2.BeginAnimation(UIElement.OpacityProperty, fadeOut2);
-        Timeline.SetDesiredFrameRate(slideIn0, VNotch.Services.AnimationConfig.TargetFps);
-        arrow0Transform.BeginAnimation(TranslateTransform.XProperty, slideIn0);
-        Timeline.SetDesiredFrameRate(fadeIn0, VNotch.Services.AnimationConfig.TargetFps);
-        arrow0.BeginAnimation(UIElement.OpacityProperty, fadeIn0);
+            if (--pending != 0 || !IsTransitionVersionCurrent(outgoing, version)) return;
+            // The arriving copy now covers the resting glyph, so exchanging them is invisible.
+            Motion.Stop(outgoingTransform, TranslateTransform.XProperty, 0);
+            Motion.Stop(incomingTransform, TranslateTransform.XProperty, 0);
+            Motion.Stop(outgoing, UIElement.OpacityProperty, 1);
+            Motion.Stop(incoming, UIElement.OpacityProperty, 0);
+        }
+        Motion.To(outgoingTransform, TranslateTransform.XProperty, distance, Motion.Exit, done: Finished);
+        Motion.To(outgoing, UIElement.OpacityProperty, 0, Motion.Exit, done: Finished);
+        Motion.To(incomingTransform, TranslateTransform.XProperty, 0, Motion.Press,
+            from: entering ? -distance : null, done: Finished);
+        Motion.To(incoming, UIElement.OpacityProperty, 1, Motion.Press, done: Finished);
     }
 }
-

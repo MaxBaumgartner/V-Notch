@@ -8,6 +8,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using VNotch.Services;
 using VNotch.Services.ControlCenter;
+using static VNotch.Services.AnimationPrimitives;
 
 namespace VNotch;
 
@@ -32,6 +33,7 @@ public partial class MainWindow
     private bool _micMutedWindows;
     private bool _micMutedShown;
     private bool _micMutedGlyphShown;
+    private int _micMutedGlyphToken;
     private bool _micMutedTabShown;
 
     private void InitializeMicMuted()
@@ -108,6 +110,7 @@ public partial class MainWindow
             return;
         }
         _micMutedShown = shown;
+        UpdateMicRestGlyph();
         RuntimeLog.Log("MIC-MUTED", $"Muted in a call: {shown} (call {_micInCall}, Windows {_micMutedWindows}, Discord {_discordVoice?.IsMuted == true})");
         // The dot gives way to the struck-out mic, or comes back.
         SyncPrivacyDotVisibilityForCurrentView();
@@ -121,52 +124,44 @@ public partial class MainWindow
         SetMicMutedTab(_micMutedShown && !notchShown);
     }
 
+    /// <summary>The call warning pops in once and fades smaller when the mic is back.</summary>
     private void SetMicMutedGlyph(bool show)
     {
         if (show == _micMutedGlyphShown) return;
         _micMutedGlyphShown = show;
-        MicMutedGlyph.BeginAnimation(OpacityProperty, null);
-        if (!show)
+        int token = ++_micMutedGlyphToken;
+        bool entering = MicMutedGlyph.Visibility != Visibility.Visible;
+        if (show)
         {
-            MicMutedGlyph.Visibility = Visibility.Collapsed;
-            return;
+            var dot = PrivacyIndicatorPanel.Margin;
+            MicMutedGlyph.Margin = new Thickness(0, Math.Max(0, dot.Top - 2), Math.Max(0, dot.Right - 2), 0);
+            MicMutedGlyph.Visibility = Visibility.Visible;
         }
-        // Sits where the dot does, a little bigger.
-        var dot = PrivacyIndicatorPanel.Margin;
-        MicMutedGlyph.Margin = new Thickness(0, Math.Max(0, dot.Top - 2), Math.Max(0, dot.Right - 2), 0);
-        MicMutedGlyph.Visibility = Visibility.Visible;
-        MicMutedGlyph.Opacity = 1;
-        if (AnimationConfig.ReduceMotion) return;
-        // One pop to catch the eye, then still.
-        var pop = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(320) };
-        pop.KeyFrames.Add(new EasingDoubleKeyFrame(0.4, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        pop.KeyFrames.Add(new EasingDoubleKeyFrame(1.18, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(170)), new QuadraticEase { EasingMode = EasingMode.EaseOut }));
-        pop.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(320)), new SineEase { EasingMode = EasingMode.EaseInOut }));
-        Timeline.SetDesiredFrameRate(pop, AnimationConfig.TargetFps);
-        MicMutedGlyphScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-        MicMutedGlyphScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+        Motion.To(MicMutedGlyphScale, ScaleTransform.ScaleXProperty, show ? 1 : Motion.ExitToScale,
+            show ? Motion.TileScale : Motion.Exit, from: show && entering ? Motion.TileFromScale : null);
+        Motion.To(MicMutedGlyphScale, ScaleTransform.ScaleYProperty, show ? 1 : Motion.ExitToScale,
+            show ? Motion.TileScale : Motion.Exit, from: show && entering ? Motion.TileFromScale : null);
+        Motion.To(MicMutedGlyph, OpacityProperty, show ? 1 : 0, show ? Motion.Tile : Motion.Exit,
+            from: show && entering ? 0 : null, done: () =>
+            {
+                if (token != _micMutedGlyphToken || _micMutedGlyphShown) return;
+                Motion.Stop(MicMutedGlyphScale, ScaleTransform.ScaleXProperty);
+                Motion.Stop(MicMutedGlyphScale, ScaleTransform.ScaleYProperty);
+                MicMutedGlyph.Visibility = Visibility.Collapsed;
+            });
     }
 
     private void SetMicMutedTab(bool show)
     {
         if (show == _micMutedTabShown) return;
         _micMutedTabShown = show;
-        MicMutedTabSlide.BeginAnimation(TranslateTransform.YProperty, null);
+        bool entering = MicMutedTab.Visibility != Visibility.Visible;
         if (show) MicMutedTab.Visibility = Visibility.Visible;
-        if (AnimationConfig.ReduceMotion)
-        {
-            MicMutedTab.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            return;
-        }
-        // Drops in from the top edge, and goes back up quicker; nothing runs while it shows.
-        var slide = new DoubleAnimation(show ? -22 : 0, show ? 0 : -22,
-            new Duration(TimeSpan.FromMilliseconds(show ? 260 : 180)))
-        {
-            EasingFunction = show ? new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut } : new QuadraticEase { EasingMode = EasingMode.EaseIn }
-        };
-        Timeline.SetDesiredFrameRate(slide, AnimationConfig.TargetFps);
-        if (!show) slide.Completed += (_, _) => { if (!_micMutedTabShown) MicMutedTab.Visibility = Visibility.Collapsed; };
-        MicMutedTabSlide.BeginAnimation(TranslateTransform.YProperty, slide);
+        Motion.To(MicMutedTabSlide, TranslateTransform.YProperty, show ? 0 : -22,
+            show ? Motion.Pop : Motion.PopBack, from: show && entering ? -22 : null, done: () =>
+            {
+                if (!_micMutedTabShown) MicMutedTab.Visibility = Visibility.Collapsed;
+            });
     }
 
     #endregion

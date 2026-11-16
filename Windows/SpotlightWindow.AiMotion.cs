@@ -15,6 +15,7 @@ public partial class SpotlightWindow
 {
     private bool _aiActivityAnimating;
     private Border? _aiThinkingCard;
+    private LinearGradientBrush? _aiThinkingShimmer;
 
     private RichTextBox? AddAiMessage(SpotlightAiMessage message, bool animate)
     {
@@ -143,16 +144,11 @@ public partial class SpotlightWindow
                     FontWeight = FontWeights.Bold,
                     Foreground = UiPalette.PrimaryBrush
                 };
-                if (!AnimationConfig.ReduceMotion)
-                {
-                    var pop = new DoubleAnimation(1.3, 1.0, TimeSpan.FromMilliseconds(180))
-                    {
-                        EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut }
-                    };
-                    msgCopyBtn.RenderTransform = new ScaleTransform();
-                    msgCopyBtn.RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-                    msgCopyBtn.RenderTransform.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
-                }
+                // The check mark hops in on Press.
+                var pop = new ScaleTransform();
+                msgCopyBtn.RenderTransform = pop;
+                Motion.To(pop, ScaleTransform.ScaleXProperty, 1, Motion.Press, from: 1.3);
+                Motion.To(pop, ScaleTransform.ScaleYProperty, 1, Motion.Press, from: 1.3);
                 await Task.Delay(1800, CancellationToken.None);
                 msgCopyBtn.Content = copyPath;
             }
@@ -198,6 +194,7 @@ public partial class SpotlightWindow
         shimmerBrush.GradientStops.Add(stop0);
         shimmerBrush.GradientStops.Add(stop1);
         shimmerBrush.GradientStops.Add(stop2);
+        _aiThinkingShimmer = shimmerBrush;
 
         var sparkText = new TextBlock
         {
@@ -252,6 +249,12 @@ public partial class SpotlightWindow
 
     private void HideAiThinking()
     {
+        if (_aiThinkingShimmer != null)
+        {
+            foreach (var stop in _aiThinkingShimmer.GradientStops)
+                stop.BeginAnimation(GradientStop.OffsetProperty, null);
+            _aiThinkingShimmer = null;
+        }
         if (_aiThinkingCard == null) return;
         AiTranscript.Children.Remove(_aiThinkingCard);
         _aiThinkingCard = null;
@@ -304,82 +307,52 @@ public partial class SpotlightWindow
 
     private static void AnimateAiFade(FrameworkElement element)
     {
-        element.BeginAnimation(OpacityProperty, null);
-        element.Opacity = 1;
         element.RenderTransform = Transform.Identity;
-        if (AnimationConfig.ReduceMotion) return;
-
-        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(240))
-        { FillBehavior = FillBehavior.Stop };
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        element.BeginAnimation(OpacityProperty, fade);
+        // A fade still on its way continues from where it is; a finished one starts again from dark.
+        bool interrupted = Motion.IsRunning(element, OpacityProperty);
+        Motion.To(element, OpacityProperty, 1, Motion.Tile, from: interrupted ? null : 0);
     }
 
     private static void AnimateAiPageReveal(FrameworkElement element)
     {
-        // A stopped FillBehavior.Stop clock can remain attached after completion.
-        // Only continue an in-flight fade; completed reveals must start anew.
-        bool interrupted = element.HasAnimatedProperties && element.Opacity < 1;
-        double opacity = interrupted ? element.Opacity : 0;
-        var previous = element.RenderTransform as TransformGroup;
-        var oldScale = previous?.Children.OfType<ScaleTransform>().FirstOrDefault();
-        var oldTranslate = previous?.Children.OfType<TranslateTransform>().FirstOrDefault();
-        double fromScale = interrupted && oldScale != null ? oldScale.ScaleY : 0.985;
-        double fromY = interrupted && oldTranslate != null ? oldTranslate.Y : 4;
-
-        element.BeginAnimation(OpacityProperty, null);
-        element.Opacity = 1;
-        var scale = new ScaleTransform(1, 1);
-        var translate = new TranslateTransform();
-        var transforms = new TransformGroup();
-        transforms.Children.Add(scale);
-        transforms.Children.Add(translate);
+        // Only a reveal still on its way continues (with its speed); a finished one starts anew. A clock that
+        // was left attached after it ended does not count as moving.
+        bool interrupted = Motion.IsRunning(element, OpacityProperty);
+        var group = element.RenderTransform as TransformGroup;
+        var scale = group?.Children.OfType<ScaleTransform>().FirstOrDefault();
+        var translate = group?.Children.OfType<TranslateTransform>().FirstOrDefault();
+        if (group == null || group.IsFrozen || scale == null || translate == null)
+        {
+            interrupted = false;
+            scale = new ScaleTransform(1, 1);
+            translate = new TranslateTransform();
+            group = new TransformGroup();
+            group.Children.Add(scale);
+            group.Children.Add(translate);
+            element.RenderTransform = group;
+        }
         element.RenderTransformOrigin = new Point(0.5, 0);
-        element.RenderTransform = transforms;
 
-        var duration = TimeSpan.FromMilliseconds(AnimationConfig.ReduceMotion ? 160 : 280);
-        var ease = new CubicBezierEase(0.23, 1, 0.32, 1) { EasingMode = EasingMode.EaseIn };
-        var fade = new DoubleAnimation(opacity, 1, duration) { FillBehavior = FillBehavior.Stop };
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        element.BeginAnimation(OpacityProperty, fade);
-        if (AnimationConfig.ReduceMotion) return;
-
-        var morph = new DoubleAnimation(fromScale, 1, duration)
-        { EasingFunction = ease, FillBehavior = FillBehavior.Stop };
-        var slide = new DoubleAnimation(fromY, 0, duration)
-        { EasingFunction = ease, FillBehavior = FillBehavior.Stop };
-        Timeline.SetDesiredFrameRate(morph, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(slide, AnimationConfig.TargetFps);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, morph);
-        translate.BeginAnimation(TranslateTransform.YProperty, slide);
+        Motion.To(element, OpacityProperty, 1, Motion.Tile, from: interrupted ? null : 0);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: interrupted ? null : 0.985);
+        Motion.To(translate, TranslateTransform.YProperty, 0, Motion.Tile, from: interrupted ? null : 4);
     }
 
+    /// <summary>A card or panel arriving: it drifts up by at most <paramref name="distance"/> and brightens, on Tile.</summary>
+    /// <param name="milliseconds">Kept for the callers' sense of scale; the spring sets the actual timing.</param>
     private static void AnimateAiArrival(FrameworkElement element, double distance, int milliseconds)
     {
-        // A stopped FillBehavior.Stop clock can remain attached after completion.
-        // Only continue an in-flight fade; completed reveals must start anew.
-        bool interrupted = element.HasAnimatedProperties && element.Opacity < 1;
-        double opacity = interrupted ? element.Opacity : 0.65;
-        var translate = element.RenderTransform as TranslateTransform;
-        double from = interrupted && translate != null ? translate.Y : Math.Min(distance, 6);
-        element.BeginAnimation(OpacityProperty, null);
-        element.Opacity = 1;
-        translate ??= new TranslateTransform();
-        element.RenderTransform = translate;
-        translate.BeginAnimation(TranslateTransform.YProperty, null);
-        translate.Y = 0;
-        if (AnimationConfig.ReduceMotion) return;
+        _ = milliseconds;
+        bool interrupted = Motion.IsRunning(element, OpacityProperty);
+        if (element.RenderTransform is not TranslateTransform translate || translate.IsFrozen)
+        {
+            interrupted = false;
+            translate = new TranslateTransform();
+            element.RenderTransform = translate;
+        }
 
-        var ease = new CubicBezierEase(0.23, 1, 0.32, 1) { EasingMode = EasingMode.EaseIn };
-        var duration = TimeSpan.FromMilliseconds(Math.Min(milliseconds, 280));
-        var movement = new DoubleAnimation(from, 0, duration)
-        { EasingFunction = ease, FillBehavior = FillBehavior.Stop };
-        var fade = new DoubleAnimation(opacity, 1, duration)
-        { EasingFunction = ease, FillBehavior = FillBehavior.Stop };
-        Timeline.SetDesiredFrameRate(movement, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        translate.BeginAnimation(TranslateTransform.YProperty, movement);
-        element.BeginAnimation(OpacityProperty, fade);
+        Motion.To(element, OpacityProperty, 1, Motion.Tile, from: interrupted ? null : 0.65);
+        Motion.To(translate, TranslateTransform.YProperty, 0, Motion.Tile, from: interrupted ? null : Math.Min(distance, 6));
     }
 
     private void UpdateAiActivity()
@@ -446,12 +419,7 @@ public partial class SpotlightWindow
         if (active)
         {
             AiGlowBorder.Visibility = Visibility.Visible;
-            var fadeIn = new DoubleAnimation(AiGlowBorder.Opacity, 0.5, TimeSpan.FromMilliseconds(380))
-            {
-                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseOut }
-            };
-            Timeline.SetDesiredFrameRate(fadeIn, AnimationConfig.TargetFps);
-            AiGlowBorder.BeginAnimation(OpacityProperty, fadeIn);
+            Motion.To(AiGlowBorder, OpacityProperty, 0.5, Motion.Tile);
 
             // Gentle breathing glow on shadow effect
             var breathe = new DoubleAnimation(12, 22, TimeSpan.FromMilliseconds(1800))
@@ -465,20 +433,13 @@ public partial class SpotlightWindow
         }
         else
         {
-            var fadeOut = new DoubleAnimation(AiGlowBorder.Opacity, 0, TimeSpan.FromMilliseconds(220))
-            {
-                EasingFunction = new QuarticEase { EasingMode = EasingMode.EaseIn }
-            };
-            Timeline.SetDesiredFrameRate(fadeOut, AnimationConfig.TargetFps);
-            fadeOut.Completed += (_, _) =>
+            Motion.To(AiGlowBorder, OpacityProperty, 0, Motion.Exit, done: () =>
             {
                 if (version != _aiGlowVersion || _aiMode) return;
-                AiGlowBorder.BeginAnimation(OpacityProperty, null);
-                AiGlowBorder.Opacity = 0;
+                Motion.Stop(AiGlowBorder, OpacityProperty, 0);
                 AiGlowBorder.Visibility = Visibility.Collapsed;
                 AiGlowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
-            };
-            AiGlowBorder.BeginAnimation(OpacityProperty, fadeOut);
+            });
         }
     }
 

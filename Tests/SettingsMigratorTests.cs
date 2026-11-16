@@ -8,6 +8,29 @@ namespace VNotch.Tests;
 public class SettingsMigratorTests
 {
     [Fact]
+    public void NewBannerSettingsDefaultOffWithoutASchemaBump()
+    {
+        var (settings, _) = SettingsMigrator.Migrate($$"""{ "SettingsVersion": {{SettingsMigrator.CurrentVersion}} }""");
+        Assert.False(settings.HideWindowsBanners);
+        Assert.Empty(settings.BannerRestore);
+    }
+
+    [Fact]
+    public void BannerRestoreRoundTripsAndClonesIndependently()
+    {
+        var original = new NotchSettings { HideWindowsBanners = true };
+        original.BannerRestore["Test.App"] = 1;
+        original.BannerRestore["Missing.App"] = null;
+        var restored = JsonSerializer.Deserialize<NotchSettings>(JsonSerializer.Serialize(original))!;
+        Assert.True(original.ValueEquals(restored));
+        var clone = restored.Clone();
+        Assert.True(restored.ValueEquals(clone));
+        clone.BannerRestore.Clear();
+        Assert.Equal(2, restored.BannerRestore.Count);
+        Assert.False(restored.ValueEquals(clone));
+    }
+
+    [Fact]
     public void CanvasIsOffOnNewInstall()
     {
         var settings = new NotchSettings();

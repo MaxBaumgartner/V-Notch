@@ -2,7 +2,10 @@ using System;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Controls;
+using System.Windows.Media.Imaging;
 using VNotch.Controllers;
+using VNotch.Services;
 using static VNotch.Services.AnimationPrimitives;
 
 namespace VNotch;
@@ -20,15 +23,72 @@ public partial class MainWindow
         foreach (var element in new UIElement[] { MusicViz, CompactThumbnailBorder,
             MusicCompactContent, CollapsedContent,
             ClipboardCheckIcon, ClipboardCopiedText, VolumeIndicatorContainer,
-            BluetoothNotification, BluetoothDisconnectNotification, ChargingNotification, ClaudeNotification })
+            BluetoothNotification, BluetoothDisconnectNotification, ChargingNotification, ClaudeNotification, AppNotificationPill })
             element.IsVisibleChanged += (_, _) => EnforceCompactPresentationOwner();
     }
 
-    private static void HideCompactSurface(UIElement element)
+    private void HideCompactSurface(UIElement element)
     {
-        element.BeginAnimation(OpacityProperty, null);
-        element.Opacity = 0;
-        element.Visibility = Visibility.Collapsed;
+        if (element.Visibility != Visibility.Visible) return;
+        if (!element.IsVisible || !AmbientAnimationsAllowed)
+        {
+            Motion.Stop(element, OpacityProperty, 0);
+            element.Visibility = Visibility.Collapsed;
+            return;
+        }
+        Motion.To(element, OpacityProperty, 0, Motion.Exit,
+            done: () => { if (element.Opacity < .01) element.Visibility = Visibility.Collapsed; });
+    }
+
+    private void KeepCompactDeparture(UIElement surface)
+    {
+        if (!AmbientAnimationsAllowed || !surface.IsVisible || surface.Opacity <= 0 ||
+            surface.RenderSize.Width <= 0 || surface.RenderSize.Height <= 0) return;
+        // Freeze the outgoing face before its owner clears state; it can leave without keeping any live loops alive.
+        var size = surface.RenderSize;
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(size.Width * 2),
+            (int)Math.Ceiling(size.Height * 2), 192, 192, PixelFormats.Pbgra32);
+        // Render in local coordinates: a child's layout offset otherwise cuts its glyph out of the bitmap.
+        var drawing = new DrawingVisual();
+        using (var dc = drawing.RenderOpen())
+            dc.DrawRectangle(new VisualBrush(surface) { Stretch = Stretch.Fill }, null, new Rect(size));
+        bitmap.Render(drawing);
+        bitmap.Freeze();
+        Point position = surface.TranslatePoint(new Point(), NotchLiveContent);
+        var scale = new ScaleTransform(1, 1);
+        var slide = new TranslateTransform();
+        var transforms = new TransformGroup();
+        transforms.Children.Add(scale);
+        transforms.Children.Add(slide);
+        var face = new Image { Source = bitmap, Width = size.Width, Height = size.Height,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(position.X, position.Y, 0, 0), IsHitTestVisible = false,
+            RenderTransformOrigin = new Point(.5, .5), RenderTransform = transforms };
+        Panel.SetZIndex(face, 100);
+        NotchLiveContent.Children.Add(face);
+        Motion.To(scale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(slide, TranslateTransform.YProperty, -4, Motion.Exit);
+        Motion.To(face, OpacityProperty, 0, Motion.Exit, done: () => NotchLiveContent.Children.Remove(face));
+    }
+
+    private void KeepCompactSlotDeparture(CompactPillSlot slot)
+    {
+        switch (slot)
+        {
+            case CompactPillSlot.Clipboard:
+                KeepCompactDeparture(ClipboardCheckIcon);
+                KeepCompactDeparture(ClipboardCopiedText);
+                break;
+            case CompactPillSlot.Volume: KeepCompactDeparture(VolumeIndicatorContainer); break;
+            case CompactPillSlot.Bluetooth:
+                KeepCompactDeparture(BluetoothNotification);
+                KeepCompactDeparture(BluetoothDisconnectNotification);
+                break;
+            case CompactPillSlot.Charging: KeepCompactDeparture(ChargingNotification); break;
+            case CompactPillSlot.Claude: KeepCompactDeparture(ClaudeNotification); break;
+            case CompactPillSlot.AppNotification: KeepCompactDeparture(AppNotificationPill); break;
+        }
     }
 
     private void EnforceCompactPresentationOwner()
@@ -38,7 +98,7 @@ public partial class MainWindow
         try
         {
             var owner = _compactPillArbiter.ActiveSlot;
-            if (owner is CompactPillSlot.Bluetooth or CompactPillSlot.Charging or CompactPillSlot.Greeting or CompactPillSlot.Claude)
+            if (owner is CompactPillSlot.Bluetooth or CompactPillSlot.Charging or CompactPillSlot.Greeting or CompactPillSlot.Claude or CompactPillSlot.AppNotification)
             {
                 HideCompactSurface(MusicCompactContent);
                 HideCompactSurface(CollapsedContent);
@@ -63,6 +123,7 @@ public partial class MainWindow
             }
             if (owner != CompactPillSlot.Charging) HideCompactSurface(ChargingNotification);
             if (owner != CompactPillSlot.Claude) HideCompactSurface(ClaudeNotification);
+            if (owner != CompactPillSlot.AppNotification) HideCompactSurface(AppNotificationPill);
         }
         finally { _enforcingCompactPresentation = false; }
     }
@@ -73,19 +134,17 @@ public partial class MainWindow
             !_compactPillArbiter.CanRestoreMedia(_compactPillArbiter.Revision)) return;
         EnforceCompactPresentationOwner();
         AnimateCompactWidth(_collapsedWidth, _dur350, _easeExpOut6, 0);
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        NotchBorder.Height = _collapsedHeight;
+        Motion.To(NotchBorder, HeightProperty, _collapsedHeight, Motion.PopBack);
         CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
-        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        CompactThumbnailScale.ScaleX = CompactThumbnailScale.ScaleY = 1.0;
+        Motion.To(CompactThumbnailScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale);
+        Motion.To(CompactThumbnailScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale);
         if (MusicCompactContentBlur != null)
         {
             MusicCompactContentBlur.BeginAnimation(System.Windows.Media.Effects.BlurEffect.RadiusProperty, null);
             MusicCompactContentBlur.Radius = 0;
         }
-        CompactThumbnailBorder.Opacity = 1;
         CompactThumbnailBorder.Visibility = Visibility.Visible;
+        Motion.To(CompactThumbnailBorder, OpacityProperty, 1, Motion.Tile);
         ShowMusicVisualizer();
     }
 
@@ -93,6 +152,13 @@ public partial class MainWindow
     {
         WakeFromIdle();
         EnsureCompactPresentationGuard();
+        if (_isAppNotificationBannerVisible)
+        {
+            token = 0;
+            return false;
+        }
+        // A finished Claude turn holds the pill for good, so any other alert may pass it; it returns afterwards.
+        if (slot != CompactPillSlot.Claude && IsClaudeDonePillShown) StepClaudeDonePillAside();
 
         var result = _compactPillArbiter.TryAcquire(slot);
         token = result.Token;
@@ -102,15 +168,18 @@ public partial class MainWindow
         }
 
         if (result.Preempted != CompactPillSlot.None)
-        {
             CancelCompactSlotImmediate(result.Preempted);
-        }
         EnforceCompactPresentationOwner();
         return true;
     }
 
     private void CancelCompactSlotImmediate(CompactPillSlot slot)
     {
+        KeepCompactSlotDeparture(slot);
+        double width = double.IsFinite(NotchBorder.Width) ? NotchBorder.Width : _collapsedWidth;
+        double height = double.IsFinite(NotchBorder.Height) ? NotchBorder.Height : _collapsedHeight;
+        double widthSpeed = Motion.VelocityOf(NotchBorder, WidthProperty);
+        double heightSpeed = Motion.VelocityOf(NotchBorder, HeightProperty);
         switch (slot)
         {
             case CompactPillSlot.Clipboard:
@@ -130,7 +199,13 @@ public partial class MainWindow
             case CompactPillSlot.Claude:
                 CancelClaudeNotificationImmediate();
                 break;
+            case CompactPillSlot.AppNotification:
+                CancelAppPillImmediate();
+                break;
         }
+        // Cancellation clears the old owner's state; the next owner inherits its rendered shell and momentum.
+        Motion.To(NotchBorder, WidthProperty, width, Motion.Pop, from: width, velocity: widthSpeed);
+        Motion.To(NotchBorder, HeightProperty, height, Motion.Pop, from: height, velocity: heightSpeed);
     }
 
     private void AnimateCompactWidth(double targetWidth, TimeSpan duration, IEasingFunction ease, int token)
@@ -140,24 +215,10 @@ public partial class MainWindow
     {
         int version = ++_compactWidthAnimationVersion;
         long revision = _compactPillArbiter.Revision;
-        double fromWidth = NotchBorder.ActualWidth;
-        if (double.IsNaN(fromWidth) || double.IsInfinity(fromWidth) || fromWidth <= 0)
-        {
-            fromWidth = _collapsedWidth;
-        }
-
-        double previousBaseWidth = (double)NotchBorder.GetAnimationBaseValue(WidthProperty);
-
-        var anim = new DoubleAnimation
-        {
-            From = fromWidth,
-            To = targetWidth,
-            Duration = duration,
-            EasingFunction = ease
-        };
-        Timeline.SetDesiredFrameRate(anim, VNotch.Services.AnimationConfig.TargetFps);
-
-        anim.Completed += (_, _) =>
+        bool returningToRest = Math.Abs(targetWidth - _collapsedWidth) < 0.5;
+        if (!double.IsFinite(NotchBorder.Width))
+            Motion.Stop(NotchBorder, WidthProperty, NotchBorder.ActualWidth > 0 ? NotchBorder.ActualWidth : _collapsedWidth);
+        Motion.To(NotchBorder, WidthProperty, targetWidth, returningToRest ? Motion.PopBack : Motion.Pop, done: () =>
         {
             if (version != _compactWidthAnimationVersion) return;
             // A pill's width belongs to the closed notch. Once the notch is open (a click right as the pill
@@ -167,20 +228,12 @@ public partial class MainWindow
 
             // Allow dismiss animations to finish post token release, but prevent
             // expansions from committing if preempted by another notification.
-            bool returningToRest = Math.Abs(targetWidth - _collapsedWidth) < 0.5;
             bool canCommitTarget = token == 0
                 || _compactPillArbiter.IsTokenCurrent(token)
                 || (returningToRest && _compactPillArbiter.CanRestoreMedia(revision + 1));
-            double finalWidth = canCommitTarget ? targetWidth : previousBaseWidth;
-
-            // Set the base while HoldEnd still owns the rendered value, then
-            // remove the clock. Clearing first exposes the old base for a frame.
-            NotchBorder.Width = finalWidth;
-            NotchBorder.BeginAnimation(WidthProperty, null);
-        };
-
-        NotchBorder.BeginAnimation(WidthProperty, anim, HandoffBehavior.SnapshotAndReplace);
-        BeginGlassHoverMotion(anim);
+            if (canCommitTarget && Math.Abs(NotchBorder.Width - targetWidth) < .5)
+                Motion.Stop(NotchBorder, WidthProperty, targetWidth);
+        });
     }
 
     private bool IsCompactSlotStale(int token) => !_compactPillArbiter.IsTokenCurrent(token);

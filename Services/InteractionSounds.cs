@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -90,15 +91,34 @@ internal sealed partial class InteractionSoundPlayer : IDisposable
             return;
         }
 
-        if (vn_interaction_play((int)cue, variant, Volume, burstCount) == 0)
+        // Off the UI thread: waveOut calls can block (device busy or just switched), and a click must never wait
+        // for its sound. The native side serializes playback itself.
+        float volume = Volume;
+        ThreadPool.UnsafeQueueUserWorkItem(_ =>
         {
-            _reportedPlaybackFailure = false;
-            return;
-        }
-
-        // Feedback must never interrupt the user's action if audio is unavailable.
-        ReportFailure(new InvalidOperationException("Native interaction sound playback failed."));
+            if (vn_interaction_play((int)cue, variant, volume, burstCount) == 0)
+            {
+                _reportedPlaybackFailure = false;
+                return;
+            }
+            // Feedback must never interrupt the user's action if audio is unavailable.
+            ReportFailure(new InvalidOperationException("Native interaction sound playback failed."));
+        }, null);
     }
+
+    /// <summary>
+    /// The first sound used to build all 60 waveforms and open the audio device on the UI thread, right in the
+    /// first click on the notch: the first open after start stalled for it. A silent play in the background does
+    /// both ahead of time.
+    /// </summary>
+    internal void Warm()
+    {
+        if (_playOverride != null || _warmed) return;
+        _warmed = true;
+        ThreadPool.UnsafeQueueUserWorkItem(_ => vn_interaction_play((int)InteractionCue.Click, 0, 0f, 0), null);
+    }
+
+    private bool _warmed;
 
     private void ReportFailure(Exception ex)
     {
@@ -152,6 +172,7 @@ internal static partial class InteractionSounds
         Player.Enabled = enabled;
         Player.Volume = (float)volume;
         if (!enabled) Player.Dispose();
+        else if (volume > 0) Player.Warm();
     }
 
     internal static void Shutdown() { Player.Enabled = false; Player.Dispose(); }

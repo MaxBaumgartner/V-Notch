@@ -24,6 +24,7 @@
         RenderOptions.EdgeMode="Unspecified"
         TextElement.FontFamily="{StaticResource SFProText}">
 
+    <!-- Grayscale filtering softens glyph edges on transparent surfaces. -->
     <Window.Resources>
 
         <!-- A microphone struck through (24×24, drawn as strokes). -->
@@ -101,8 +102,8 @@
             <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
             <Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
             <Setter Property="TextOptions.TextHintingMode" Value="Animated"/>
-            <Setter Property="UseLayoutRounding" Value="True"/>
-            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="UseLayoutRounding" Value="False"/>
+            <Setter Property="SnapsToDevicePixels" Value="False"/>
         </Style>
 
         <Style x:Key="SubtitleText" TargetType="TextBlock">
@@ -113,8 +114,8 @@
             <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
             <Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
             <Setter Property="TextOptions.TextHintingMode" Value="Animated"/>
-            <Setter Property="UseLayoutRounding" Value="True"/>
-            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="UseLayoutRounding" Value="False"/>
+            <Setter Property="SnapsToDevicePixels" Value="False"/>
         </Style>
 
         <Style x:Key="SmallText" TargetType="TextBlock">
@@ -125,8 +126,8 @@
             <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
             <Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
             <Setter Property="TextOptions.TextHintingMode" Value="Animated"/>
-            <Setter Property="UseLayoutRounding" Value="True"/>
-            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="UseLayoutRounding" Value="False"/>
+            <Setter Property="SnapsToDevicePixels" Value="False"/>
         </Style>
 
         <Style x:Key="ProgressTimeText" TargetType="TextBlock" BasedOn="{StaticResource SmallText}">
@@ -357,7 +358,10 @@
     </Window.Resources>
 
     <AdornerDecorator>
-    <Grid RenderOptions.ClearTypeHint="Enabled">
+    <Grid x:Name="DesktopRevealRoot" RenderOptions.ClearTypeHint="Enabled">
+        <Grid.RenderTransform>
+            <TranslateTransform x:Name="DesktopRevealTranslate"/>
+        </Grid.RenderTransform>
 
         <tb:TaskbarIcon x:Name="TrayIcon"
                         Visibility="Collapsed"
@@ -445,6 +449,7 @@
                     <TransformGroup>
                         <ScaleTransform x:Name="NotchShadowScale" ScaleX="1" ScaleY="1"/>
                         <TranslateTransform x:Name="NotchShadowGestureTranslate"/>
+                        <TranslateTransform x:Name="AppNotificationShadowTranslate"/>
                     </TransformGroup>
                 </Grid.RenderTransform>
                 <Grid.ColumnDefinitions>
@@ -668,9 +673,8 @@
                         <Grid.RenderTransform>
                             <TranslateTransform x:Name="BubbleDetailSlide" X="-8"/>
                         </Grid.RenderTransform>
-                        <Grid.Effect>
-                            <BlurEffect x:Name="BubbleDetailBlur" Radius="0" RenderingBias="Performance"/>
-                        </Grid.Effect>
+                        <!-- Only attached while it blurs (ActiveBlur): no idle effect surface under the orb's text. -->
+                        <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition><BlurEffect x:Name="BubbleDetailBlur" Radius="0" RenderingBias="Performance"/></ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock x:Name="BubbleTitle"
                                        Foreground="{x:Static svc:UiPalette.PrimaryBrush}"
@@ -748,6 +752,7 @@
                     <TransformGroup>
                         <ScaleTransform x:Name="NotchScale" ScaleX="1" ScaleY="1"/>
                         <TranslateTransform x:Name="NotchGestureTranslate"/>
+                        <TranslateTransform x:Name="AppNotificationShellTranslate"/>
                     </TransformGroup>
                 </Grid.RenderTransform>
                 <Grid.ColumnDefinitions>
@@ -794,17 +799,21 @@
                                 IsHitTestVisible="False"
                                 CornerRadius="0,0,20,20"/>
 
-                        <!-- Charging: the right edge glows a moment when the light from the cable arrives. -->
+                        <!-- Charging: where the cable's light arrives, the right side glows a moment, and a streak of
+                             it runs on along the rim. Both follow whatever shape the notch has right now. -->
                         <Border x:Name="ChargeNotchGlow"
-                                HorizontalAlignment="Right"
-                                Width="56"
                                 IsHitTestVisible="False"
                                 Opacity="0"
-                                CornerRadius="0,0,20,0"/>
+                                CornerRadius="{Binding CornerRadius, ElementName=NotchBorder}"/>
+                        <Border x:Name="ChargeNotchRim"
+                                IsHitTestVisible="False"
+                                Opacity="0"
+                                BorderThickness="1.6,0,1.6,1.6"
+                                CornerRadius="{Binding CornerRadius, ElementName=NotchBorder}"/>
 
                         <!-- Final rounded clip for material stack; kept outside blurred children
                              so post-effects cannot spread Touch Light into rectangular corners. -->
-                        <Grid x:Name="GlassMaterialClipHost"
+                        <ctrl:GlassClipGrid x:Name="GlassMaterialClipHost"
                               Visibility="Collapsed"
                               IsHitTestVisible="False"
                               SizeChanged="GlassMaterialClipHost_SizeChanged">
@@ -813,12 +822,14 @@
                                 Visibility="Collapsed"
                                 CornerRadius="0,0,20,20">
 
+                            <Canvas>
                             <Image x:Name="GlassBackdropImage"
                                    HorizontalAlignment="Left"
                                    VerticalAlignment="Top"
                                    Stretch="Fill"
                                    Margin="0"
                                    RenderOptions.BitmapScalingMode="HighQuality"/>
+                            </Canvas>
                         </Border>
 
                         <Border x:Name="GlassGrainOverlay"
@@ -972,7 +983,7 @@
                                 </RadialGradientBrush>
                             </Border.BorderBrush>
                         </Border>
-                        </Grid>
+                        </ctrl:GlassClipGrid>
 
                         <!-- Add live widgets inside this group; startup greetings hide the group. -->
                         <Grid x:Name="NotchLiveContent">
@@ -1002,7 +1013,7 @@
                             <Grid VerticalAlignment="Center">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="20"/>
-                                    <RowDefinition Height="14"/>
+                                    <RowDefinition x:Name="VolumeIndicatorTicksRow" Height="14"/>
                                 </Grid.RowDefinitions>
                                 <Grid Grid.Row="0" ClipToBounds="False">
                                     <Viewbox Width="17" Height="17" Stretch="Uniform"
@@ -1023,6 +1034,20 @@
                                                               RenderingBias="Performance"/>
                                         </Viewbox.Effect>
                                         <Canvas Width="24" Height="24">
+                                            <Canvas x:Name="VolumeIndicatorMic" Width="24" Height="24" Visibility="Collapsed">
+                                                <Canvas.RenderTransform>
+                                                    <TransformGroup>
+                                                        <ScaleTransform x:Name="VolumeIndicatorMicSquash" CenterX="12" CenterY="12" ScaleX="1" ScaleY="1"/>
+                                                        <TranslateTransform x:Name="VolumeIndicatorMicShift"/>
+                                                    </TransformGroup>
+                                                </Canvas.RenderTransform>
+                                                <Path Data="M 9,6 A 3,3 0 0 1 15,6 V 11 A 3,3 0 0 1 9,11 Z"
+                                                      Stroke="White" StrokeThickness="2" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                                <Path Data="M 6,10 V 11 A 6,6 0 0 0 18,11 V 10 M 12,17 V 21 M 8,21 H 16"
+                                                      Stroke="White" StrokeThickness="2" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                                <Path x:Name="VolumeIndicatorMicSlash" Data="M 3,3 L 21,21" Visibility="Collapsed"
+                                                      Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                            </Canvas>
                                             <Path x:Name="VolumeIndicatorSpeakerCone"
                                                   Data="M 3.6,8.8 H 6.6 Q 7.3,8.8 7.8,8.3 L 11.7,4.9 C 12.6,4.1 13.8,4.7 13.8,5.9 V 18.1 C 13.8,19.3 12.6,19.9 11.7,19.1 L 7.8,15.7 Q 7.3,15.2 6.6,15.2 H 3.6 C 2.6,15.2 2.0,14.6 2.0,13.6 V 10.4 C 2.0,9.4 2.6,8.8 3.6,8.8 Z"
                                                   Fill="#FAFFFFFF"
@@ -1045,7 +1070,7 @@
                                                   StrokeStartLineCap="Round"
                                                   StrokeEndLineCap="Round"
                                                   StrokeLineJoin="Round"/>
-                                            <Path x:Name="VolumeIndicatorMuteSlashGap"
+                                            <Path StrokeDashArray="30 30" x:Name="VolumeIndicatorMuteSlashGap"
                                                   Data="M 2.8,3.6 L 20.6,20.4"
                                                   Stroke="#FF050505"
                                                   StrokeThickness="4.4"
@@ -1053,13 +1078,29 @@
                                                   StrokeEndLineCap="Round"
                                                   StrokeLineJoin="Round"
                                                   Visibility="Collapsed"/>
-                                            <Path x:Name="VolumeIndicatorMuteSlash"
+                                            <Path StrokeDashArray="30 30" x:Name="VolumeIndicatorMuteSlash"
                                                   Data="M 2.8,3.6 L 20.6,20.4"
                                                   Stroke="#FAFFFFFF"
                                                   StrokeThickness="2.2"
                                                   StrokeStartLineCap="Round"
                                                   StrokeEndLineCap="Round"
                                                   StrokeLineJoin="Round"
+                                                  Visibility="Collapsed"/>
+                                            <!-- Brightness: the same HUD with a sun whose rays grow with the level. -->
+                                            <Path x:Name="VolumeIndicatorSunRays"
+                                                  Data="M 19,12 L 21.6,12 M 5,12 L 2.4,12 M 12,19 L 12,21.6 M 12,5 L 12,2.4 M 16.95,16.95 L 18.79,18.79 M 7.05,7.05 L 5.21,5.21 M 16.95,7.05 L 18.79,5.21 M 7.05,16.95 L 5.21,18.79"
+                                                  Stroke="#FAFFFFFF"
+                                                  StrokeThickness="2.1"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  Visibility="Collapsed">
+                                                <Path.RenderTransform>
+                                                    <ScaleTransform x:Name="VolumeIndicatorSunRaysScale" CenterX="12" CenterY="12" ScaleX="1" ScaleY="1"/>
+                                                </Path.RenderTransform>
+                                            </Path>
+                                            <Path x:Name="VolumeIndicatorSun"
+                                                  Data="M 16.4,12 A 4.4,4.4 0 1 1 7.6,12 A 4.4,4.4 0 1 1 16.4,12 Z"
+                                                  Fill="#FAFFFFFF"
                                                   Visibility="Collapsed"/>
                                         </Canvas>
                                     </Viewbox>
@@ -1092,6 +1133,11 @@
                                             </TransformGroup>
                                         </TextBlock.RenderTransform>
                                     </TextBlock>
+                                    <TextBlock x:Name="VolumeIndicatorMicWord"
+                                               Visibility="Collapsed" IsHitTestVisible="False"
+                                               Foreground="White" FontFamily="{StaticResource MainSystemFont}"
+                                               FontSize="12" FontWeight="Bold" Margin="30,1,0,0"
+                                               HorizontalAlignment="Left" VerticalAlignment="Center"/>
                                 </Grid>
                                 <Grid Grid.Row="1" Margin="0,3,0,0" VerticalAlignment="Center">
                                     <UniformGrid x:Name="VolumeIndicatorTicksHost"
@@ -1135,7 +1181,7 @@
                             </Grid>
                         </Border>
 
-                        <Border x:Name="AnimationThumbnailBorder"
+                        <Border x:Name="AnimationThumbnailBorder" UseLayoutRounding="False" SnapsToDevicePixels="False"
                                 HorizontalAlignment="Left"
                                 VerticalAlignment="Top"
                                 Width="22" Height="22"
@@ -1172,7 +1218,7 @@
                         </Border>
 
                         <Grid x:Name="SpotlightReturnContentHost">
-                        <Grid x:Name="NotchContent" Margin="0" SizeChanged="NotchContent_SizeChanged" RenderOptions.ClearTypeHint="Enabled" UseLayoutRounding="False" SnapsToDevicePixels="False">
+                        <ctrl:GlassClipGrid x:Name="NotchContent" Margin="0" SizeChanged="NotchContent_SizeChanged" RenderOptions.ClearTypeHint="Enabled" UseLayoutRounding="False" SnapsToDevicePixels="False">
 
                     <!-- The colour fields of the system, home, school and Claude tabs, behind everything; each fades in and out with its tab. -->
                     <ctrl:MoodBackdrop x:Name="SystemBackdrop"
@@ -1539,9 +1585,7 @@
                     <Grid x:Name="CollapsedContent"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch">
-                        <Grid.Effect>
-                            <BlurEffect x:Name="CollapsedContentBlur" Radius="0" RenderingBias="Performance"/>
-                        </Grid.Effect>
+                        <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition><BlurEffect x:Name="CollapsedContentBlur" Radius="0" RenderingBias="Performance"/></ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                         <!-- Claude Code at work without music: the star takes the cover's slot at the cover's size and
                              turns (pulses yellow while it waits); the turn's time sits where the visualizer would. -->
                         <Grid x:Name="ClaudeLive"
@@ -1604,6 +1648,12 @@
                             <Grid.RenderTransform>
                                 <TranslateTransform x:Name="IdleGlanceShift" Y="0"/>
                             </Grid.RenderTransform>
+                            <Viewbox x:Name="MicMutedRestGlyph" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                                <Viewbox.RenderTransform><ScaleTransform x:Name="MicMutedRestScale"/></Viewbox.RenderTransform>
+                                <Canvas Width="24" Height="24">
+                                    <Path Data="M 9,9 V 12 A 3,3 0 0 0 14,14 M 15,10 V 7 A 3,3 0 0 0 9,7 M 5,11 A 7,7 0 0 0 17,17 M 12,19 V 22 M 9,22 H 15 M 3,3 L 21,21" Stroke="#D2857E" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                </Canvas>
+                            </Viewbox>
                             <TextBlock x:Name="IdleClock"
                                        FontSize="12.5"
                                        FontWeight="SemiBold"
@@ -1834,6 +1884,55 @@
                         </StackPanel>
                     </Grid>
 
+                    <Grid x:Name="AppNotificationPill" Visibility="Collapsed" Opacity="0"
+                          Margin="14,5,14,7" Background="Transparent" Cursor="Hand">
+                        <Grid.RenderTransform>
+                            <TranslateTransform x:Name="AppPillTranslate"/>
+                        </Grid.RenderTransform>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="28"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid Width="28" Height="28" VerticalAlignment="Top">
+                            <Image x:Name="AppPillLogo" Width="28" Height="28" Stretch="Uniform"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <TextBlock x:Name="AppPillBell" Text="&#xEA8F;" FontSize="20"
+                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       Foreground="{x:Static svc:UiPalette.PrimaryBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                        <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                            <TextBlock x:Name="AppPillSender" FontSize="12" FontWeight="SemiBold"
+                                       FontFamily="{StaticResource MainSystemFont}" TextTrimming="CharacterEllipsis"
+                                       Foreground="{x:Static svc:UiPalette.PrimaryBrush}"/>
+                            <TextBlock x:Name="AppPillBody" FontSize="11" LineHeight="14" MaxHeight="28"
+                                       FontFamily="{StaticResource MainSystemFont}" LineStackingStrategy="BlockLineHeight"
+                                       TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                                       Foreground="{x:Static svc:UiPalette.SecondaryBrush}"/>
+                            <TextBlock x:Name="AppPillExpandedBody" Visibility="Collapsed" FontSize="12"
+                                       LineHeight="16" MaxHeight="96" LineStackingStrategy="BlockLineHeight"
+                                       FontFamily="{StaticResource MainSystemFont}" TextWrapping="Wrap"
+                                       TextTrimming="CharacterEllipsis" Foreground="{x:Static svc:UiPalette.SecondaryBrush}"/>
+                            <Image x:Name="AppPillImage" Visibility="Collapsed" MaxHeight="120" Stretch="Uniform"/>
+                        </StackPanel>
+                        <Border x:Name="AppPillCodeChip" Grid.Column="2" Visibility="Collapsed"
+                                VerticalAlignment="Top" Margin="8,0,0,0" Padding="8,4" CornerRadius="8"
+                                Background="{x:Static svc:UiPalette.NotificationIndigoBrush}" Focusable="True"
+                                MouseLeftButtonDown="AppPillCodeChip_MouseLeftButtonDown"
+                                MouseLeftButtonUp="AppPillCodeChip_MouseLeftButtonUp" KeyDown="AppPillCodeChip_KeyDown">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock x:Name="AppPillCodeText" FontSize="12" FontWeight="SemiBold"
+                                           FontFamily="{StaticResource MainSystemFont}" Foreground="#15131D"/>
+                                <Path x:Name="AppPillCodeTick" Visibility="Hidden" Width="12" Height="12"
+                                      Margin="6,0,0,0" VerticalAlignment="Center" Data="M1,6 L4,9 L11,1"
+                                      Stroke="#15131D" StrokeThickness="1.5" StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      StrokeDashArray="17 17" StrokeDashOffset="17"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
                     <Grid x:Name="ChargingNotification"
                           Opacity="0"
                           Visibility="Collapsed"
@@ -1861,8 +1960,8 @@
                                        TextOptions.TextFormattingMode="Ideal"
                                        TextOptions.TextRenderingMode="Grayscale"
                                                        TextOptions.TextHintingMode="Animated"
-                                       UseLayoutRounding="True"
-                                       SnapsToDevicePixels="True"
+                                       UseLayoutRounding="False"
+                                       SnapsToDevicePixels="False"
                                        VerticalAlignment="Center"/>
 
                             <StackPanel Grid.Column="1"
@@ -1877,8 +1976,8 @@
                                            TextOptions.TextFormattingMode="Ideal"
                                            TextOptions.TextRenderingMode="Grayscale"
                                                        TextOptions.TextHintingMode="Animated"
-                                           UseLayoutRounding="True"
-                                           SnapsToDevicePixels="True"
+                                           UseLayoutRounding="False"
+                                           SnapsToDevicePixels="False"
                                            VerticalAlignment="Center"
                                            Margin="0,0,5,0"/>
 
@@ -1891,8 +1990,8 @@
                                            TextOptions.TextFormattingMode="Ideal"
                                            TextOptions.TextRenderingMode="Grayscale"
                                                        TextOptions.TextHintingMode="Animated"
-                                           UseLayoutRounding="True"
-                                           SnapsToDevicePixels="True"
+                                           UseLayoutRounding="False"
+                                           SnapsToDevicePixels="False"
                                            VerticalAlignment="Center"
                                            Visibility="Collapsed"
                                            Margin="0,0,6,0"/>
@@ -1924,6 +2023,196 @@
                         </Grid>
                     </Grid>
 
+                    <Border x:Name="AppNotificationHoverSurface"
+                            Background="White"
+                            CornerRadius="{Binding CornerRadius, ElementName=NotchBorder}"
+                            Opacity="0"
+                            Visibility="Collapsed"
+                            IsHitTestVisible="False"
+                            Panel.ZIndex="149"/>
+
+                    <Grid x:Name="AppNotificationBanner"
+                          Opacity="0"
+                          Visibility="Collapsed"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          Background="Transparent"
+                          Cursor="Hand"
+                          Focusable="True"
+                          AutomationProperties.Name="Notification"
+                          Margin="0,10,0,10"
+                          Panel.ZIndex="150"
+                          RenderTransformOrigin="0.5,0.2"
+                          TextElement.FontFamily="{StaticResource SFProDisplay}"
+                          TextElement.FontWeight="Bold"
+                          TextOptions.TextFormattingMode="Display"
+                          TextOptions.TextHintingMode="Animated"
+                          MouseLeftButtonDown="AppNotificationBanner_MouseLeftButtonDown"
+                          MouseLeftButtonUp="AppNotificationBanner_MouseLeftButtonUp"
+                          MouseMove="AppNotificationBanner_MouseMove"
+                          LostMouseCapture="AppNotificationBanner_LostMouseCapture"
+                          KeyDown="AppNotificationBanner_KeyDown"
+                          MouseRightButtonUp="AppNotificationBanner_MouseRightButtonUp"
+                          MouseEnter="AppNotificationBanner_MouseEnter"
+                          MouseLeave="AppNotificationBanner_MouseLeave">
+                        <Grid.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="AppNotificationBannerScale" ScaleX="1" ScaleY="1"/>
+                                <TranslateTransform x:Name="AppNotificationBannerTranslate" Y="0"/>
+                                <TranslateTransform x:Name="AppNotificationPressTranslate"/>
+                            </TransformGroup>
+                        </Grid.RenderTransform>
+                        <Grid x:Name="AppNotificationContent">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid x:Name="AppNotificationIconHost" Grid.Column="0"
+                                    Width="42" Height="42" Margin="0,0,13,0"
+                                    VerticalAlignment="Center"
+                                    RenderTransformOrigin="0.5,0.5">
+                                <Grid.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform x:Name="AppNotificationIconScale"/>
+                                        <RotateTransform x:Name="AppNotificationIconRotate"/>
+                                        <TranslateTransform x:Name="AppNotificationIconTranslate"/>
+                                    </TransformGroup>
+                                </Grid.RenderTransform>
+                                <Border x:Name="AppNotificationAvatarCircle"
+                                        Width="40" Height="40"
+                                        CornerRadius="20"
+                                        Background="#6C6C72"
+                                        BorderBrush="#32FFFFFF"
+                                        BorderThickness="0.8"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Center">
+                                    <TextBlock x:Name="AppNotificationAvatarInitialsText"
+                                               Text="VN"
+                                               Foreground="#FFFFFF"
+                                               FontFamily="{StaticResource SFProDisplay}"
+                                               FontSize="15"
+                                               FontWeight="Bold"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,0,0.5"/>
+                                </Border>
+                                <Grid Width="17" Height="17"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Bottom"
+                                      Margin="0,0,-1,0">
+                                    <Image x:Name="AppNotificationIconImage"
+                                           Width="16" Height="16"
+                                           Stretch="Uniform"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Visibility="Collapsed"
+                                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                                    <Border x:Name="AppNotificationDefaultIcon"
+                                            Width="16" Height="16"
+                                            CornerRadius="8"
+                                            Background="#0A84FF"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                        <Viewbox Width="9.5" Height="9.5" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <Canvas Width="24" Height="24">
+                                                <Path Fill="#FFFFFF"
+                                                      Data="M12,3C6.5,3,2,6.6,2,11c0,2.1,1,4.1,2.8,5.5C4.4,18.2,3.3,19.8,3.2,20c-0.2,0.2-0.2,0.5,0,0.8C3.3,20.9,3.5,21,3.7,21c2.1,0,4.1-0.9,5.4-1.8c0.9,0.2,1.9,0.3,2.9,0.3c5.5,0,10-3.6,10-8.5S17.5,3,12,3z"/>
+                                            </Canvas>
+                                        </Viewbox>
+                                    </Border>
+                                </Grid>
+                            </Grid>
+                            <Grid Grid.Column="1" VerticalAlignment="Center">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock x:Name="AppNotificationAppNameText"
+                                           Visibility="Collapsed"
+                                           Text=""
+                                           FontFamily="{StaticResource SFProDisplay}"
+                                           FontWeight="Bold">
+                                    <TextBlock.RenderTransform>
+                                        <TranslateTransform x:Name="AppNotificationAppNameTranslate"/>
+                                    </TextBlock.RenderTransform>
+                                </TextBlock>
+                                <Grid Grid.Row="0" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="AppNotificationTitleText"
+                                               Grid.Column="0"
+                                               Text=""
+                                               Foreground="#FFFFFF"
+                                               FontFamily="{StaticResource SFProDisplay}"
+                                               FontSize="13.5"
+                                               FontWeight="Bold"
+                                               Padding="0,1,0,2"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis">
+                                        <TextBlock.RenderTransform>
+                                            <TranslateTransform x:Name="AppNotificationTitleTranslate"/>
+                                        </TextBlock.RenderTransform>
+                                    </TextBlock>
+                                    <TextBlock x:Name="AppNotificationTimeText"
+                                               Grid.Column="1"
+                                               Text="now"
+                                               Foreground="#8A8A92"
+                                               FontFamily="{StaticResource SFProDisplay}"
+                                               FontSize="11.5"
+                                               FontWeight="Bold"
+                                               Margin="10,0,0,0"
+                                               VerticalAlignment="Center"/>
+                                </Grid>
+                                <TextBlock x:Name="AppNotificationBodyText"
+                                           Grid.Row="1"
+                                           Text=""
+                                           Foreground="#D8D8DE"
+                                           FontFamily="{StaticResource SFProDisplay}"
+                                           FontSize="12.5"
+                                           FontWeight="Bold"
+                                           Padding="0,1,0,2"
+                                           TextWrapping="Wrap"
+                                           TextTrimming="CharacterEllipsis"
+                                           LineHeight="16.5"
+                                           LineStackingStrategy="BlockLineHeight"
+                                           MaxHeight="37"
+                                           Margin="0,2,0,0">
+                                    <TextBlock.RenderTransform>
+                                        <TranslateTransform x:Name="AppNotificationBodyTranslate"/>
+                                    </TextBlock.RenderTransform>
+                                </TextBlock>
+                            </Grid>
+                        </Grid>
+                        <Border x:Name="AppNotificationProgressTrack" Grid.Row="1"
+                                Height="2.5" Margin="2,10,2,0" CornerRadius="1.25"
+                                Background="#1FFFFFFF" IsHitTestVisible="False">
+                            <Border Background="#98FFFFFF" CornerRadius="1.25" RenderTransformOrigin="0,0.5">
+                                <Border.RenderTransform>
+                                    <ScaleTransform x:Name="AppNotificationProgressScale" ScaleX="1"/>
+                                </Border.RenderTransform>
+                            </Border>
+                        </Border>
+                        </Grid>
+                        <Canvas IsHitTestVisible="False" Panel.ZIndex="1">
+                            <Image x:Name="AppNotificationBlurCover"
+                                   Width="{Binding ActualWidth, ElementName=AppNotificationContent}"
+                                   Height="{Binding ActualHeight, ElementName=AppNotificationContent}"
+                                   Stretch="Fill" Opacity="0" Visibility="Collapsed"
+                                   IsHitTestVisible="False" RenderOptions.BitmapScalingMode="HighQuality">
+                                <Image.Effect>
+                                    <BlurEffect Radius="10" KernelType="Gaussian" RenderingBias="Performance"/>
+                                </Image.Effect>
+                            </Image>
+                        </Canvas>
+                    </Grid>
+
                     <Grid x:Name="MusicCompactContent"
                           Opacity="0"
                           Visibility="Collapsed"
@@ -1941,7 +2230,7 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <Border x:Name="CompactThumbnailBorder"
+                        <Border x:Name="CompactThumbnailBorder" UseLayoutRounding="False" SnapsToDevicePixels="False"
                                 Grid.Row="0"
                                 Grid.Column="0"
                                 Width="22" Height="22"
@@ -1956,9 +2245,9 @@
                                 MouseRightButtonUp="Thumbnail_MouseRightButtonUp"
                                 MouseEnter="CompactThumbnailBorder_MouseEnter"
                                 MouseLeave="CompactThumbnailBorder_MouseLeave">
-                            <Border.Effect>
+                            <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                 <BlurEffect x:Name="MusicCompactContentBlur" Radius="0" RenderingBias="Performance"/>
-                            </Border.Effect>
+                            </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                             <Border.RenderTransform>
 
                                 <ScaleTransform x:Name="CompactThumbnailScale" ScaleX="1" ScaleY="1"/>
@@ -1979,9 +2268,9 @@
                                         <Image.RenderTransform>
                                             <ScaleTransform x:Name="CompactThumbnailOutScale" ScaleX="1" ScaleY="1"/>
                                         </Image.RenderTransform>
-                                        <Image.Effect>
+                                        <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                             <BlurEffect x:Name="CompactThumbnailOutBlur" Radius="0" RenderingBias="Performance"/>
-                                        </Image.Effect>
+                                        </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                                     </Image>
                                     <Image x:Name="CompactThumbnailNext"
                                            Width="22"
@@ -1996,9 +2285,9 @@
                                         <Image.RenderTransform>
                                             <ScaleTransform x:Name="CompactThumbnailNextScale" ScaleX="1" ScaleY="1"/>
                                         </Image.RenderTransform>
-                                        <Image.Effect>
+                                        <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                             <BlurEffect x:Name="CompactThumbnailNextBlur" Radius="0" RenderingBias="Performance"/>
-                                        </Image.Effect>
+                                        </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                                     </Image>
                                     <Border x:Name="CompactThumbnailRim"
                                             BorderThickness="0"
@@ -2030,7 +2319,7 @@
                                     <GradientStop Color="Transparent" Offset="1"/>
                                 </LinearGradientBrush>
                             </Grid.OpacityMask>
-                            <Canvas x:Name="CompactTitleScrollContainer" Height="22" HorizontalAlignment="Stretch" ClipToBounds="True" Margin="0,2,0,0">
+                            <Canvas x:Name="CompactTitleScrollContainer" Height="24" HorizontalAlignment="Stretch" ClipToBounds="True" Margin="0,2,0,0">
                                 <TextBlock x:Name="CompactTitleMarquee"
                                            Text="Title"
                                            Style="{StaticResource TitleText}"
@@ -2090,8 +2379,8 @@
                                    TextOptions.TextFormattingMode="Ideal"
                                    TextOptions.TextRenderingMode="Grayscale"
                                                        TextOptions.TextHintingMode="Animated"
-                                   UseLayoutRounding="True"
-                                   SnapsToDevicePixels="True"
+                                   UseLayoutRounding="False"
+                                   SnapsToDevicePixels="False"
                                    VerticalAlignment="Center"
                                    HorizontalAlignment="Left"
                                    Margin="0,4,0,0"
@@ -2106,7 +2395,7 @@
 
                     </Grid>
 
-                    <Grid x:Name="ExpandedContent"
+                    <ctrl:GlassClipGrid x:Name="ExpandedContent"
                           Opacity="0"
                           Visibility="Collapsed"
                           Margin="8,2,8,8"
@@ -2118,9 +2407,9 @@
                           UseLayoutRounding="False"
                           SnapsToDevicePixels="False">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="1.48*"/>
+                            <ColumnDefinition Width="312"/>
                             <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="0.72*"/>
+                            <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
                         <Grid x:Name="StatusBar" Grid.Column="0" Grid.ColumnSpan="3"
@@ -2171,7 +2460,8 @@
                                                Margin="0,1,0,0"
                                                TextOptions.TextHintingMode="Animated"
                                                VerticalAlignment="Center"/>
-                                    <Grid Margin="4.51,0,0,0"
+                                    <!-- Reserve the battery terminal plus the same 4-DIP inset as adjacent action glyphs. -->
+                                    <Grid Margin="4.51,0,6.71,0"
                                           SnapsToDevicePixels="True"
                                           UseLayoutRounding="True">
 
@@ -2230,10 +2520,10 @@
                             </ctrl:ActionBorder>
 
                             <ctrl:ActionBorder x:Name="UpdateNotificationButton" Grid.Column="1" AutomationProperties.Name="Update Available"
-                                    Width="20" Height="20"
+                                    Width="24" Height="24"
                                     Background="Transparent"
                                     Cursor="Hand"
-                                    Margin="7,0,0,0"
+                                    Margin="4,0,0,0"
                                     ToolTipService.IsEnabled="False"
                                     Click="UpdateNotification_Click"
                                     MouseEnter="UpdateNotification_MouseEnter"
@@ -2262,7 +2552,8 @@
                                 </Viewbox>
                             </ctrl:ActionBorder>
 
-                            <Border Grid.Column="2" Width="31" Height="24" IsHitTestVisible="False"/>
+                            <!-- Reserve the shared 24-DIP Settings action with the same 4-DIP gap. -->
+                            <Border Grid.Column="2" Width="28" Height="24" IsHitTestVisible="False"/>
                         </Grid>
 
                         <Border x:Name="MediaBackground"
@@ -2273,9 +2564,9 @@
                                 Margin="-40,-26,-36,-48"
                                 Panel.ZIndex="0"
                                 IsHitTestVisible="False">
-                            <Border.Effect>
+                            <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                 <BlurEffect x:Name="ExpandedContentBlur" Radius="0" RenderingBias="Performance"/>
-                            </Border.Effect>
+                            </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                             <Border.OpacityMask>
                                 <RadialGradientBrush GradientOrigin="0.30,0.56" Center="0.30,0.56" RadiusX="0.52" RadiusY="0.52">
                                     <GradientStop Color="#FFFFFFFF" Offset="0"/>
@@ -2414,7 +2705,7 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
-                                    <Border x:Name="ThumbnailBorder"
+                                    <Border x:Name="ThumbnailBorder" BorderBrush="Transparent" BorderThickness="0" ClipToBounds="False" UseLayoutRounding="False" SnapsToDevicePixels="False"
                                             Grid.Column="0"
                                             Width="102" Height="102"
                                             VerticalAlignment="Center"
@@ -2445,9 +2736,9 @@
                                                     <Image.RenderTransform>
                                                         <ScaleTransform x:Name="ThumbnailOutScale" ScaleX="1" ScaleY="1"/>
                                                     </Image.RenderTransform>
-                                                    <Image.Effect>
+                                                    <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                                         <BlurEffect x:Name="ThumbnailOutBlur" Radius="0" RenderingBias="Performance"/>
-                                                    </Image.Effect>
+                                                    </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                                                 </Image>
 
                                                 <Image x:Name="ThumbnailImageNext"
@@ -2461,9 +2752,9 @@
                                                     <Image.RenderTransform>
                                                         <ScaleTransform x:Name="ThumbnailNextScale" ScaleX="1" ScaleY="1"/>
                                                     </Image.RenderTransform>
-                                                    <Image.Effect>
+                                                    <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                                         <BlurEffect x:Name="ThumbnailNextBlur" Radius="0" RenderingBias="Performance"/>
-                                                    </Image.Effect>
+                                                    </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                                                 </Image>
 
                                                 <Viewbox x:Name="ThumbnailFallback"
@@ -2475,6 +2766,7 @@
                                                     </Canvas>
                                                 </Viewbox>
 
+                                                <Border x:Name="ThumbnailRim" BorderThickness="0" BorderBrush="Transparent" CornerRadius="14" IsHitTestVisible="False"/>
                                                 <Border x:Name="ThumbnailPipBadge"
                                                         HorizontalAlignment="Left"
                                                         VerticalAlignment="Bottom"
@@ -2782,7 +3074,7 @@
 
                     </Grid>
 
-                        <Grid x:Name="MediaRightColumn" Grid.Column="2" Margin="0,20,-1,0" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Grid.IsSharedSizeScope="True" RenderOptions.ClearTypeHint="Enabled">
+                        <Grid x:Name="MediaRightColumn" Grid.Column="2" Width="151.85" Margin="0,20,-1,0" VerticalAlignment="Stretch" HorizontalAlignment="Left" Grid.IsSharedSizeScope="True" RenderOptions.ClearTypeHint="Enabled">
                             <!-- Center each surface independently so collapsing lyrics after a fade
                                  cannot redistribute the calendar's Auto rows. -->
                             <Grid VerticalAlignment="Center">
@@ -2829,7 +3121,7 @@
                                                    FontSize="15"
                                                    HorizontalAlignment="Center"
                                                    RenderTransformOrigin="0.5,0.5"
-                                                   TextOptions.TextRenderingMode="ClearType"
+                                                   TextOptions.TextRenderingMode="Grayscale"
                                                    TextOptions.TextHintingMode="Animated">
                                             <TextBlock.RenderTransform>
                                                 <TransformGroup>
@@ -2846,7 +3138,7 @@
                                                    Foreground="#99FFFFFF"
                                                    HorizontalAlignment="Center"
                                                    Visibility="Collapsed"
-                                                   TextOptions.TextRenderingMode="ClearType"
+                                                   TextOptions.TextRenderingMode="Grayscale"
                                                    TextOptions.TextHintingMode="Animated"/>
                                     </StackPanel>
 
@@ -3078,9 +3370,9 @@
                             </Border>
 
                             <Grid x:Name="GreetingSection" Grid.Row="1" Margin="4,-6,0,0">
-                                <Grid.Effect>
+                                <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
                                     <BlurEffect x:Name="CalendarGreetingContextBlur" Radius="0" RenderingBias="Performance"/>
-                                </Grid.Effect>
+                                </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"
                                                       MinWidth="40"
@@ -3107,16 +3399,22 @@
 
                             <Border x:Name="LyricsWidget"
                                     Height="130"
-                                    TextOptions.TextHintingMode="Animated"
                                     Background="Transparent"
                                     CornerRadius="16"
-                                    Padding="4,2,7,2"
+                                    Padding="3,2,5,2"
                                     Margin="0,0,10,2"
                                     Visibility="Collapsed"
                                     Opacity="0"
                                     VerticalAlignment="Center"
                                     HorizontalAlignment="Stretch"
+                                    RenderTransformOrigin="0.5,0.5"
                                     ClipToBounds="True">
+                                <Border.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform x:Name="LyricsWidgetScale" ScaleX="1" ScaleY="1"/>
+                                        <TranslateTransform x:Name="LyricsWidgetTranslate" X="0" Y="0"/>
+                                    </TransformGroup>
+                                </Border.RenderTransform>
                                 <Grid ClipToBounds="True" VerticalAlignment="Stretch">
 
                                     <Border x:Name="LyricsSearchPanel"
@@ -3129,6 +3427,7 @@
                                         </Border.RenderTransform>
                                         <TextBlock x:Name="LyricsSearchText"
                                                    Text="Searching for lyrics…"
+                                                   Padding="1,0,2,0"
                                                    FontSize="11.5"
                                                    FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis"
@@ -3145,39 +3444,42 @@
                                                 Visibility="Collapsed">
                                         <TextBlock x:Name="LyricsPlaceholderTitle"
                                                    Text=""
+                                                   Padding="1,2,2,2"
                                                    FontSize="12.5"
                                                    FontWeight="Bold"
                                                    Foreground="#EEFFFFFF"
                                                    TextWrapping="Wrap"
                                                    TextTrimming="CharacterEllipsis"
-                                                   LineHeight="15"
-                                                   LineStackingStrategy="BlockLineHeight"
-                                                   MaxHeight="30"
+                                                   LineHeight="17.5"
+                                                   LineStackingStrategy="MaxHeight"
+                                                   MaxHeight="39"
                                                    TextAlignment="Right"
                                                    HorizontalAlignment="Stretch"
                                                    FontFamily="{StaticResource MainSystemFont}"
                                                    TextOptions.TextFormattingMode="Ideal"/>
                                         <TextBlock x:Name="LyricsPlaceholderArtist"
                                                    Text=""
+                                                   Padding="1,1,2,2"
                                                    FontSize="10.5"
                                                    FontWeight="SemiBold"
                                                    Foreground="#99FFFFFF"
                                                    TextTrimming="CharacterEllipsis"
-                                                   LineHeight="13"
-                                                   LineStackingStrategy="BlockLineHeight"
+                                                   LineHeight="15"
+                                                   LineStackingStrategy="MaxHeight"
                                                    TextAlignment="Right"
                                                    HorizontalAlignment="Stretch"
-                                                   Margin="0,2,0,0"
+                                                   Margin="0,1,0,0"
                                                    FontFamily="{StaticResource MainSystemFont}"
                                                    TextOptions.TextFormattingMode="Ideal"/>
                                         <TextBlock x:Name="LyricsPlaceholderProvider"
                                                    Text=""
+                                                   Padding="1,1,2,1"
                                                    FontSize="9"
                                                    FontWeight="Medium"
                                                    Foreground="#70FFFFFF"
                                                    TextTrimming="CharacterEllipsis"
-                                                   LineHeight="12"
-                                                   LineStackingStrategy="BlockLineHeight"
+                                                   LineHeight="13"
+                                                   LineStackingStrategy="MaxHeight"
                                                    TextAlignment="Right"
                                                    HorizontalAlignment="Stretch"
                                                    Margin="0,1,0,0"
@@ -3197,13 +3499,13 @@
                                                Style="{StaticResource SubtitleText}"
                                                FontSize="12.5"
                                                FontWeight="Bold"
-                                               LineHeight="17"
-                                               LineStackingStrategy="BlockLineHeight"
-                                               Padding="0,2,0,4"
+                                               LineHeight="18.5"
+                                               LineStackingStrategy="MaxHeight"
+                                               Padding="1,3,2,4"
                                                TextWrapping="Wrap"
                                                TextTrimming="CharacterEllipsis"
-                                               MaxHeight="110"
-                                               Margin="0,8"
+                                               MaxHeight="114"
+                                               Margin="0,6"
                                                TextAlignment="Right"
                                                TextOptions.TextFormattingMode="Ideal"
                                                TextOptions.TextRenderingMode="Grayscale"
@@ -3211,10 +3513,6 @@
                                                VerticalAlignment="Center"
                                                HorizontalAlignment="Stretch"
                                                Opacity="0">
-                                        <!-- Keep glyph rasterization stable during translation and at rest. -->
-                                        <TextBlock.CacheMode>
-                                            <BitmapCache EnableClearType="False" SnapsToDevicePixels="False"/>
-                                        </TextBlock.CacheMode>
                                         <TextBlock.Foreground>
                                             <SolidColorBrush Color="#BFFFFFFF"/>
                                         </TextBlock.Foreground>
@@ -3228,13 +3526,13 @@
                                                Style="{StaticResource SubtitleText}"
                                                FontSize="12.5"
                                                FontWeight="Bold"
-                                               LineHeight="17"
-                                               LineStackingStrategy="BlockLineHeight"
-                                               Padding="0,2,0,4"
+                                               LineHeight="18.5"
+                                               LineStackingStrategy="MaxHeight"
+                                               Padding="1,3,2,4"
                                                TextWrapping="Wrap"
                                                TextTrimming="CharacterEllipsis"
-                                               MaxHeight="110"
-                                               Margin="0,8"
+                                               MaxHeight="114"
+                                               Margin="0,6"
                                                TextAlignment="Right"
                                                TextOptions.TextFormattingMode="Ideal"
                                                TextOptions.TextRenderingMode="Grayscale"
@@ -3242,10 +3540,6 @@
                                                VerticalAlignment="Center"
                                                HorizontalAlignment="Stretch"
                                                Opacity="0">
-                                        <!-- Keep glyph rasterization stable during translation and at rest. -->
-                                        <TextBlock.CacheMode>
-                                            <BitmapCache EnableClearType="False" SnapsToDevicePixels="False"/>
-                                        </TextBlock.CacheMode>
                                         <TextBlock.Foreground>
                                             <SolidColorBrush Color="#BFFFFFFF"/>
                                         </TextBlock.Foreground>
@@ -3257,9 +3551,9 @@
                                 </Grid>
                             </Border>
                         </Grid>
-                    </Grid>
+                    </ctrl:GlassClipGrid>
 
-                    <Grid x:Name="SecondaryContent" Opacity="0" Visibility="Collapsed" Margin="14,0,14,16" HorizontalAlignment="Center" VerticalAlignment="Stretch" Width="888" MouseLeftButtonDown="SecondaryContent_Click">
+                    <Grid x:Name="SecondaryContent" Opacity="0" Visibility="Collapsed" Margin="8,0,8,8" HorizontalAlignment="Center" VerticalAlignment="Stretch" Width="888" MouseLeftButtonDown="SecondaryContent_Click">
                         <ContentControl x:Name="ClipboardTrayHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
                     </Grid>
                     <Grid x:Name="CameraContent" Opacity="0" Visibility="Collapsed" Margin="16,36,16,16" HorizontalAlignment="Center" VerticalAlignment="Stretch" Width="488">
@@ -3434,8 +3728,8 @@
                                            Foreground="#FF453A"
                                            HorizontalAlignment="Left"
                                            Margin="16,0,0,3"
-                                           UseLayoutRounding="True"
-                                           SnapsToDevicePixels="True"
+                                           UseLayoutRounding="False"
+                                           SnapsToDevicePixels="False"
                                            TextOptions.TextFormattingMode="Ideal"
                                            TextOptions.TextRenderingMode="Grayscale"
                                            TextOptions.TextHintingMode="Animated"/>
@@ -3610,16 +3904,8 @@
 
                     <Border x:Name="HoverGlow"
                             CornerRadius="0,0,20,20"
-                            BorderThickness="1"
                             Opacity="0"
                             IsHitTestVisible="False">
-                        <Border.BorderBrush>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="0.9,1">
-                                <GradientStop Color="#60FFFFFF" Offset="0"/>
-                                <GradientStop Color="#18FFFFFF" Offset="0.45"/>
-                                <GradientStop Color="#00FFFFFF" Offset="1"/>
-                            </LinearGradientBrush>
-                        </Border.BorderBrush>
                         <Border.Background>
                             <RadialGradientBrush GradientOrigin="0.5,0" Center="0.5,0" RadiusX="0.9" RadiusY="1.1">
                                 <GradientStop Color="#28FFFFFF" Offset="0"/>
@@ -3628,7 +3914,7 @@
                             </RadialGradientBrush>
                         </Border.Background>
                     </Border>
-                    </Grid>
+                    </ctrl:GlassClipGrid>
                         </Grid>
                         </Grid>
                     <Grid x:Name="GreetingOverlay"

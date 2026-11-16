@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Media.Animation;
 
@@ -14,8 +14,12 @@ public sealed record SpringMotion(TimeSpan Response, double Bounce)
     internal double AngularFrequency => 2 * Math.PI / Response.TotalSeconds;
     internal double DampingRatio => Math.Clamp(1 - Bounce, 0.05, 1);
 
-    internal SpringDoubleAnimation Animate(double from, double to, double velocity = 0) =>
-        new(from, to, velocity, AngularFrequency, DampingRatio);
+    /// <param name="settle">How close counts as arrived, in the property's own unit: a quarter pixel for sizes,
+    /// far less for scales and opacities that only travel a fraction of 1.</param>
+    /// <param name="floor">The value never goes below this, however far the spring swings (a size may not be negative).</param>
+    internal SpringDoubleAnimation Animate(double from, double to, double velocity = 0, double settle = SpringDoubleAnimation.PixelSettle,
+        double floor = double.NegativeInfinity) =>
+        new(from, to, velocity, AngularFrequency, DampingRatio, settle, floor);
 }
 
 /// <summary>
@@ -25,8 +29,9 @@ public sealed record SpringMotion(TimeSpan Response, double Bounce)
 /// </summary>
 internal sealed class SpringDoubleAnimation : DoubleAnimationBase
 {
-    // Settled once the remaining swing is under a quarter of a device-independent pixel.
-    private const double SettleDistance = 0.25;
+    // Sizes are settled once the remaining swing is under a quarter of a device-independent pixel.
+    internal const double PixelSettle = 0.25;
+    private readonly double _settle;
     private static readonly TimeSpan LongestSettle = TimeSpan.FromSeconds(2);
 
     private readonly double _from;
@@ -34,9 +39,13 @@ internal sealed class SpringDoubleAnimation : DoubleAnimationBase
     private readonly double _velocity;
     private readonly double _omega;
     private readonly double _zeta;
+    private readonly double _floor;
 
-    internal SpringDoubleAnimation(double from, double to, double velocity, double angularFrequency, double dampingRatio)
+    internal SpringDoubleAnimation(double from, double to, double velocity, double angularFrequency, double dampingRatio, double settle = PixelSettle,
+        double floor = double.NegativeInfinity)
     {
+        _floor = double.IsNaN(floor) ? double.NegativeInfinity : floor;
+        _settle = settle > 0 && double.IsFinite(settle) ? settle : PixelSettle;
         _from = from;
         _to = to;
         _velocity = double.IsFinite(velocity) ? velocity : 0;
@@ -62,10 +71,10 @@ internal sealed class SpringDoubleAnimation : DoubleAnimationBase
     protected override double GetCurrentValueCore(double defaultOriginValue, double defaultDestinationValue, AnimationClock animationClock)
     {
         if (animationClock.CurrentProgress is not { } progress || progress >= 1) return _to;
-        return ValueAt(progress * Duration.TimeSpan.TotalSeconds);
+        return Math.Max(_floor, ValueAt(progress * Duration.TimeSpan.TotalSeconds));
     }
 
-    protected override Freezable CreateInstanceCore() => new SpringDoubleAnimation(_from, _to, _velocity, _omega, _zeta);
+    protected override Freezable CreateInstanceCore() => new SpringDoubleAnimation(_from, _to, _velocity, _omega, _zeta, _settle, _floor);
 
     // Distance from the target (and its rate of change) for x'' + 2 zeta omega x' + omega^2 x = 0.
     private double Offset(double t, out double velocity)
@@ -94,13 +103,13 @@ internal sealed class SpringDoubleAnimation : DoubleAnimationBase
 
     private TimeSpan SettleTime()
     {
-        if (Math.Abs(_from - _to) < SettleDistance && Math.Abs(_velocity) < SettleDistance * _omega) return TimeSpan.Zero;
+        if (Math.Abs(_from - _to) < _settle && Math.Abs(_velocity) < _settle * _omega) return TimeSpan.Zero;
         const double step = 1.0 / 480;
         double lastMoving = 0;
         for (double t = step; t < LongestSettle.TotalSeconds; t += step)
         {
             double offset = Offset(t, out double velocity);
-            if (Math.Abs(offset) >= SettleDistance || Math.Abs(velocity) >= SettleDistance * _omega) lastMoving = t;
+            if (Math.Abs(offset) >= _settle || Math.Abs(velocity) >= _settle * _omega) lastMoving = t;
             else if (t - lastMoving > 0.05) break;
         }
         return TimeSpan.FromSeconds(Math.Min(lastMoving + step, LongestSettle.TotalSeconds));

@@ -78,6 +78,8 @@ public partial class MainWindow
             }
         }
         _bubbleWanted = bubble;
+        // Claude, downloads and the timer all pass through here, so the keep-awake reason follows them.
+        UpdateKeepAwake();
         UpdateActivityBubble();
         UpdateIdleShape();
     }
@@ -88,6 +90,7 @@ public partial class MainWindow
         HookActivityBubble();
         bool surface = MusicCompactContent.IsVisible || CollapsedContent.IsVisible;
         LiveActivity want = !_cleanedUp && surface && !_isExpanded && !_isMusicExpanded && !_isAnimating
+                && !_spotlightMorphOwnsNotchVisibility
             ? _bubbleWanted
             : LiveActivity.None;
 
@@ -101,8 +104,16 @@ public partial class MainWindow
         if (!_bubbleShown)
         {
             _bubbleShown = true;
-            SetBubbleFace(want);
-            BudBubble();
+            if (ActivityBubble.IsVisible)
+            {
+                BudBubble();
+                if (want != _bubbleActivity) SwapBubbleFace(want);
+            }
+            else
+            {
+                SetBubbleFace(want);
+                BudBubble();
+            }
             return;
         }
         if (want != _bubbleActivity) SwapBubbleFace(want);
@@ -113,6 +124,7 @@ public partial class MainWindow
     {
         if (_bubbleHooked) return;
         _bubbleHooked = true;
+        ActivityBubble.IsVisibleChanged += (_, _) => { ApplyBubbleMusicSpin(); RefreshChargePulse(); };
         MusicCompactContent.IsVisibleChanged += (_, _) => UpdateActivityBubble();
         CollapsedContent.IsVisibleChanged += (_, _) => UpdateActivityBubble();
         NotchBorder.SizeChanged += (_, _) => PositionBubble();
@@ -137,6 +149,18 @@ public partial class MainWindow
         if (!_bubbleShown) return;
         _bubbleShown = false;
         RetractBubble();
+    }
+
+    /// <summary>
+    /// Spotlight takes over the notch and hides it at once. The orb and the charge cable sit outside the notch,
+    /// so they leave at the same instant instead of sliding under a notch that is no longer there.
+    /// </summary>
+    private void HideBubbleForSpotlight()
+    {
+        if (!_bubbleShown) return;
+        _bubbleShown = false;
+        RetractBubble(instant: true);
+        ChargeCable.Visibility = Visibility.Collapsed;
     }
 
     /// <summary>Just right of the notch (and its ear), flush with its top.</summary>
@@ -178,8 +202,7 @@ public partial class MainWindow
 
     private void SetBubbleFace(LiveActivity activity)
     {
-        // Still collapsed: the orb is about to bud out, so the face shows only once it has landed.
-        bool budding = ActivityBubble.Visibility != Visibility.Visible;
+        // This runs while hidden or between the outgoing and incoming face fades.
         if (_bubbleActivity == LiveActivity.Charging && activity != LiveActivity.Charging) LeaveChargeFace(fast: true);
         _bubbleActivity = activity;
         BubbleClaudeFace.Visibility = activity == LiveActivity.Claude ? Visibility.Visible : Visibility.Collapsed;
@@ -191,13 +214,13 @@ public partial class MainWindow
         if (activity == LiveActivity.Charging)
         {
             PrepareChargeFace();
-            ChargeAfter(TimeSpan.FromMilliseconds(budding ? 540 : 160), ChargeFaceReady);
+            ChargeAfter(Motion.Stagger(1), ChargeFaceReady);
         }
-        foreach (var property in new[] { WidthProperty, HeightProperty, MarginProperty })
-            BubbleIcon.BeginAnimation(property, null);
+        Motion.Stop(BubbleIcon, WidthProperty);
+        Motion.Stop(BubbleIcon, HeightProperty);
         double size = FaceSize(activity, _bubbleOpen);
         BubbleIcon.Width = BubbleIcon.Height = size;
-        BubbleIcon.Margin = FaceMargin(activity, _bubbleOpen);
+        Motion.Stop(this, BubbleFaceInsetProperty, FaceMargin(activity, _bubbleOpen).Left);
         UpdateBubbleContent();
         ApplyClaudeLiveMotion();
     }
@@ -240,14 +263,34 @@ public partial class MainWindow
                 (title, subtitle, trailing) = ChargeWords(battery);
                 break;
         }
-        BubbleTitle.Text = title;
-        BubbleSubtitle.Text = subtitle;
+        SetBubbleWords(BubbleTitle, title);
+        SetBubbleWords(BubbleSubtitle, subtitle);
         BubbleSubtitle.Foreground = subtitleBrush;
         BubbleSubtitle.Visibility = subtitle.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        BubbleTrailing.Text = trailing;
+        SetBubbleWords(BubbleTrailing, trailing);
         UpdateBubbleClaudeCount();
         if (_bubbleListMode) UpdateBubbleList(animate: false);
         ApplyBubbleMusicSpin();
+    }
+
+    private readonly Dictionary<TextBlock, string> _bubbleWords = new();
+
+    private void SetBubbleWords(TextBlock text, string value)
+    {
+        if (_bubbleWords.TryGetValue(text, out var pending) && pending == value) return;
+        _bubbleWords[text] = value;
+        if (!text.IsVisible || !_bubbleOpen || AnimationConfig.ReduceMotion)
+        {
+            text.Text = value;
+            Motion.Stop(text, OpacityProperty, 1);
+            return;
+        }
+        Motion.To(text, OpacityProperty, 0, Motion.Exit, done: () =>
+        {
+            if (_bubbleWords[text] != value) return;
+            text.Text = value;
+            Motion.To(text, OpacityProperty, 1, Motion.Tile);
+        });
     }
 
     internal static string FormatCountdown(TimeSpan remaining)
@@ -299,34 +342,21 @@ public partial class MainWindow
     {
         ++_bubbleToken;
         _bubbleCloseTimer?.Stop();
-        ResetBubbleShape();
+        bool entering = !ActivityBubble.IsVisible;
+        if (entering) ResetBubbleShape();
         ActivityBubble.Visibility = Visibility.Visible;
         PositionBubble();
         UpdateBubbleContent();
-        if (AnimationConfig.ReduceMotion) return;
-
-        var duration = TimeSpan.FromMilliseconds(620);
-        var slide = new DoubleAnimation(-(BubbleSize + BubbleGap), 0, new Duration(duration))
-        {
-            EasingFunction = new ElasticEase { Oscillations = 1, Springiness = 7, EasingMode = EasingMode.EaseOut }
-        };
-        Fps(slide);
-        BubbleSlide.BeginAnimation(TranslateTransform.XProperty, slide);
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleXProperty, Keys(duration, (0, 0.45), (0.38, 1.2), (0.68, 0.94), (1, 1)));
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleYProperty, Keys(duration, (0, 0.45), (0.38, 0.84), (0.68, 1.06), (1, 1)));
-
-        var faceIn = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(260)))
-        {
-            BeginTime = TimeSpan.FromMilliseconds(170),
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-        };
-        Fps(faceIn);
-        BubbleIcon.Opacity = 0;
-        BubbleIcon.BeginAnimation(OpacityProperty, faceIn);
+        Motion.To(ActivityBubble, WidthProperty, BubbleSize, Motion.Pop);
+        Motion.To(ActivityBubble, HeightProperty, BubbleSize, Motion.Pop);
+        Motion.To(BubbleSlide, TranslateTransform.XProperty, 0, Motion.Pop, from: entering ? -(BubbleSize + BubbleGap) : null);
+        Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, from: entering ? Motion.TileFromScale : null);
+        Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, from: entering ? Motion.TileFromScale : null);
+        Motion.To(BubbleIcon, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null, delay: entering ? Motion.Stagger(1) : null);
     }
 
     /// <summary>Back in under the notch, quicker than it came: a short pull, then gone.</summary>
-    private void RetractBubble()
+    private void RetractBubble(bool instant = false)
     {
         int token = ++_bubbleToken;
         _bubbleCloseTimer?.Stop();
@@ -334,28 +364,14 @@ public partial class MainWindow
         if (ActivityBubble.Visibility != Visibility.Visible) return;
         if (_bubbleOpen && !_bubbleListMode) HideBubbleDetail(fast: true);
         _bubbleOpen = false;
-
-        if (AnimationConfig.ReduceMotion || !ActivityBubble.IsVisible)
-        {
-            FinishRetract();
-            return;
-        }
-
-        var duration = new Duration(TimeSpan.FromMilliseconds(300));
-        var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
-        var slide = new DoubleAnimation(-(BubbleSize + BubbleGap), duration) { EasingFunction = ease };
-        slide.Completed += (_, _) => { if (token == _bubbleToken) FinishRetract(); };
-        var shrink = new DoubleAnimation(0.4, duration) { EasingFunction = ease };
-        var close = new DoubleAnimation(BubbleSize, new Duration(TimeSpan.FromMilliseconds(220))) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
-        Fps(slide);
-        Fps(shrink);
-        Fps(close);
-        ActivityBubble.BeginAnimation(WidthProperty, close);
-        ActivityBubble.BeginAnimation(HeightProperty, close);
-        BubbleSlide.BeginAnimation(TranslateTransform.XProperty, slide);
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleXProperty, shrink);
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleYProperty, shrink);
-
+        if (instant || AnimationConfig.ReduceMotion || !ActivityBubble.IsVisible) { FinishRetract(); return; }
+        Motion.To(ActivityBubble, WidthProperty, BubbleSize, Motion.PopBack);
+        Motion.To(ActivityBubble, HeightProperty, BubbleSize, Motion.PopBack);
+        Motion.To(BubbleIcon, OpacityProperty, 0, Motion.Exit);
+        Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.PopBack);
+        Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.PopBack);
+        Motion.To(BubbleSlide, TranslateTransform.XProperty, -(BubbleSize + BubbleGap), Motion.PopBack,
+            done: () => { if (token == _bubbleToken) FinishRetract(); });
         void FinishRetract()
         {
             ActivityBubble.Visibility = Visibility.Collapsed;
@@ -373,39 +389,32 @@ public partial class MainWindow
     {
         int token = ++_bubbleToken;
         if (_bubbleOpen) CloseBubble();
-        // The cable goes back into the orb while the charging face sinks away.
         if (_bubbleActivity == LiveActivity.Charging) LeaveChargeFace(fast: false);
-        if (AnimationConfig.ReduceMotion)
-        {
-            SetBubbleFace(next);
-            return;
-        }
-
         var scale = BubbleIconScale();
-        var outDuration = new Duration(TimeSpan.FromMilliseconds(150));
-        var fadeOut = new DoubleAnimation(0, outDuration) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
-        var sink = new DoubleAnimation(0.5, outDuration) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
-        Fps(fadeOut);
-        Fps(sink);
-        fadeOut.Completed += (_, _) =>
+        Motion.To(scale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(BubbleIcon, OpacityProperty, 0, Motion.Exit, done: () =>
         {
             if (token != _bubbleToken) return;
             SetBubbleFace(next);
-            var inDuration = new Duration(TimeSpan.FromMilliseconds(420));
-            var fadeIn = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(180)));
-            var rise = new DoubleAnimation(0.5, 1, inDuration) { EasingFunction = new ElasticEase { Oscillations = 1, Springiness = 6, EasingMode = EasingMode.EaseOut } };
-            Fps(fadeIn);
-            Fps(rise);
-            BubbleIcon.BeginAnimation(OpacityProperty, fadeIn);
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, rise);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, rise);
-            var bump = Keys(TimeSpan.FromMilliseconds(380), (0, 1), (0.35, 1.08), (1, 1));
-            BubbleScale.BeginAnimation(ScaleTransform.ScaleXProperty, bump);
-            BubbleScale.BeginAnimation(ScaleTransform.ScaleYProperty, bump);
-        };
-        BubbleIcon.BeginAnimation(OpacityProperty, fadeOut);
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, sink);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, sink);
+            Motion.To(BubbleIcon, OpacityProperty, 1, Motion.Tile);
+            Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale);
+            Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: 1.3);
+            Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: -1.3);
+        });
+    }
+
+    private static readonly DependencyProperty BubbleFaceInsetProperty = DependencyProperty.Register(
+        "BubbleFaceInset", typeof(double), typeof(MainWindow), new PropertyMetadata(0d,
+            (d, e) => ((MainWindow)d).BubbleIcon.Margin = new Thickness((double)e.NewValue, 0, 0, 0)));
+
+    private void SpringBubbleFace(bool open, SpringMotion spring)
+    {
+        double size = FaceSize(_bubbleActivity, open);
+        Motion.To(BubbleIcon, WidthProperty, size, spring);
+        Motion.To(BubbleIcon, HeightProperty, size, spring);
+        Motion.To(this, BubbleFaceInsetProperty, FaceMargin(_bubbleActivity, open).Left, spring);
     }
 
     private ScaleTransform BubbleIconScale()
@@ -424,43 +433,19 @@ public partial class MainWindow
     private void OpenBubble()
     {
         if (_bubbleOpen || !_bubbleShown) return;
-        if (_bubbleActivity == LiveActivity.Claude && _bubbleClaudeSessions.Count > 1)
-        {
-            OpenBubbleList();
-            return;
-        }
+        if (_bubbleActivity == LiveActivity.Claude && _bubbleClaudeSessions.Count > 1) { OpenBubbleList(); return; }
         _bubbleOpen = true;
         UpdateBubbleContent();
         ApplyClaudeLiveMotion();
-
-        var spring = new BackEase { Amplitude = 0.32, EasingMode = EasingMode.EaseOut };
-        var grow = new DoubleAnimation(BubbleOpenTargetWidth(), new Duration(TimeSpan.FromMilliseconds(520))) { EasingFunction = spring };
-        var tall = new DoubleAnimation(BubbleOpenHeight, new Duration(TimeSpan.FromMilliseconds(460))) { EasingFunction = spring };
-        var face = new DoubleAnimation(FaceSize(_bubbleActivity, open: true), new Duration(TimeSpan.FromMilliseconds(460))) { EasingFunction = spring };
-        var faceMargin = new ThicknessAnimation(FaceMargin(_bubbleActivity, open: true), new Duration(TimeSpan.FromMilliseconds(460))) { EasingFunction = spring };
-        Fps(grow);
-        Fps(tall);
-        Fps(face);
-        Fps(faceMargin);
-        ActivityBubble.BeginAnimation(WidthProperty, grow);
-        ActivityBubble.BeginAnimation(HeightProperty, tall);
-        BubbleIcon.BeginAnimation(WidthProperty, face);
-        BubbleIcon.BeginAnimation(HeightProperty, face);
-        BubbleIcon.BeginAnimation(MarginProperty, faceMargin);
-
+        Motion.To(ActivityBubble, WidthProperty, BubbleOpenTargetWidth(), Motion.Pop);
+        Motion.To(ActivityBubble, HeightProperty, BubbleOpenHeight, Motion.Pop);
+        SpringBubbleFace(open: true, Motion.Pop);
         BubbleDetail.Margin = new Thickness(FaceMargin(_bubbleActivity, open: true).Left * 2 + FaceSize(_bubbleActivity, open: true), 0, 14, 0);
+        bool entering = !BubbleDetail.IsVisible;
         BubbleDetail.Visibility = Visibility.Visible;
-        var begin = TimeSpan.FromMilliseconds(110);
-        var fade = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(240))) { BeginTime = begin, EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
-        var slideIn = new DoubleAnimation(-8, 0, new Duration(TimeSpan.FromMilliseconds(420))) { BeginTime = begin, EasingFunction = new ExponentialEase { Exponent = 6, EasingMode = EasingMode.EaseOut } };
-        var unblur = new DoubleAnimation(7, 0, new Duration(TimeSpan.FromMilliseconds(300))) { BeginTime = begin, EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
-        Fps(fade);
-        Fps(slideIn);
-        Fps(unblur);
-        BubbleDetail.BeginAnimation(OpacityProperty, fade);
-        BubbleDetailSlide.BeginAnimation(TranslateTransform.XProperty, slideIn);
-        BubbleDetailBlur.BeginAnimation(BlurEffect.RadiusProperty, unblur);
-
+        Motion.To(BubbleDetail, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null, delay: Motion.Stagger(1));
+        Motion.To(BubbleDetailSlide, TranslateTransform.XProperty, 0, Motion.Tile, from: entering ? -8 : null);
+        Motion.To(BubbleDetailBlur, BlurEffect.RadiusProperty, 0, Motion.Tile, from: entering ? 7 : null);
         ScheduleBubbleClose(ActivityBubble.IsMouseOver ? null : BubbleUntouched);
     }
 
@@ -468,46 +453,25 @@ public partial class MainWindow
     private void CloseBubble()
     {
         if (!_bubbleOpen) return;
-        if (_bubbleListMode)
-        {
-            CloseBubbleList();
-            return;
-        }
+        if (_bubbleListMode) { CloseBubbleList(); return; }
         _bubbleOpen = false;
         _bubbleCloseTimer?.Stop();
         HideBubbleDetail(fast: false);
-
-        var ease = new ExponentialEase { Exponent = 5, EasingMode = EasingMode.EaseOut };
-        var duration = new Duration(TimeSpan.FromMilliseconds(420));
-        var begin = TimeSpan.FromMilliseconds(60);
-        var narrow = new DoubleAnimation(BubbleSize, duration) { EasingFunction = ease, BeginTime = begin };
-        var face = new DoubleAnimation(FaceSize(_bubbleActivity, open: false), duration) { EasingFunction = ease, BeginTime = begin };
-        var faceMargin = new ThicknessAnimation(FaceMargin(_bubbleActivity, open: false), duration) { EasingFunction = ease, BeginTime = begin };
-        Fps(narrow);
-        Fps(face);
-        Fps(faceMargin);
-        ActivityBubble.BeginAnimation(WidthProperty, narrow);
-        ActivityBubble.BeginAnimation(HeightProperty, narrow);
-        BubbleIcon.BeginAnimation(WidthProperty, face);
-        BubbleIcon.BeginAnimation(HeightProperty, face);
-        BubbleIcon.BeginAnimation(MarginProperty, faceMargin);
+        Motion.To(ActivityBubble, WidthProperty, BubbleSize, Motion.PopBack);
+        Motion.To(ActivityBubble, HeightProperty, BubbleSize, Motion.PopBack);
+        SpringBubbleFace(open: false, Motion.PopBack);
         ApplyClaudeLiveMotion();
     }
 
     private void HideBubbleDetail(bool fast)
     {
         int token = _bubbleToken;
-        var duration = new Duration(TimeSpan.FromMilliseconds(fast ? 80 : 130));
-        var fade = new DoubleAnimation(0, duration) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
-        var blur = new DoubleAnimation(5, duration);
-        Fps(fade);
-        Fps(blur);
-        fade.Completed += (_, _) =>
+        Motion.To(BubbleDetailSlide, TranslateTransform.XProperty, -8, Motion.Exit);
+        Motion.To(BubbleDetailBlur, BlurEffect.RadiusProperty, 5, Motion.Exit);
+        Motion.To(BubbleDetail, OpacityProperty, 0, Motion.Exit, done: () =>
         {
             if (token == _bubbleToken && !_bubbleOpen) BubbleDetail.Visibility = Visibility.Collapsed;
-        };
-        BubbleDetail.BeginAnimation(OpacityProperty, fade);
-        BubbleDetailBlur.BeginAnimation(BlurEffect.RadiusProperty, blur);
+        });
     }
 
     /// <summary>Closed orb, nothing running on it: the state it buds out in.</summary>
@@ -515,38 +479,39 @@ public partial class MainWindow
     {
         _bubbleOpen = false;
         _bubbleListMode = false;
-        BubbleList.BeginAnimation(OpacityProperty, null);
-        BubbleList.Children.Clear();
+        Motion.Stop(BubbleList, OpacityProperty);
+        ClearBubbleRows();
         BubbleList.Visibility = Visibility.Collapsed;
-        _bubbleListRows.Clear();
-        ActivityBubble.BeginAnimation(WidthProperty, null);
-        ActivityBubble.BeginAnimation(HeightProperty, null);
-        ActivityBubble.Width = ActivityBubble.Height = BubbleSize;
-        BubbleSlide.BeginAnimation(TranslateTransform.XProperty, null);
-        BubbleSlide.X = 0;
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        BubbleScale.ScaleX = BubbleScale.ScaleY = 1;
+        Motion.Stop(ActivityBubble, WidthProperty, BubbleSize);
+        Motion.Stop(ActivityBubble, HeightProperty, BubbleSize);
+        Motion.Stop(BubbleSlide, TranslateTransform.XProperty, 0);
+        Motion.Stop(BubbleScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(BubbleScale, ScaleTransform.ScaleYProperty, 1);
         var iconScale = BubbleIconScale();
-        iconScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        iconScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        iconScale.ScaleX = iconScale.ScaleY = 1;
-        foreach (var property in new[] { WidthProperty, HeightProperty, MarginProperty, OpacityProperty })
-            BubbleIcon.BeginAnimation(property, null);
-        BubbleIcon.Width = BubbleIcon.Height = FaceSize(_bubbleActivity, open: false);
-        BubbleIcon.Margin = FaceMargin(_bubbleActivity, open: false);
-        BubbleIcon.Opacity = 1;
-        BubbleDetail.BeginAnimation(OpacityProperty, null);
-        BubbleDetail.Opacity = 0;
+        Motion.Stop(iconScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(iconScale, ScaleTransform.ScaleYProperty, 1);
+        Motion.Stop(BubbleIcon, WidthProperty, FaceSize(_bubbleActivity, open: false));
+        Motion.Stop(BubbleIcon, HeightProperty, FaceSize(_bubbleActivity, open: false));
+        Motion.Stop(this, BubbleFaceInsetProperty, FaceMargin(_bubbleActivity, open: false).Left);
+        Motion.Stop(BubbleIcon, OpacityProperty, 1);
+        Motion.Stop(BubbleDetail, OpacityProperty, 0);
+        Motion.Stop(BubbleDetailSlide, TranslateTransform.XProperty, 0);
         BubbleDetail.Visibility = Visibility.Collapsed;
-        BubbleDetailBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-        BubbleDetailBlur.Radius = 0;
+        Motion.Stop(BubbleDetailBlur, BlurEffect.RadiusProperty, 0);
+        Motion.Stop(BubbleCountBadge, OpacityProperty, 1);
+        Motion.Stop(BubbleCountBadgeScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(BubbleCountBadgeScale, ScaleTransform.ScaleYProperty, 1);
+        foreach (var (text, value) in _bubbleWords)
+        {
+            Motion.Stop(text, OpacityProperty, 1);
+            text.Text = value;
+        }
     }
 
     /// <summary>The cover turns like a record while the music plays, and only while the orb is on screen.</summary>
     private void ApplyBubbleMusicSpin()
     {
-        bool spin = !AnimationConfig.ReduceMotion && _bubbleShown && _bubbleActivity == LiveActivity.Music &&
+        bool spin = AmbientAnimationsAllowed && _bubbleShown && _bubbleActivity == LiveActivity.Music &&
                     ActivityBubble.IsVisible && _currentMediaInfo?.IsPlaying == true;
         if (spin == _bubbleMusicSpinning) return;
         _bubbleMusicSpinning = spin;
@@ -566,13 +531,8 @@ public partial class MainWindow
     /// <summary>A press sinks the orb a little; letting go springs it back.</summary>
     private void PressBubble(bool down)
     {
-        if (AnimationConfig.ReduceMotion) return;
-        DoubleAnimation scale = down
-            ? new DoubleAnimation(0.9, new Duration(TimeSpan.FromMilliseconds(90))) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } }
-            : new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(460))) { EasingFunction = new ElasticEase { Oscillations = 1, Springiness = 5, EasingMode = EasingMode.EaseOut } };
-        Fps(scale);
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleXProperty, scale);
-        BubbleScale.BeginAnimation(ScaleTransform.ScaleYProperty, scale);
+        Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, down ? 0.9 : 1, down ? Motion.PressDown : Motion.Press);
+        Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, down ? 0.9 : 1, down ? Motion.PressDown : Motion.Press);
     }
 
     private static DoubleAnimationUsingKeyFrames Keys(TimeSpan duration, params (double At, double Value)[] frames)
@@ -603,19 +563,40 @@ public partial class MainWindow
     {
         int count = _bubbleActivity == LiveActivity.Claude ? _bubbleClaudeSessions.Count : 0;
         bool show = count > 1 && !_bubbleListMode;
-        BubbleCountBadge.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show)
         {
             _bubbleShownCount = 0;
+            if (BubbleCountBadge.Visibility != Visibility.Visible) return;
+            if (!BubbleCountBadge.IsVisible)
+            {
+                Motion.Stop(BubbleCountBadge, OpacityProperty, 0);
+                Motion.Stop(BubbleCountBadgeScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale);
+                Motion.Stop(BubbleCountBadgeScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale);
+                BubbleCountBadge.Visibility = Visibility.Collapsed;
+                return;
+            }
+            Motion.To(BubbleCountBadgeScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+            Motion.To(BubbleCountBadgeScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
+            Motion.To(BubbleCountBadge, OpacityProperty, 0, Motion.Exit, done: () =>
+            {
+                if (_bubbleShownCount == 0) BubbleCountBadge.Visibility = Visibility.Collapsed;
+            });
             return;
         }
-        BubbleCountText.Text = count > 9 ? "9+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        bool entering = !BubbleCountBadge.IsVisible;
+        BubbleCountBadge.Visibility = Visibility.Visible;
+        CrossFadeText(BubbleCountText, count > 9 ? "9+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Motion.To(BubbleCountBadge, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null);
         if (count == _bubbleShownCount) return;
         _bubbleShownCount = count;
-        if (AnimationConfig.ReduceMotion || !ActivityBubble.IsVisible) return;
-        var pop = Keys(TimeSpan.FromMilliseconds(360), (0, 0.3), (0.45, 1.25), (1, 1));
-        BubbleCountBadgeScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-        BubbleCountBadgeScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+        if (!ActivityBubble.IsVisible)
+        {
+            Motion.Stop(BubbleCountBadgeScale, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(BubbleCountBadgeScale, ScaleTransform.ScaleYProperty, 1);
+            return;
+        }
+        Motion.To(BubbleCountBadgeScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: entering ? Motion.TileFromScale : null);
+        Motion.To(BubbleCountBadgeScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: entering ? Motion.TileFromScale : null);
     }
 
     private double BubbleListHeight(int rows) =>
@@ -629,20 +610,12 @@ public partial class MainWindow
     {
         _bubbleOpen = true;
         _bubbleListMode = true;
-        BubbleCountBadge.Visibility = Visibility.Collapsed;
+        UpdateBubbleClaudeCount();
         UpdateBubbleList(animate: true);
         ApplyClaudeLiveMotion();
-
-        var spring = new BackEase { Amplitude = 0.28, EasingMode = EasingMode.EaseOut };
-        var grow = new DoubleAnimation(BubbleOpenTargetWidth(), new Duration(TimeSpan.FromMilliseconds(520))) { EasingFunction = spring };
-        var tall = new DoubleAnimation(BubbleListHeight(_bubbleClaudeSessions.Count), new Duration(TimeSpan.FromMilliseconds(500))) { EasingFunction = spring };
-        var starOut = new DoubleAnimation(0, new Duration(TimeSpan.FromMilliseconds(140)));
-        Fps(grow);
-        Fps(tall);
-        Fps(starOut);
-        ActivityBubble.BeginAnimation(WidthProperty, grow);
-        ActivityBubble.BeginAnimation(HeightProperty, tall);
-        BubbleIcon.BeginAnimation(OpacityProperty, starOut);
+        Motion.To(ActivityBubble, WidthProperty, BubbleOpenTargetWidth(), Motion.Pop);
+        Motion.To(ActivityBubble, HeightProperty, BubbleListHeight(_bubbleClaudeSessions.Count), Motion.Pop);
+        Motion.To(BubbleIcon, OpacityProperty, 0, Motion.Exit);
         ScheduleBubbleClose(ActivityBubble.IsMouseOver ? null : BubbleUntouched);
     }
 
@@ -652,27 +625,15 @@ public partial class MainWindow
         _bubbleOpen = false;
         _bubbleCloseTimer?.Stop();
         int token = _bubbleToken;
-        var fade = new DoubleAnimation(0, new Duration(TimeSpan.FromMilliseconds(110)));
-        Fps(fade);
-        fade.Completed += (_, _) =>
+        Motion.To(BubbleList, OpacityProperty, 0, Motion.Exit, done: () =>
         {
             if (token != _bubbleToken || _bubbleOpen) return;
             BubbleList.Visibility = Visibility.Collapsed;
-            BubbleList.Children.Clear();
-            _bubbleListRows.Clear();
-        };
-        BubbleList.BeginAnimation(OpacityProperty, fade);
-
-        var ease = new ExponentialEase { Exponent = 5, EasingMode = EasingMode.EaseOut };
-        var duration = new Duration(TimeSpan.FromMilliseconds(440));
-        var begin = TimeSpan.FromMilliseconds(70);
-        var narrow = new DoubleAnimation(BubbleSize, duration) { EasingFunction = ease, BeginTime = begin };
-        var starIn = new DoubleAnimation(1, new Duration(TimeSpan.FromMilliseconds(240))) { BeginTime = TimeSpan.FromMilliseconds(220) };
-        Fps(narrow);
-        Fps(starIn);
-        ActivityBubble.BeginAnimation(WidthProperty, narrow);
-        ActivityBubble.BeginAnimation(HeightProperty, narrow);
-        BubbleIcon.BeginAnimation(OpacityProperty, starIn);
+            ClearBubbleRows();
+        });
+        Motion.To(ActivityBubble, WidthProperty, BubbleSize, Motion.PopBack);
+        Motion.To(ActivityBubble, HeightProperty, BubbleSize, Motion.PopBack);
+        Motion.To(BubbleIcon, OpacityProperty, 1, Motion.Tile);
         _bubbleListMode = false;
         UpdateBubbleClaudeCount();
         ApplyClaudeLiveMotion();
@@ -684,10 +645,21 @@ public partial class MainWindow
         var sessions = _bubbleClaudeSessions.Take(BubbleMaxRows).ToList();
         bool sameSet = sessions.Count == _bubbleListRows.Count &&
                        sessions.Select(s => s.Id).SequenceEqual(_bubbleListRows.Select(r => r.Id));
+        if (!sameSet && !animate && BubbleList.IsVisible && !AnimationConfig.ReduceMotion)
+        {
+            // Keep the previous rows until they have left; the callback reads the latest sessions.
+            Motion.To(BubbleList, OpacityProperty, 0, Motion.Exit, done: () =>
+            {
+                if (!_bubbleOpen || !_bubbleListMode) return;
+                BubbleList.Visibility = Visibility.Collapsed;
+                Motion.To(ActivityBubble, HeightProperty, BubbleListHeight(_bubbleClaudeSessions.Count), Motion.Glide);
+                UpdateBubbleList(animate: true);
+            });
+            return;
+        }
         if (!sameSet)
         {
-            BubbleList.Children.Clear();
-            _bubbleListRows.Clear();
+            ClearBubbleRows();
             for (int i = 0; i < sessions.Count; i++)
             {
                 var row = BuildBubbleRow(sessions[i]);
@@ -696,12 +668,7 @@ public partial class MainWindow
             }
             if (_bubbleOpen && !animate)
             {
-                var tall = new DoubleAnimation(BubbleListHeight(sessions.Count), new Duration(TimeSpan.FromMilliseconds(300)))
-                {
-                    EasingFunction = new ExponentialEase { Exponent = 5, EasingMode = EasingMode.EaseOut }
-                };
-                Fps(tall);
-                ActivityBubble.BeginAnimation(HeightProperty, tall);
+                Motion.To(ActivityBubble, HeightProperty, BubbleListHeight(sessions.Count), Motion.Glide);
             }
         }
         for (int i = 0; i < sessions.Count; i++)
@@ -709,16 +676,36 @@ public partial class MainWindow
             var session = sessions[i];
             var row = _bubbleListRows[i];
             row.Star.Fill = ClaudeStarBrush(session);
-            row.Name.Text = session.Name;
-            row.Status.Text = session.Status == ClaudeSessionStatus.Working && session.Activity is { Length: > 0 } activity
+            CrossFadeText(row.Name, session.Name);
+            CrossFadeText(row.Status, session.Status == ClaudeSessionStatus.Working && session.Activity is { Length: > 0 } activity
                 ? activity
-                : Loc.Get(ClaudeLiveStatusKey(session));
+                : Loc.Get(ClaudeLiveStatusKey(session)));
             row.Status.Foreground = session.Status == ClaudeSessionStatus.Waiting ? ClaudeLiveWaitingBrush : BubbleMuted;
-            row.Time.Text = ControlCenterView.FormatElapsed(DateTime.UtcNow - (session.TurnStartedUtc ?? DateTime.UtcNow));
+            CrossFadeText(row.Time, ControlCenterView.FormatElapsed(DateTime.UtcNow - (session.TurnStartedUtc ?? DateTime.UtcNow)));
         }
-        BubbleList.BeginAnimation(OpacityProperty, null);
-        BubbleList.Opacity = 1;
+        bool entering = !BubbleList.IsVisible;
         BubbleList.Visibility = Visibility.Visible;
+        if (entering || BubbleList.Opacity < 1)
+            Motion.To(BubbleList, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null);
+    }
+
+    private void ClearBubbleRows()
+    {
+        // Removed rows must not keep their staggered springs ticking behind the collapsed orb.
+        foreach (FrameworkElement row in BubbleList.Children)
+        {
+            Motion.Stop(row, OpacityProperty);
+            if (row.RenderTransform is TransformGroup { Children: [ScaleTransform scale, TranslateTransform slide] })
+            {
+                Motion.Stop(scale, ScaleTransform.ScaleXProperty);
+                Motion.Stop(scale, ScaleTransform.ScaleYProperty);
+                Motion.Stop(slide, TranslateTransform.XProperty);
+            }
+        }
+        foreach (var row in _bubbleListRows)
+            foreach (var text in new[] { row.Name, row.Status, row.Time }) Motion.Stop(text, OpacityProperty);
+        BubbleList.Children.Clear();
+        _bubbleListRows.Clear();
     }
 
     private FrameworkElement BuildBubbleRow(ClaudeSession session)
@@ -764,16 +751,15 @@ public partial class MainWindow
         row.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
-            var down = new DoubleAnimation(0.96, new Duration(TimeSpan.FromMilliseconds(80)));
-            press.BeginAnimation(ScaleTransform.ScaleXProperty, down);
-            press.BeginAnimation(ScaleTransform.ScaleYProperty, down);
+            Motion.To(press, ScaleTransform.ScaleXProperty, 0.96, Motion.PressDown);
+            Motion.To(press, ScaleTransform.ScaleYProperty, 0.96, Motion.PressDown);
         };
         string id = session.Id;
         row.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
-            press.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            press.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            Motion.To(press, ScaleTransform.ScaleXProperty, 1, Motion.Press);
+            Motion.To(press, ScaleTransform.ScaleYProperty, 1, Motion.Press);
             var target = _bubbleClaudeSessions.FirstOrDefault(s => s.Id == id);
             CloseBubble();
             if (target == null || !ClaudeSessionWindow.TryActivate(target.Id, target.Title))
@@ -786,20 +772,13 @@ public partial class MainWindow
     /// <summary>Each row slides in from the left out of nothing, a beat after the one above.</summary>
     private static void SlideRowIn(FrameworkElement row, int index)
     {
-        var begin = TimeSpan.FromMilliseconds(120 + index * 55);
-        var fade = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(260))) { BeginTime = begin, FillBehavior = FillBehavior.Stop };
-        var slide = new DoubleAnimation(-10, 0, new Duration(TimeSpan.FromMilliseconds(420)))
+        Motion.To(row, OpacityProperty, 1, Motion.Tile, from: 0, delay: Motion.Stagger(index));
+        if (row.RenderTransform is TransformGroup { Children: [ScaleTransform scale, TranslateTransform translate] })
         {
-            BeginTime = begin,
-            EasingFunction = new ExponentialEase { Exponent = 6, EasingMode = EasingMode.EaseOut }
-        };
-        Fps(fade);
-        Fps(slide);
-        row.Opacity = 0;
-        fade.Completed += (_, _) => row.Opacity = 1;
-        row.BeginAnimation(OpacityProperty, fade);
-        if (row.RenderTransform is TransformGroup { Children: [_, TranslateTransform translate] })
-            translate.BeginAnimation(TranslateTransform.XProperty, slide);
+            Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: Motion.Stagger(index));
+            Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: Motion.Stagger(index));
+            Motion.To(translate, TranslateTransform.XProperty, 0, Motion.Tile, from: -10, delay: Motion.Stagger(index));
+        }
     }
 
     #endregion

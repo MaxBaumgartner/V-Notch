@@ -48,6 +48,7 @@ public sealed class MainWindowPrivacyIndicatorIntegrationTests
                     services.AddSingleton(service);
                 });
             var window = fixture.Window;
+            using var host = new HudContentHost(window);
             window.NotchBorder.Width = 300;
             window.NotchBorder.Height = 40;
             var module = Field<PrivacyIndicatorModule>(window, "_privacyModule");

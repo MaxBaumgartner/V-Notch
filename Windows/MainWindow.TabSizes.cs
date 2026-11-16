@@ -46,14 +46,16 @@ public partial class MainWindow
 
     private void SettleHomeNotchToFit()
     {
-        if (!_isPiView || _isAnimating || _cleanedUp) return;
-        SettleNotchToContent(PiContent, MeasureHomeViewHeight(), () => _isPiView);
+        if (_transitionCoordinator.TargetView != VNotch.Models.NotchView.Pi || _cleanedUp) return;
+        SettleNotchToContent(PiContent, MeasureHomeViewHeight(),
+            () => _transitionCoordinator.TargetView == VNotch.Models.NotchView.Pi);
     }
 
     private void SettleSchoolNotchToFit()
     {
-        if (!_isSchoolView || _isAnimating || _cleanedUp) return;
-        SettleNotchToContent(SchoolContent, MeasureSchoolViewHeight(), () => _isSchoolView);
+        if (_transitionCoordinator.TargetView != VNotch.Models.NotchView.School || _cleanedUp) return;
+        SettleNotchToContent(SchoolContent, MeasureSchoolViewHeight(),
+            () => _transitionCoordinator.TargetView == VNotch.Models.NotchView.School);
     }
 
     /// <summary>
@@ -62,38 +64,25 @@ public partial class MainWindow
     /// </summary>
     private void SettleNotchToContent(FrameworkElement content, double target, Func<bool> stillOpen)
     {
-        double current = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : target;
+        double current = double.IsFinite(NotchBorder.Height) ? NotchBorder.Height :
+            NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : target;
         double chrome = content.Margin.Top + content.Margin.Bottom;
-        if (Math.Abs(current - target) < 0.5) return;
+        if (Math.Abs(current - target) < 0.5 &&
+            !DependencyPropertyHelper.GetValueSource(NotchBorder, HeightProperty).IsAnimated) return;
 
         int generation = ++_centerNotchHeightGeneration;
         bool growing = target > current;
         if (growing) ResizeHostWindowHeight(target);
 
-        double currentContent = content.ActualHeight > 0 ? content.ActualHeight : Math.Max(0, current - chrome);
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        content.BeginAnimation(HeightProperty, null);
-        NotchBorder.Height = current;
-        content.Height = currentContent;
-        _isAnimating = true;
-
-        var duration = new Duration(TimeSpan.FromMilliseconds(320));
-        var notchAnim = MakeAnim(current, target, duration, _easeExpOut6);
-        var contentAnim = MakeAnim(currentContent, Math.Max(0, target - chrome), duration, _easeExpOut6);
-        Timeline.SetDesiredFrameRate(notchAnim, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(contentAnim, AnimationConfig.TargetFps);
-        notchAnim.Completed += (_, _) =>
+        // Auto-sized content needs a finite initial value; subsequent changes retain the live spring.
+        if (!double.IsFinite(content.Height)) content.Height = Math.Max(0, current - chrome);
+        Motion.To(content, HeightProperty, Math.Max(0, target - chrome), Motion.Glide);
+        void Arrived()
         {
-            if (generation != _centerNotchHeightGeneration) return;
-            _isAnimating = false;
-            if (!stillOpen()) return;
-            NotchBorder.BeginAnimation(HeightProperty, null);
-            NotchBorder.Height = target;
-            content.BeginAnimation(HeightProperty, null);
-            content.Height = Math.Max(0, target - chrome);
+            if (generation != _centerNotchHeightGeneration || !stillOpen()) return;
             if (!growing) ResizeHostWindowHeight(target);
-        };
-        NotchBorder.BeginAnimation(HeightProperty, notchAnim, HandoffBehavior.SnapshotAndReplace);
-        content.BeginAnimation(HeightProperty, contentAnim, HandoffBehavior.SnapshotAndReplace);
+        }
+        if (_notchShellPresenter?.RetargetHeight(target, Arrived) != true)
+            Motion.To(NotchBorder, HeightProperty, target, Motion.Glide, done: Arrived);
     }
 }

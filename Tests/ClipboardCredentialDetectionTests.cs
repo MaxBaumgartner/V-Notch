@@ -25,7 +25,24 @@ public sealed class ClipboardCredentialDetectionTests
     [InlineData("postgresql://user:p@database.local/db")]
     [InlineData("Your security code is 1234")]
     [InlineData("Mã xác nhận của bạn là 678901")]
+    [InlineData("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    [InlineData("user_password = supersecretvalue")]
+    [InlineData("admin_password: supersecretvalue")]
+    [InlineData("jwt_secret=supersecretvalue")]
+    [InlineData("app_secret=supersecretvalue")]
+    [InlineData("private_key=supersecretvalue")]
     public void MasksCredentialEvidence(string text) => Assert.True(ClipboardSensitiveData.Analyze(text).ShouldMask);
+
+    [Fact]
+    public void RecognizesSnakeCasePrefixedAndSuffixedCredentialLabels()
+    {
+        Assert.True(ClipboardSensitiveData.IsSensitive("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "", ""));
+        Assert.True(ClipboardSensitiveData.IsSensitive("user_password = supersecretvalue", "", ""));
+        Assert.True(ClipboardSensitiveData.IsSensitive("admin_password: supersecretvalue", "", ""));
+        Assert.True(ClipboardSensitiveData.IsSensitive("jwt_secret=supersecretvalue", "", ""));
+        Assert.True(ClipboardSensitiveData.IsSensitive("app_secret=supersecretvalue", "", ""));
+        Assert.True(ClipboardSensitiveData.IsSensitive("private_key=supersecretvalue", "", ""));
+    }
 
     [Theory]
     [InlineData("john.smith+work@example.com")]
@@ -117,7 +134,7 @@ public sealed class ClipboardCredentialDetectionTests
                 id = (await store.ImportAsync(new ClipboardCapture { Text = "password: a" })).Entry!.Id;
             }
             string path = Path.Combine(root, "items", id.ToString("N"), "entry.json");
-            var entry = JsonSerializer.Deserialize<ClipboardEntry>(await File.ReadAllTextAsync(path))!;
+            var entry = ClipboardRecordTestReader.Read<ClipboardEntry>(root, path);
             await File.WriteAllTextAsync(path, JsonSerializer.Serialize(entry with
             {
                 IsSensitive = false,
@@ -129,7 +146,7 @@ public sealed class ClipboardCredentialDetectionTests
             await reopened.InitializeAsync();
             Assert.True(reopened.GetEntry(id)!.IsSensitive);
             Assert.Empty(await reopened.SearchAsync("password: a", "All"));
-            var persisted = JsonSerializer.Deserialize<ClipboardEntry>(await File.ReadAllTextAsync(path))!;
+            var persisted = ClipboardRecordTestReader.Read<ClipboardEntry>(root, path);
             Assert.Equal(ClipboardSensitiveData.DetectorVersion, persisted.SensitivityVersion);
             Assert.Equal(ClipboardSensitiveData.Mask, persisted.Title);
         }

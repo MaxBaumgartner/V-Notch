@@ -25,6 +25,7 @@ public sealed class MainWindowCompactFeedbackTests
     {
         await using var fixture = CreateFixture();
         var window = fixture.Window;
+        double closedWidth = window.NotchBorder.Width;
         var battery = new BatteryInfo { Percentage = percent, IsCharging = pluggedIn, IsPluggedIn = pluggedIn, PowerWatts = watts, HasPowerRate = watts != 0 };
         object kind = Enum.Parse(typeof(MainWindow).GetNestedType("ChargingGlanceKind", BindingFlags.NonPublic)!, pluggedIn ? "PluggedIn" : "Unplugged");
         Invoke(window, "ShowChargingGlance", battery, kind);
@@ -34,9 +35,13 @@ public sealed class MainWindowCompactFeedbackTests
         Assert.Equal(formattedWatts, window.ChargingWattText.Text);
         Assert.Equal(watts == 0 ? Visibility.Collapsed : Visibility.Visible, window.ChargingWattText.Visibility);
         Assert.Equal(percent / 100d, window.ChargingBatteryFillScale.ScaleX);
-        Assert.Equal(Visibility.Collapsed, window.CollapsedContent.Visibility);
+        await WpfFrameWaiter.UntilAsync(() => window.CollapsedContent.Visibility == Visibility.Collapsed,
+            "clock leaves for charging glance", ct);
         Assert.Equal(pluggedIn ? Color.FromRgb(0x30, 0xD1, 0x58) : Color.FromRgb(0xFF, 0x95, 0), ((SolidColorBrush)window.ChargingPercentText.Foreground).Color);
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.ChargingNotification.Opacity - 1) < 1e-6 && Math.Abs(window.ChargingIconScale.ScaleX - 1) < 1e-6, "charging glance entrance", ct);
+        await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty),
+            "charging glance width settles", ct);
+        Assert.Equal(closedWidth + (watts == 0 ? 28 : 56), window.NotchBorder.Width, 3);
         var timer = Field<UiScheduledTimer>(window, "_chargingNotificationDismissTimer");
         timer.Interval = TimeSpan.FromMilliseconds(1);
         await WpfFrameWaiter.UntilAsync(() => !Field<bool>(window, "_isChargingNotificationVisible"), "charging glance automatic dismissal", ct);
@@ -45,6 +50,26 @@ public sealed class MainWindowCompactFeedbackTests
         Assert.Equal(Visibility.Collapsed, window.ChargingNotification.Visibility);
         Assert.Equal(Visibility.Visible, window.CollapsedContent.Visibility);
         Invoke(window, "DismissChargingNotification");
+    });
+
+    [Fact]
+    public void HiddenBatteryStatusUpdatesWithoutAnimationClocks() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        try
+        {
+            AnimationConfig.SetReduceMotion(false);
+            await using var fixture = CreateFixture();
+            var window = fixture.Window;
+            Assert.False(window.BatteryFill.IsVisible);
+            Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 60, IsPluggedIn = true });
+            Assert.Equal(.6, window.BatteryFillScale.ScaleX, 5);
+            Assert.False(window.BatteryFillScale.HasAnimatedProperties);
+            Assert.Equal(1, window.ChargingBolt.Opacity);
+            Assert.False(window.ChargingBolt.HasAnimatedProperties);
+            Assert.False(window.ChargingBoltScale.HasAnimatedProperties);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
     });
 
     [Fact]
@@ -59,7 +84,8 @@ public sealed class MainWindowCompactFeedbackTests
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 60, IsPluggedIn = false });
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 60, IsCharging = true, IsPluggedIn = true });
             Assert.True(Field<bool>(window, "_chargingPulseWanted"));
-            Assert.NotNull(Field<object?>(window, "_chargingPulseStoryboard"));
+            // The battery sits in the open notch's status bar: the pulse waits until it is on screen, then runs.
+            Assert.Equal(window.BatteryFill.IsVisible, Field<object?>(window, "_chargingPulseStoryboard") != null);
             // Plugging in and out play in the orb beside the notch now, not as a glance in it.
             Assert.Equal("PlugIn", Field<object>(window, "_chargeMoment").ToString());
             Assert.False(Field<bool>(window, "_isChargingNotificationVisible"));

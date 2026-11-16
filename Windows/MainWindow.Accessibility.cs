@@ -31,7 +31,7 @@ public partial class MainWindow
     {
         foreach (var (element, key) in new (DependencyObject, string)[]
         {
-            (SettingsButton, "tooltip.settings"), (BatterySection, "settings.batteryDevice.system"),
+            (SettingsButton, "tooltip.settings"),
             (HomeIconButton, "nav.media"), (ClipboardIconButton, "nav.clipboard"), (CameraIconButton, "nav.camera"),
             (TimerIconButton, "nav.controls"), (ClaudeIconButton, "nav.claude"), (PiIconButton, "nav.pi"), (SchoolIconButton, "nav.school"), (WeatherIconButton, "nav.weather"), (AudioIconButton, "nav.audio"),
             (CameraSection, "settings.camera"), (UpdateNotificationButton, "tooltip.downloadUpdate"),
@@ -43,6 +43,7 @@ public partial class MainWindow
             (CountdownWidget.CountdownPlusBtn, "timer.increase"), (CountdownWidget.CountdownMinusBtn, "timer.decrease"),
             (CountdownRestartBtn, "timer.restart"), (CountdownDismissBtn, "timer.dismiss")
         }) AutomationProperties.SetName(element, Loc.Get(key));
+        RefreshBatteryAccessibleName();
         RefreshPlaybackAccessibleNames();
     }
 

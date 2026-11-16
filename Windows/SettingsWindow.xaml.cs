@@ -117,13 +117,15 @@ public partial class SettingsWindow : Window
         _firstShowState = prepareForFirstShow ? FirstShowState.StandbyPrewarm : FirstShowState.ReadyForRealShow;
         IsVisibleChanged += OnFirstShowVisibilityChanged;
         var firstOpenProbe = System.Diagnostics.Stopwatch.StartNew();
+        AccentTheme.Apply(settings.AccentColor);
         InitializeComponent();
+        AddHandler(Mouse.MouseUpEvent, new MouseButtonEventHandler(LivePreview_MouseUp), handledEventsToo: true);
+        AddHandler(Keyboard.KeyUpEvent, new KeyEventHandler(LivePreview_KeyUp), handledEventsToo: true);
         FirstOpenProbe?.Invoke($"DEBUG-FIRST-OPEN Settings XAML {firstOpenProbe.Elapsed.TotalMilliseconds:F1} ms");
         firstOpenProbe.Restart();
         AnimationPrimitives.ApplyFpsToTree(this);
         FirstOpenProbe?.Invoke($"DEBUG-FIRST-OPEN Settings FPS tree {firstOpenProbe.Elapsed.TotalMilliseconds:F1} ms");
         firstOpenProbe.Restart();
-        PulseStarWhileShown();
 
         _settings = settings.Clone();
         _editSession = new SettingsEditSession(settings);
@@ -163,7 +165,7 @@ public partial class SettingsWindow : Window
             firstOpenProbe.Restart();
         };
         ContentRendered += (_, _) => FirstOpenProbe?.Invoke($"DEBUG-FIRST-OPEN Settings loaded-to-rendered {firstOpenProbe.Elapsed.TotalMilliseconds:F1} ms");
-        Loc.PrewarmTranslationIndex();
+        SettingsSearchBox.GotKeyboardFocus += (_, _) => Loc.PrewarmTranslationIndex();
         EnsureBackgroundInitializationStarted();
     }
 
@@ -184,6 +186,7 @@ public partial class SettingsWindow : Window
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         CompleteFirstRealShow();
+        UpdateAnimatedStarStoryboard();
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -214,14 +217,14 @@ public partial class SettingsWindow : Window
         int maxDepth = 64;
         while (source != null && maxDepth-- > 0)
         {
-            if (source is ButtonBase or Slider or Thumb or ComboBox or ComboBoxItem or CheckBox or ScrollBar or TextBox or PasswordBox)
+            if (source is ButtonBase or Slider or Thumb or ComboBox or ComboBoxItem or ListBox or ListBoxItem or CheckBox or ScrollBar or TextBox or PasswordBox)
             {
                 return true;
             }
 
             if (source is FrameworkElement fe)
             {
-                if (fe.Name is "SubtitlePriorityItems" or "NavTabsSettingsContainer" or "NavTabsSettingsCard")
+                if (fe.Name is "SubtitlePriorityItems" or "LyricsProviderList" or "NavTabsSettingsContainer" or "NavTabsSettingsCard")
                     return true;
 
                 if (fe.Tag is string tag &&
@@ -255,6 +258,7 @@ public partial class SettingsWindow : Window
     private void LoadSettings()
     {
         _isLoadingSettings = true;
+        LoadAccentColor();
 
         // Apply tooltips to UI elements
         ApplyTooltips();
@@ -280,11 +284,17 @@ public partial class SettingsWindow : Window
         // Liquid Glass availability depends on this checkbox. Initialize the mode
         DynamicIslandModeCheck.IsChecked = _settings.EnableDynamicIslandMode;
         UpdateDynamicIslandDependentControls(_settings.EnableDynamicIslandMode);
+        EnableShadowCheck.IsChecked = _settings.EnableShadow;
+        UpdateShadowDependentControls(_settings.EnableShadow);
+        ApplyWindowShadow(_settings.EnableShadow);
         LoadLiquidGlassUi();
         EnableSubjectBlurCheck.IsChecked = _settings.EnableSubjectBlur;
         EnableSmartCropCheck.IsChecked = _settings.EnableSmartCrop;
         UpdatePerformanceDependentControls(_settings.EnableBlurEffects);
         EnableSpotifyLyricsCheck.IsChecked = _settings.EnableSpotifyLyrics;
+        LyricsProviderList.ItemsSource = LyricsProviderOrder.Normalize(_settings.LyricsProviderPriority);
+        LyricsProviderList.SelectedIndex = 0;
+        UpdateLyricsProviderButtonStates();
         BrightenDarkLyricsBackgroundCheck.IsChecked = _settings.BrightenDarkLyricsBackground;
         UpdateLyricsDependentControls(_settings.EnableSpotifyLyrics);
         EnableSpotifyCanvasCheck.IsChecked = _settings.EnableSpotifyCanvas;
@@ -308,6 +318,7 @@ public partial class SettingsWindow : Window
 
         if (!IsDeferringBackgroundInitialization)
             LoadCameraDevices().SafeFireAndForget("SETTINGS-CAMERA-DEVICES");
+        ShowMutedMicGlyphCheck.IsChecked = _settings.ShowMutedMicGlyph;
         SetVisualizerAudioDevicePlaceholder();
 
         AutoStartCheck.IsChecked = _settingsAppService.IsAutoStartEnabled();
@@ -316,18 +327,26 @@ public partial class SettingsWindow : Window
         HideOnExclusiveFullscreenCheck.IsChecked = _settings.HideOnExclusiveFullscreen;
         HideOnWindowedFullscreenCheck.IsChecked = _settings.HideOnWindowedFullscreen;
         IdleAutoHideCheck.IsChecked = _settings.EnableIdleAutoHide;
-        IdleAutoHideDelaySlider.Value = Math.Max(2, _settings.IdleAutoHideDelay / 1000.0);
+        IdleAutoHideDelaySlider.Value = Math.Max(IdleAutoHideDelaySlider.Minimum, _settings.IdleAutoHideDelay / 1000.0);
         IdleAutoHideDelaySlider.IsEnabled = _settings.EnableIdleAutoHide;
         IdleAutoHideDelaySlider.Opacity = _settings.EnableIdleAutoHide ? 1.0 : 0.4;
         MusicNotifyCheck.IsChecked = _settings.ShowMusicNotifications;
         SystemNotifyCheck.IsChecked = _settings.ShowSystemNotifications;
         LoadAppNotifications(_settings);
+        AutoDismissNotifyCheck.IsChecked = _settings.AutoDismissNotifications;
+        bool autoDismissEnabled = _settings.ShowSystemNotifications && _settings.AutoDismissNotifications;
+        AutoDismissNotifyCheck.IsEnabled = _settings.ShowSystemNotifications;
+        AutoDismissNotifyCheck.Opacity = _settings.ShowSystemNotifications ? 1.0 : 0.4;
+        NotificationDurationSlider.Value = Math.Clamp(_settings.NotificationDuration / 1000.0, NotificationDurationSlider.Minimum, NotificationDurationSlider.Maximum);
+        NotificationDurationSlider.IsEnabled = autoDismissEnabled;
+        NotificationDurationSlider.Opacity = autoDismissEnabled ? 1.0 : 0.4;
         EnableSpotlightCheck.IsChecked = _settings.EnableSpotlight;
         LoadSpotlightAiSettings(_settings);
         LoadTranslationSettings();
         EnableDebugModeCheck.IsChecked = _settings.EnableDebugMode;
         UpdateSpotlightHotkeyWarning();
         ShowBatteryCheck.IsChecked = _settings.ShowBatteryIndicator;
+        PopulateBatterySources(preserveSelection: false);
         HideCameraCheck.Content = Loc.Get("settings.hideCamera");
         HideCameraHint.Text = Loc.Get("settings.hideCamera.hint");
         ClipboardHotkeyLabel.Text = Loc.Get("settings.clipboardHotkey");
@@ -432,6 +451,7 @@ public partial class SettingsWindow : Window
         TooltipHelper.SetLocalizedTooltip(EnableSubjectBlurCheck, "tooltip.subjectBlur");
         TooltipHelper.SetLocalizedTooltip(EnableSmartCropCheck, "tooltip.smartCrop");
         TooltipHelper.SetLocalizedTooltip(DynamicIslandModeCheck, "tooltip.dynamicIsland");
+        TooltipHelper.SetLocalizedTooltip(EnableShadowCheck, "tooltip.notchShadow");
         TooltipHelper.SetLocalizedTooltip(HoverExpandCheck, "tooltip.hoverExpand");
         TooltipHelper.SetLocalizedTooltip(DisableMouseLeaveAutoCloseCheck, "tooltip.disableAutoClose");
         TooltipHelper.SetLocalizedTooltip(ReopenLastViewCheck, "tooltip.reopenLastView");
@@ -444,6 +464,7 @@ public partial class SettingsWindow : Window
         TooltipHelper.SetLocalizedTooltip(HideOnWindowedFullscreenCheck, "tooltip.hideWindowedFs");
         TooltipHelper.SetLocalizedTooltip(MusicNotifyCheck, "tooltip.musicNotify");
         TooltipHelper.SetLocalizedTooltip(SystemNotifyCheck, "tooltip.systemNotify");
+        TooltipHelper.SetLocalizedTooltip(AutoDismissNotifyCheck, "tooltip.autoDismissNotify");
         TooltipHelper.SetLocalizedTooltip(ShowBatteryCheck, "tooltip.showBattery");
         TooltipHelper.SetLocalizedTooltip(HelloGreetingCheck, "tooltip.helloGreeting");
         TooltipHelper.SetLocalizedTooltip(EnableSpotlightCheck, "settings.enableSpotlight.hint");
@@ -474,6 +495,9 @@ public partial class SettingsWindow : Window
 
     private void ApplyLocalization()
     {
+        InvalidateSearchIndex();
+        PopulateBatterySources();
+        LocalizeAccentColor();
         LocalizeTrayAdvanced();
         HideCameraCheck.Content = Loc.Get("settings.hideCamera");
         HideCameraHint.Text = Loc.Get("settings.hideCamera.hint");
@@ -497,6 +521,12 @@ public partial class SettingsWindow : Window
         EnableSpotlightHint.Text = Loc.Get("settings.enableSpotlight.hint");
         LocalizeSpotlightAiSettings();
         LocalizeTranslationSettings();
+        if (TranslationModelProgress != null)
+        {
+            System.Windows.Automation.AutomationProperties.SetName(
+                TranslationModelProgress,
+                Loc.Get("settings.translation.modelDownloadProgress"));
+        }
         SpotlightHotkeyWarning.Text = Loc.Get("settings.enableSpotlight.conflict");
         SearchingHeader.Text = Loc.Get(LocKeySearching);
         SearchingEmptyText.Text = Loc.Get("settings.search.noResults");
@@ -579,6 +609,19 @@ public partial class SettingsWindow : Window
         EnableDebugModeCheck.Content = Loc.Get("settings.enableDebugMode");
         EnableDebugModeHint.Text = Loc.Get("settings.enableDebugMode.hint");
         EnableSpotifyLyricsCheck.Content = Loc.Get("settings.enableSpotifyLyrics");
+        LyricsProviderLabel.Text = Loc.Get("settings.lyrics.providers");
+        LyricsProviderHint.Text = Loc.Get("settings.lyrics.providers.hint");
+        LyricsProviderHint.Tag = Loc.Get("settings.lyrics.provider.amll.desc");
+        LyricsProviderList.Tag = Loc.Get("settings.lyrics.provider.lrclib.desc");
+        LyricsProviderLabel.Tag = Loc.Get("settings.lyrics.provider.netease.desc");
+        LyricsProviderHeaderGrid.Tag = Loc.Get("settings.lyrics.provider.kugou.desc");
+        LyricsProviderTextPanel.Tag = Loc.Get("settings.lyrics.provider.qqmusic.desc");
+        LyricsProviderPanel.Tag = Loc.Get("settings.lyrics.provider.lrcmux.desc");
+        LyricsProviderList.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, LyricsProviderLabel.Text);
+        LyricsProviderUp.ToolTip = Loc.Get("settings.tab.moveUp");
+        LyricsProviderDown.ToolTip = Loc.Get("settings.tab.moveDown");
+        LyricsProviderUp.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, Loc.Get("settings.tab.moveUp"));
+        LyricsProviderDown.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, Loc.Get("settings.tab.moveDown"));
         BrightenDarkLyricsBackgroundCheck.Content = Loc.Get("settings.brightenDarkLyricsBackground");
         if (EnableSpotifyCanvasLabel != null) EnableSpotifyCanvasLabel.Text = Loc.Get("settings.enableSpotifyCanvas");
         if (SpotifyCanvasExperimentalBadge != null) SpotifyCanvasExperimentalBadge.Text = Loc.Get(LocKeyBadgeExperimental);
@@ -602,6 +645,8 @@ public partial class SettingsWindow : Window
 
         DynamicIslandModeCheck.Content = Loc.Get("settings.dynamicIslandMode");
         DynamicIslandModeHint.Text = Loc.Get("settings.dynamicIslandMode.hint");
+        EnableShadowCheck.Content = Loc.Get("settings.enableShadow");
+        EnableShadowHint.Text = Loc.Get("settings.enableShadow.hint");
 
         HoverExpandCheck.Content = Loc.Get("settings.hoverExpand");
         HoverExpandHint.Text = Loc.Get("settings.hoverExpand.hint");
@@ -641,6 +686,7 @@ public partial class SettingsWindow : Window
 
         CameraLabel.Text = Loc.Get("settings.camera");
         CameraHint.Text = Loc.Get("settings.camera.hint");
+        ShowMutedMicGlyphCheck.Content = Loc.Get("settings.audio.showMutedMic");
         VisualizerAudioLabel.Text = Loc.Get("settings.visualizerAudio");
         VisualizerAudioHint.Text = Loc.Get("settings.visualizerAudio.hint");
         if (IsLoaded)
@@ -675,6 +721,10 @@ public partial class SettingsWindow : Window
         SystemNotifyCheck.Content = Loc.Get("settings.systemNotify");
         SystemNotifyHint.Text = Loc.Get("settings.systemNotify.hint");
         LocalizeAppNotifications();
+        AutoDismissNotifyCheck.Content = Loc.Get("settings.autoDismissNotify");
+        AutoDismissNotifyHint.Text = Loc.Get("settings.autoDismissNotify.hint");
+        NotificationDurationSlider.Label = Loc.Get("settings.notificationDuration");
+        NotificationDurationSlider.Description = Loc.Get("settings.notificationDuration.hint");
         ShowBatteryCheck.Content = Loc.Get("settings.showBattery");
         ShowBatteryHint.Text = Loc.Get("settings.showBattery.hint");
         LanguageLabel.Text = Loc.Get("settings.language");
@@ -1057,7 +1107,7 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             RuntimeLog.Error("PRIVACY-CLEAR", ex.Message);
-            MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, Loc.Get("error.unexpected", ex.Message), Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1071,6 +1121,7 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             RuntimeLog.Error("PRIVACY-CLEAR", ex.Message);
+            MessageBox.Show(this, Loc.Get("error.unexpected", ex.Message), Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1104,7 +1155,10 @@ public partial class SettingsWindow : Window
                 {
                     timer.Stop();
                     timer.Dispose();
-                    button.Tag = null;
+                    if (ReferenceEquals(button.Tag, timer))
+                    {
+                        button.Tag = null;
+                    }
 
                     var revertFadeOut = new DoubleAnimation(button.Opacity, 0.0, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease };
 
@@ -1120,6 +1174,11 @@ public partial class SettingsWindow : Window
                     button.BeginAnimation(OpacityProperty, revertFadeOut);
                 };
 
+                if (button.Tag is UiScheduledTimer activeTimer)
+                {
+                    activeTimer.Stop();
+                    activeTimer.Dispose();
+                }
                 button.Tag = timer;
                 timer.Start();
             };
@@ -1210,6 +1269,28 @@ public partial class SettingsWindow : Window
 
     private void ViewChangelog_Click(object sender, RoutedEventArgs e)
         => _updatePresenter.ShowChangelog();
+
+    private void PanelDonating_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+        => UpdateAnimatedStarStoryboard();
+
+    internal void UpdateAnimatedStarStoryboard()
+    {
+        if (AnimatedStarPath?.Resources["StarPulseStoryboard"] is not Storyboard storyboard)
+        {
+            return;
+        }
+
+        // IsVisible, not Visibility: the window is prepared hidden at start-up, and a Forever storyboard started
+        // there keeps every window on this thread redrawing at the display's rate (31-59 % of a core).
+        if (!AnimationConfig.ReduceMotion && PanelDonating.IsVisible)
+        {
+            storyboard.Begin(this, isControllable: true);
+        }
+        else
+        {
+            storyboard.Stop(this);
+        }
+    }
 
 }
 

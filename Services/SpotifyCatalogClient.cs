@@ -56,10 +56,10 @@ internal sealed partial class SpotifyCatalogClient
         PathfinderQueryResult queryResult = await QueryPathfinderAsync(
                 trackName, artistName, accessToken, hash, token)
             .ConfigureAwait(false);
-        string? json = queryResult.Json;
+        byte[]? json = queryResult.Json;
 
         if (queryResult.QueryMetadataRejected ||
-            (json != null && ContainsPersistedQueryNotFound(json)))
+            (json != null && NativeCatalogParser.ContainsPersistedQueryNotFound(json)))
         {
             string? refreshedHash = await _metadata.RefreshAsync(SpotifyQuery.FindTracks, hash, token).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(refreshedHash))
@@ -79,6 +79,83 @@ internal sealed partial class SpotifyCatalogClient
                 ? "Spotify catalog lookup returned no matching track ID"
                 : $"Resolved Spotify track ID from Spotify catalog: {trackId}");
         return trackId;
+    }
+
+    internal async Task<string?> ResolveTrackArtistsAsync(
+        string trackName,
+        string artistName,
+        string? albumName,
+        string accessToken,
+        CancellationToken token)
+    {
+        string hash = _metadata.FindTracksHash;
+        PathfinderQueryResult queryResult = await QueryPathfinderAsync(
+                trackName, artistName, accessToken, hash, token)
+            .ConfigureAwait(false);
+        byte[]? json = queryResult.Json;
+
+        if (queryResult.QueryMetadataRejected ||
+            (json != null && NativeCatalogParser.ContainsPersistedQueryNotFound(json)))
+        {
+            string? refreshedHash = await _metadata.RefreshAsync(SpotifyQuery.FindTracks, hash, token).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(refreshedHash))
+            {
+                queryResult = await QueryPathfinderAsync(
+                        trackName, artistName, accessToken, refreshedHash, token)
+                    .ConfigureAwait(false);
+                json = queryResult.Json;
+            }
+        }
+
+        return json == null ? null : ParsePathfinderTrackArtists(json, trackName, artistName, albumName);
+    }
+
+    internal async Task<string?> ResolveTrackArtworkUrlAsync(
+        string trackName,
+        string artistName,
+        string? albumName,
+        string accessToken,
+        CancellationToken token)
+    {
+        string hash = _metadata.FindTracksHash;
+        PathfinderQueryResult queryResult = await QueryPathfinderAsync(
+                trackName, artistName, accessToken, hash, token)
+            .ConfigureAwait(false);
+        byte[]? json = queryResult.Json;
+
+        if (queryResult.QueryMetadataRejected ||
+            (json != null && NativeCatalogParser.ContainsPersistedQueryNotFound(json)))
+        {
+            string? refreshedHash = await _metadata.RefreshAsync(SpotifyQuery.FindTracks, hash, token).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(refreshedHash))
+            {
+                queryResult = await QueryPathfinderAsync(
+                        trackName, artistName, accessToken, refreshedHash, token)
+                    .ConfigureAwait(false);
+                json = queryResult.Json;
+            }
+        }
+
+        if (json == null) return null;
+
+        var selected = NativeCatalogParser.Select(json, 7, trackName, artistName, album: albumName);
+        if (!string.IsNullOrEmpty(selected.Key))
+            return selected.Key;
+
+        selected = NativeCatalogParser.Select(json, 1, trackName, artistName);
+        if (!string.IsNullOrEmpty(selected.Key))
+            return selected.Key;
+
+        if (string.IsNullOrEmpty(selected.Text))
+            return null;
+
+        using var oembedRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"https://open.spotify.com/oembed?url=https://open.spotify.com/track/{Uri.EscapeDataString(selected.Text)}");
+        using var oembedResponse = await _http.SendAsync(
+            oembedRequest, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+        byte[]? oembedJson = await ReadLimitedBytesAsync(oembedResponse, token).ConfigureAwait(false);
+        return oembedJson == null ? null : NativeCatalogParser.Select(oembedJson, 1, "", "").Key;
     }
 
     private async Task<PathfinderQueryResult> QueryPathfinderAsync(
@@ -121,8 +198,7 @@ internal sealed partial class SpotifyCatalogClient
         }
 
         byte[]? bytes = await ReadLimitedBytesAsync(response, token).ConfigureAwait(false);
-        string? json = bytes == null ? null : Encoding.UTF8.GetString(bytes);
-        return new PathfinderQueryResult(json, queryMetadataRejected);
+        return new PathfinderQueryResult(bytes, queryMetadataRejected);
     }
 
     private static string BuildQuery(string? trackName, string? artistName)
@@ -143,5 +219,5 @@ internal sealed partial class SpotifyCatalogClient
         return string.IsNullOrWhiteSpace(a) ? t : $"{t} {a}";
     }
 
-    private sealed record PathfinderQueryResult(string? Json, bool QueryMetadataRejected);
+    private sealed record PathfinderQueryResult(byte[]? Json, bool QueryMetadataRejected);
 }

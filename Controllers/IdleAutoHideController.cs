@@ -7,7 +7,8 @@ namespace VNotch.Controllers;
 
 public sealed class IdleAutoHideController : IDisposable
 {
-    private const int IdleHidePollIntervalMs = 500;
+    private const int IdleHidePollIntervalMs = 100;
+    private const int HiddenPollIntervalMs = 500;
 
     private readonly NotchShellState _shellState;
     private readonly Func<NotchSettings> _getSettings;
@@ -15,9 +16,10 @@ public sealed class IdleAutoHideController : IDisposable
     private readonly Action _applyVisibilityState;
     private readonly Action _stopHoverTimers;
     private readonly Action _onRevealed;
+    private readonly Func<bool>? _isVisibilityFrozen;
 
     private readonly UiScheduledTimer _timer;
-    private long _idleSinceTick;
+    private long? _idleSinceTick;
     private bool _disposed;
 
     public IdleAutoHideController(
@@ -26,7 +28,8 @@ public sealed class IdleAutoHideController : IDisposable
         Func<bool> isNotchEmptyAndIdle,
         Action applyVisibilityState,
         Action stopHoverTimers,
-        Action onRevealed)
+        Action onRevealed,
+        Func<bool>? isVisibilityFrozen = null)
     {
         _shellState = shellState ?? throw new ArgumentNullException(nameof(shellState));
         _getSettings = getSettings ?? throw new ArgumentNullException(nameof(getSettings));
@@ -34,8 +37,9 @@ public sealed class IdleAutoHideController : IDisposable
         _applyVisibilityState = applyVisibilityState ?? throw new ArgumentNullException(nameof(applyVisibilityState));
         _stopHoverTimers = stopHoverTimers ?? throw new ArgumentNullException(nameof(stopHoverTimers));
         _onRevealed = onRevealed ?? throw new ArgumentNullException(nameof(onRevealed));
+        _isVisibilityFrozen = isVisibilityFrozen;
 
-        _timer = new UiScheduledTimer(DispatcherPriority.Background)
+        _timer = new UiScheduledTimer(DispatcherPriority.Input)
         {
             Interval = TimeSpan.FromMilliseconds(IdleHidePollIntervalMs)
         };
@@ -52,18 +56,20 @@ public sealed class IdleAutoHideController : IDisposable
 
     public void ApplySettings()
     {
+        if (_disposed) return;
         var settings = _getSettings();
 
         if (settings.EnableIdleAutoHide)
         {
-            _idleSinceTick = 0;
+            _idleSinceTick = null;
             if (!_timer.IsEnabled)
                 _timer.Start();
+            Recheck();
         }
         else
         {
             _timer.Stop();
-            _idleSinceTick = 0;
+            _idleSinceTick = null;
 
             if (IsHiddenByIdle)
             {
@@ -75,39 +81,63 @@ public sealed class IdleAutoHideController : IDisposable
         }
     }
 
-    private void IdleHideTimer_Tick(object? sender, EventArgs e)
+    private void IdleHideTimer_Tick(object? sender, EventArgs e) => Recheck();
+
+    public void Recheck() => EvaluateIdleState(Environment.TickCount64);
+
+    internal void EvaluateIdleState(long nowTick)
     {
+        if (_disposed) return;
         var settings = _getSettings();
 
         if (!settings.EnableIdleAutoHide)
         {
             _timer.Stop();
+            _idleSinceTick = null;
             return;
         }
 
+        if (_isVisibilityFrozen?.Invoke() == true)
+        {
+            _idleSinceTick = null;
+            return;
+        }
         bool idle = _isNotchEmptyAndIdle();
 
         if (!idle)
         {
-            _idleSinceTick = 0;
+            _idleSinceTick = null;
             if (IsHiddenByIdle)
                 Wake();
+            SetNextCheck(IdleHidePollIntervalMs);
             return;
         }
 
-        if (IsHiddenByIdle) return;
-
-        long nowTick = Environment.TickCount64;
-        if (_idleSinceTick == 0)
+        if (IsHiddenByIdle)
         {
-            _idleSinceTick = nowTick;
+            SetNextCheck(HiddenPollIntervalMs);
             return;
         }
 
-        if ((nowTick - _idleSinceTick) >= settings.IdleAutoHideDelay)
+        _idleSinceTick ??= nowTick;
+        long remainingMs = settings.IdleAutoHideDelay - (nowTick - _idleSinceTick.Value);
+        if (remainingMs <= 0)
         {
             HideForIdle();
+            SetNextCheck(HiddenPollIntervalMs);
         }
+        else
+        {
+            // Honor the deadline even for delays shorter than a polling interval.
+            SetNextCheck((int)Math.Min(IdleHidePollIntervalMs, remainingMs));
+        }
+    }
+
+    private void SetNextCheck(int milliseconds)
+    {
+        var interval = TimeSpan.FromMilliseconds(milliseconds);
+        if (_timer.Interval != interval)
+            _timer.Interval = interval;
     }
 
     private void HideForIdle()
@@ -124,9 +154,11 @@ public sealed class IdleAutoHideController : IDisposable
 
     public void Wake()
     {
-        if (!_getSettings().EnableIdleAutoHide) return;
+        if (_disposed || !_getSettings().EnableIdleAutoHide) return;
+        if (_isVisibilityFrozen?.Invoke() == true) return;
 
-        _idleSinceTick = 0;
+        _idleSinceTick = null;
+        SetNextCheck(IdleHidePollIntervalMs);
 
         if (!IsHiddenByIdle) return;
 
@@ -144,7 +176,7 @@ public sealed class IdleAutoHideController : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _timer.Stop();
         _timer.Tick -= IdleHideTimer_Tick;
+        _timer.Dispose();
     }
 }

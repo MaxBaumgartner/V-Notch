@@ -19,6 +19,8 @@ public sealed class OverlayWindowController : IDisposable
     private readonly Action _onClipboardUpdated;
     private HwndSource? _source;
     private bool _displayUpdatePending;
+    private bool _manualPosition;
+    private System.Windows.Threading.DispatcherTimer? _placementCheck;
     public Func<System.Windows.Forms.Screen>? TargetScreen { get; set; }
     public Func<bool>? IsZOrderSuspended { get; set; }
 
@@ -83,6 +85,8 @@ public sealed class OverlayWindowController : IDisposable
         double dpiScale = MonitorSelection.GetScale(screen);
         double widthDip = surfaceWidth + HorizontalPadding;
         double heightDip = expandedHeight + 80;
+        if (!double.IsFinite(widthDip) || widthDip <= 0) throw new ArgumentOutOfRangeException(nameof(surfaceWidth));
+        if (!double.IsFinite(heightDip) || heightDip <= 0) throw new ArgumentOutOfRangeException(nameof(expandedHeight));
         int screenLeft = screen.Bounds.Left;
         int screenWidth = screen.Bounds.Width;
 
@@ -94,8 +98,14 @@ public sealed class OverlayWindowController : IDisposable
         _state.WindowWidth = bounds.Width;
         _state.WindowHeight = bounds.Height;
         _state.HasFixedBounds = true;
-        _window.Width = widthDip;
-        _window.Height = heightDip;
+        _manualPosition = false;
+        StartPlacementCheck();
+        // WM_SIZE synchronizes both WPF dimensions after the single native resize.
+        if (_state.Hwnd == IntPtr.Zero)
+        {
+            _window.Width = widthDip;
+            _window.Height = heightDip;
+        }
 
         // Decouple geometry from desktop anchor to avoid placement rejections
         // when Explorer rebuilds WorkerW/Progman windows during sign-in.
@@ -105,13 +115,39 @@ public sealed class OverlayWindowController : IDisposable
 
     public void ResizeHeight(double heightDip)
     {
-        _window.Height = heightDip;
+        if (!double.IsFinite(heightDip) || heightDip <= 0) throw new ArgumentOutOfRangeException(nameof(heightDip));
         _state.WindowHeight = (int)Math.Round(heightDip * GetDpiScale());
+        if (_state.Hwnd == IntPtr.Zero || !_state.HasFixedBounds) _window.Height = heightDip;
         ReassertBounds();
+    }
+
+    // A display change can arrive before Windows has settled (sleep, docking, primary swap), or not reach
+    // us at all. Every few seconds compare where the notch sits with where it belongs and re-centre if not.
+    private void StartPlacementCheck()
+    {
+        if (_placementCheck != null) return;
+        _placementCheck = new System.Windows.Threading.DispatcherTimer(
+            TimeSpan.FromSeconds(5), System.Windows.Threading.DispatcherPriority.Background,
+            (_, _) => CheckPlacement(), _window.Dispatcher); // this constructor starts the timer
+    }
+
+    private void CheckPlacement()
+    {
+        if (_manualPosition || !_state.HasFixedBounds || _state.Hwnd == IntPtr.Zero || _source == null)
+            return;
+        var screen = TargetScreen?.Invoke() ?? System.Windows.Forms.Screen.FromHandle(_state.Hwnd);
+        var b = screen.Bounds;
+        int expectedX = b.Left + (b.Width - _state.WindowWidth) / 2;
+        if (expectedX == _state.FixedX && b.Top == _state.FixedY)
+            return;
+        RuntimeLog.Warn("OVERLAY-POSITION",
+            $"Notch at ({_state.FixedX},{_state.FixedY}) but {screen.DeviceName} wants ({expectedX},{b.Top}); re-centring");
+        _onDisplayChanged();
     }
 
     public void MoveFixedPosition(int newX, int newY)
     {
+        _manualPosition = true;
         _state.FixedX = newX;
         _state.FixedY = newY;
         ApplyFixedBounds();
@@ -335,6 +371,8 @@ public sealed class OverlayWindowController : IDisposable
 
     public void Dispose()
     {
+        _placementCheck?.Stop();
+        _placementCheck = null;
         _source?.RemoveHook(WndProc);
         _source = null;
     }

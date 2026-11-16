@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -570,11 +570,12 @@ public sealed class ClockWidgetPresenter : IDisposable
         if (allowShrink && Math.Abs(_refs.Window.Height - targetHeightDip) < 0.5 && _host.WindowHeight == targetPixelHeight)
             return;
 
-        _refs.Window.Height = targetHeightDip;
         _host.WindowHeight = targetPixelHeight;
 
         if (_host.Hwnd != IntPtr.Zero)
             SetWindowPos(_host.Hwnd, HWND_TOPMOST, _host.FixedX, _host.FixedY, _host.WindowWidth, _host.WindowHeight, SWP_NOACTIVATE);
+        else
+            _refs.Window.Height = targetHeightDip;
     }
 
 #pragma warning disable S107 // WPF notch resize transition requires source, target, timing, and callback parameters
@@ -586,66 +587,30 @@ public sealed class ClockWidgetPresenter : IDisposable
 
         var notchBorder = _refs.NotchBorder;
 
-        notchBorder.BeginAnimation(FrameworkElement.WidthProperty, null);
-        notchBorder.BeginAnimation(FrameworkElement.HeightProperty, null);
-        notchBorder.Width = fromWidth;
-        notchBorder.Height = fromHeight;
+        if (!VNotch.Services.Motion.IsRunning(notchBorder, FrameworkElement.WidthProperty))
+            VNotch.Services.Motion.Stop(notchBorder, FrameworkElement.WidthProperty, fromWidth);
+        if (!VNotch.Services.Motion.IsRunning(notchBorder, FrameworkElement.HeightProperty))
+            VNotch.Services.Motion.Stop(notchBorder, FrameworkElement.HeightProperty, fromHeight);
 
-        TimeSpan totalSpan = duration.HasTimeSpan && duration.TimeSpan > TimeSpan.Zero ? duration.TimeSpan : TimeSpan.FromMilliseconds(440);
-        TimeSpan startDelay = delay.Ticks > 0 ? delay : TimeSpan.Zero;
-        TimeSpan easeSpan = totalSpan;
-
-        var widthAnim = new DoubleAnimationUsingKeyFrames
-        {
-            Duration = new Duration(easeSpan + startDelay),
-            FillBehavior = FillBehavior.HoldEnd
-        };
-        if (startDelay > TimeSpan.Zero)
-        {
-            widthAnim.KeyFrames.Add(new LinearDoubleKeyFrame(fromWidth, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-            widthAnim.KeyFrames.Add(new LinearDoubleKeyFrame(fromWidth, KeyTime.FromTimeSpan(startDelay)));
-        }
-        else
-        {
-            widthAnim.KeyFrames.Add(new LinearDoubleKeyFrame(fromWidth, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        }
-        widthAnim.KeyFrames.Add(new EasingDoubleKeyFrame(toWidth, KeyTime.FromTimeSpan(startDelay + easeSpan), _easeExpOut6));
-        Timeline.SetDesiredFrameRate(widthAnim, fps);
-
-        var heightAnim = new DoubleAnimationUsingKeyFrames
-        {
-            Duration = new Duration(easeSpan + startDelay),
-            FillBehavior = FillBehavior.HoldEnd
-        };
-        if (startDelay > TimeSpan.Zero)
-        {
-            heightAnim.KeyFrames.Add(new LinearDoubleKeyFrame(fromHeight, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-            heightAnim.KeyFrames.Add(new LinearDoubleKeyFrame(fromHeight, KeyTime.FromTimeSpan(startDelay)));
-        }
-        else
-        {
-            heightAnim.KeyFrames.Add(new LinearDoubleKeyFrame(fromHeight, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        }
-        heightAnim.KeyFrames.Add(new EasingDoubleKeyFrame(toHeight, KeyTime.FromTimeSpan(startDelay + easeSpan), _easeExpOut6));
-        Timeline.SetDesiredFrameRate(heightAnim, fps);
+        TimeSpan? startDelay = delay.Ticks > 0 ? delay : null;
 
         _host.IsAnimating = true;
 
-        heightAnim.Completed += (_, _) =>
+        // Growing pops, shrinking settles calmer. The ending is kept so the busy flag clears even when another
+        // spring takes the notch's size over on the way.
+        bool growing = toWidth * toHeight >= fromWidth * fromHeight;
+        var spring = growing ? VNotch.Services.Motion.Pop : VNotch.Services.Motion.PopBack;
+        VNotch.Services.Motion.To(notchBorder, FrameworkElement.WidthProperty, toWidth, spring, delay: startDelay, fps: fps);
+        VNotch.Services.Motion.To(notchBorder, FrameworkElement.HeightProperty, toHeight, spring, delay: startDelay, fps: fps, keep: true, done: () =>
         {
             if (activeGen != _host.TransitionGeneration)
                 return;
 
             _host.IsAnimating = false;
-            notchBorder.BeginAnimation(FrameworkElement.WidthProperty, null);
-            notchBorder.BeginAnimation(FrameworkElement.HeightProperty, null);
-            notchBorder.Width = toWidth;
-            notchBorder.Height = toHeight;
+            VNotch.Services.Motion.Stop(notchBorder, FrameworkElement.WidthProperty, toWidth);
+            VNotch.Services.Motion.Stop(notchBorder, FrameworkElement.HeightProperty, toHeight);
             onCompleted?.Invoke();
-        };
-
-        notchBorder.BeginAnimation(FrameworkElement.WidthProperty, widthAnim);
-        notchBorder.BeginAnimation(FrameworkElement.HeightProperty, heightAnim);
+        });
     }
 #pragma warning restore S107
 

@@ -19,20 +19,51 @@ public partial class MainWindow
     private int _chargingGlanceToken = 0;
     private UiScheduledTimer? _chargingNotificationDismissTimer;
 
+    // A slow opacity pulse looks the same at 30 fps; a shimmer sweep at 60. Neither needs the display's 165-360 Hz.
+    private const int AmbientPulseFps = 30;
+    private static int AmbientSweepFps => Math.Min(AnimationConfig.TargetFps, 60);
+    private bool _ambientVisibilityHooked;
+
+    /// <summary>The pulse and the title shimmer live in the open notch; they start and stop with their element.</summary>
+    private void HookAmbientVisibility()
+    {
+        if (_ambientVisibilityHooked) return;
+        _ambientVisibilityHooked = true;
+        BatteryFill.IsVisibleChanged += (_, _) => RefreshAmbientAnimations();
+        PrivacyDot.IsVisibleChanged += (_, _) => RefreshPrivacyBreathing();
+        UpdateNotificationButton.IsVisibleChanged += (_, _) => StartUpdatePulseAnimation();
+        MediaPlayback.TrackTitle.IsVisibleChanged += (_, _) => RefreshAmbientAnimations();
+    }
+
     private bool AmbientAnimationsAllowed =>
         !AnimationConfig.ReduceMotion && _isNotchVisible && !_isHiddenByFullscreen;
 
     private void RefreshAmbientAnimations()
     {
+        HookAmbientVisibility();
         bool allowed = AmbientAnimationsAllowed;
 
-        if (_chargingPulseWanted && allowed) StartChargingPulse();
+        if (_displayedBattery is { } battery)
+        {
+            if (!allowed || !BatteryFill.IsVisible)
+                Motion.Stop(BatteryFillScale, ScaleTransform.ScaleXProperty, battery.FillRatio);
+            if (!allowed || !ChargingBolt.IsVisible) AnimateChargingBolt(battery.IsPowerConnected);
+        }
+
+        if (_chargingPulseWanted && allowed && BatteryFill.IsVisible) StartChargingPulse();
         else StopChargingPulseInternal();
 
-        if (_shimmerWanted && allowed) StartTitleShimmer();
+        if (_shimmerWanted && allowed && MediaPlayback.TrackTitle.IsVisible) StartTitleShimmer();
         else StopTitleShimmerInternal();
 
         RefreshChargePulse();
+        RefreshPrivacyBreathing();
+        StartUpdatePulseAnimation();
+        ApplyBubbleMusicSpin();
+        ApplyClaudeLiveMotion();
+        if (!allowed) StopNotificationDrop();
+        RefreshCountdownCompleteTextFlash();
+        _phoneMirror?.RefreshMotionVisibility();
     }
 
     private void OnReduceMotionChanged()
@@ -51,16 +82,19 @@ public partial class MainWindow
 
     private void HandleBatteryUpdate(BatteryInfo battery)
     {
+        _displayedBattery = battery;
+        RefreshBatteryAccessibleName();
+        LinkedDeviceBatteryIconView.Visibility = string.IsNullOrEmpty(battery.DeviceId) ? Visibility.Collapsed : Visibility.Visible;
+        if (_lastBatteryDeviceId != battery.DeviceId)
+        {
+            _wasPluggedIn = null;
+            _lastBatteryDeviceId = battery.DeviceId;
+        }
         AnimationConfig.SetReduceMotion(battery.IsBatterySaver);
 
-        var scaleAnimation = new DoubleAnimation
-        {
-            To = battery.FillRatio,
-            Duration = TimeSpan.FromMilliseconds(300),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
-        };
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(scaleAnimation, VNotch.Services.AnimationConfig.TargetFps);
-        BatteryFillScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnimation);
+        if (AmbientAnimationsAllowed && BatteryFill.IsVisible)
+            Motion.To(BatteryFillScale, ScaleTransform.ScaleXProperty, battery.FillRatio, Motion.Glide);
+        else Motion.Stop(BatteryFillScale, ScaleTransform.ScaleXProperty, battery.FillRatio);
 
         SolidColorBrush fillBrush;
         SolidColorBrush percentBrush;
@@ -90,7 +124,11 @@ public partial class MainWindow
         AnimateBrushTransition(BatteryPercent, percentBrush);
         AnimateChargingBolt(showLightning);
 
-        if (battery.IsCharging)
+        // Plugging in and out now plays in the orb beside the notch (MainWindow.ChargeOrb), not as a glance in it.
+        if (!MotionLabFakesCharging) UpdateChargeOrb(battery);
+
+        // Only a charge the user plugged in for pulses; on permanent mains power the battery just sits still.
+        if (battery.IsCharging && (InChargeFromPlug || MotionLabFakesCharging))
         {
             StartChargingPulse();
         }
@@ -98,9 +136,21 @@ public partial class MainWindow
         {
             StopChargingPulse();
         }
+        UpdateKeepAwake();
+    }
 
-        // Plugging in and out now plays in the orb beside the notch (MainWindow.ChargeOrb), not as a glance in it.
-        UpdateChargeOrb(battery);
+    private BatteryInfo? _displayedBattery;
+    private string? _lastBatteryDeviceId;
+
+    private void RefreshBatteryAccessibleName()
+    {
+        var battery = _displayedBattery;
+        string name = battery == null || string.IsNullOrEmpty(battery.DeviceId)
+            ? Loc.Get("settings.batteryDevice.system")
+            : battery.HasBattery ? battery.DeviceName : Loc.Get("settings.batteryDevice.unavailable", battery.DeviceName);
+        string description = battery == null ? name : $"{name}, {battery.GetPercentageText()}";
+        System.Windows.Automation.AutomationProperties.SetName(BatterySection, description);
+        BatterySection.ToolTip = description;
     }
 
     private enum ChargingGlanceKind
@@ -163,13 +213,8 @@ public partial class MainWindow
 
         ChargingBatteryFillScale.ScaleX = battery.FillRatio;
 
-        CollapsedContent.BeginAnimation(OpacityProperty, null);
-        CollapsedContent.Opacity = 0;
-        CollapsedContent.Visibility = Visibility.Collapsed;
-
-        MusicCompactContent.BeginAnimation(OpacityProperty, null);
-        MusicCompactContent.Opacity = 0;
-        MusicCompactContent.Visibility = Visibility.Collapsed;
+        HideCompactSurface(CollapsedContent);
+        HideCompactSurface(MusicCompactContent);
 
         ChargingNotification.Visibility = Visibility.Visible;
         ChargingNotification.Opacity = 0;
@@ -179,12 +224,10 @@ public partial class MainWindow
         var fadeIn = MakeCompactNotificationEntrance(0, 1);
         ChargingNotification.BeginAnimation(OpacityProperty, fadeIn);
 
-        var slideUp = MakeCompactNotificationEntrance(6, 0);
-        ChargingNotificationTranslate.BeginAnimation(TranslateTransform.YProperty, slideUp);
+        Motion.To(ChargingNotificationTranslate, TranslateTransform.YProperty, 0, Motion.Tile, from: 6);
 
-        var iconScale = MakeAnim(0.6d, 1d, _dur400, _easeSpring, TimeSpan.FromMilliseconds(150));
-        ChargingIconScale.BeginAnimation(ScaleTransform.ScaleXProperty, iconScale);
-        ChargingIconScale.BeginAnimation(ScaleTransform.ScaleYProperty, iconScale);
+        Motion.To(ChargingIconScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(ChargingIconScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
 
         StopChargingNotificationDismissTimer();
 
@@ -248,8 +291,9 @@ public partial class MainWindow
 
         ChargingNotification.BeginAnimation(OpacityProperty, fadeOut);
 
-        var slideDown = MakeCompactNotificationExit(0, -4);
-        ChargingNotificationTranslate.BeginAnimation(TranslateTransform.YProperty, slideDown);
+        Motion.To(ChargingNotificationTranslate, TranslateTransform.YProperty, -4, Motion.Exit);
+        Motion.To(ChargingIconScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(ChargingIconScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
     }
 
     private void CancelChargingGlanceImmediate()
@@ -260,9 +304,10 @@ public partial class MainWindow
         _isChargingNotificationVisible = false;
         _chargingGlanceToken = 0;
 
-        ChargingNotification.BeginAnimation(OpacityProperty, null);
-        ChargingNotificationTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-        ChargingNotification.Opacity = 0;
+        Motion.Stop(ChargingNotification, OpacityProperty, 0);
+        Motion.Stop(ChargingNotificationTranslate, TranslateTransform.YProperty, 0);
+        Motion.Stop(ChargingIconScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(ChargingIconScale, ScaleTransform.ScaleYProperty, 1);
         ChargingNotification.Visibility = Visibility.Collapsed;
     }
 
@@ -277,33 +322,17 @@ public partial class MainWindow
     private void PlayChargingBounce()
     {
         if (_isExpanded || _isAnimating) return;
-
-        int fps = VNotch.Services.AnimationConfig.TargetFps;
-
         double extra = ChargingWattText.Visibility == Visibility.Visible ? 56 : 28;
-        double targetWidth = _collapsedWidth + extra;
-        AnimateCompactWidth(targetWidth, TimeSpan.FromMilliseconds(500), _easeSoftSpring, _chargingGlanceToken);
-
-        var durPeak = TimeSpan.FromMilliseconds(140);
-        var durEnd = TimeSpan.FromMilliseconds(700);
-
-        var bounceX = new DoubleAnimationUsingKeyFrames();
-        bounceX.KeyFrames.Add(new EasingDoubleKeyFrame(1.06, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-        bounceX.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durEnd), _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(bounceX, fps);
-
-        var bounceY = new DoubleAnimationUsingKeyFrames();
-        bounceY.KeyFrames.Add(new EasingDoubleKeyFrame(0.95, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-        bounceY.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durEnd), _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(bounceY, fps);
-
-        NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounceX);
-        NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounceY);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounceX);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounceY);
+        AnimateCompactWidth(_collapsedWidth + extra, _dur350, _easeSoftSpring, _chargingGlanceToken);
+        if (AnimationConfig.ReduceMotion) return;
+        foreach (var scale in new[] { NotchScale, NotchShadowScale })
+        {
+            Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: 1);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: -0.8);
+        }
     }
 
-    private static void AnimateBrushTransition(FrameworkElement element, SolidColorBrush targetBrush)
+    private void AnimateBrushTransition(FrameworkElement element, SolidColorBrush targetBrush)
     {
         SolidColorBrush? currentBrush = element switch
         {
@@ -312,7 +341,7 @@ public partial class MainWindow
             _ => null
         };
 
-        if (currentBrush == null || currentBrush.Color == targetBrush.Color)
+        if (!AmbientAnimationsAllowed || !element.IsVisible || currentBrush == null || currentBrush.Color == targetBrush.Color)
         {
             if (element is TextBlock textBlock)
                 textBlock.Foreground = targetBrush;
@@ -340,38 +369,31 @@ public partial class MainWindow
 
     private void AnimateChargingBolt(bool show)
     {
-        var opacityAnimation = new DoubleAnimation
+        if (!AmbientAnimationsAllowed || !ChargingBolt.IsVisible)
         {
-            To = show ? 1.0 : 0.0,
-            Duration = TimeSpan.FromMilliseconds(250),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-
-        var scaleAnimation = new DoubleAnimation
-        {
-            To = show ? 1.0 : 0.95,
-            Duration = TimeSpan.FromMilliseconds(250),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(opacityAnimation, VNotch.Services.AnimationConfig.TargetFps);
-        ChargingBolt.BeginAnimation(OpacityProperty, opacityAnimation);
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(scaleAnimation, VNotch.Services.AnimationConfig.TargetFps);
-        ChargingBoltScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnimation);
-        ChargingBoltScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnimation);
+            Motion.Stop(ChargingBolt, OpacityProperty, show ? 1 : 0);
+            Motion.Stop(ChargingBoltScale, ScaleTransform.ScaleXProperty, show ? 1 : Motion.ExitToScale);
+            Motion.Stop(ChargingBoltScale, ScaleTransform.ScaleYProperty, show ? 1 : Motion.ExitToScale);
+            return;
+        }
+        Motion.To(ChargingBolt, OpacityProperty, show ? 1 : 0, show ? Motion.Tile : Motion.Exit);
+        Motion.To(ChargingBoltScale, ScaleTransform.ScaleXProperty, show ? 1 : Motion.ExitToScale, show ? Motion.TileScale : Motion.Exit);
+        Motion.To(ChargingBoltScale, ScaleTransform.ScaleYProperty, show ? 1 : Motion.ExitToScale, show ? Motion.TileScale : Motion.Exit);
     }
 
     private void StartChargingPulse()
     {
         _chargingPulseWanted = true;
-        if (!AmbientAnimationsAllowed) return;
+        // The battery sits in the open notch's status bar: pulsing it while the notch is closed only redrew the
+        // window at the display rate for nothing. BatteryFill.IsVisibleChanged restarts it when it shows.
+        if (!AmbientAnimationsAllowed || !BatteryFill.IsVisible) return;
         if (_chargingPulseStoryboard != null) return;
 
         _chargingPulseStoryboard = new Storyboard
         {
             RepeatBehavior = RepeatBehavior.Forever
         };
-        Timeline.SetDesiredFrameRate(_chargingPulseStoryboard, VNotch.Services.AnimationConfig.TargetFps);
+        Timeline.SetDesiredFrameRate(_chargingPulseStoryboard, AmbientPulseFps);
 
         var pulseAnimation = new DoubleAnimation
         {
@@ -384,7 +406,7 @@ public partial class MainWindow
 
         Storyboard.SetTarget(pulseAnimation, BatteryFill);
         Storyboard.SetTargetProperty(pulseAnimation, new PropertyPath("Opacity", Array.Empty<object>()));
-        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(pulseAnimation, VNotch.Services.AnimationConfig.TargetFps);
+        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(pulseAnimation, AmbientPulseFps);
         _chargingPulseStoryboard.Children.Add(pulseAnimation);
 
         _chargingPulseStoryboard.Begin();
@@ -402,6 +424,12 @@ public partial class MainWindow
 
         _chargingPulseStoryboard.Stop();
         _chargingPulseStoryboard = null;
+
+        if (!AmbientAnimationsAllowed || !BatteryFill.IsVisible)
+        {
+            Motion.Stop(BatteryFill, OpacityProperty, 1);
+            return;
+        }
 
         var resetAnimation = new DoubleAnimation
         {

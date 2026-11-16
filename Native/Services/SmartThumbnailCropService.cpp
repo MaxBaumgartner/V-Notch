@@ -1,4 +1,7 @@
 #include "vnotch_common.h"
+#include "SmartCropInference.h"
+#include "../vnotch_cpu.h"
+#include "../vnotch_simd_kernels.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,25 +11,9 @@
 
 namespace vnotch::services {
 
+using VnSubjectBounds = ::VnSubjectBounds;
+
 #pragma pack(push, 1)
-struct VnDetection {
-    float x1;
-    float y1;
-    float x2;
-    float y2;
-    float confidence;
-    int32_t class_id;
-};
-
-struct VnSubjectBounds {
-    float center_x;
-    float center_y;
-    float width;
-    float height;
-    float confidence;
-    int32_t class_id;
-};
-
 struct VnCropRect {
     int32_t x;
     int32_t y;
@@ -53,10 +40,21 @@ public:
         return 1.0f;
     }
 
+    static constexpr bool IsValidPixelArgs(
+        const uint8_t* pixels, int32_t w, int32_t h, int32_t stride, int32_t min_dim) noexcept
+    {
+        if (!pixels || w < min_dim || h < min_dim) return false;
+        if (w > INT32_MAX / 4) return false;
+        if (stride < w * 4) return false;
+        if (static_cast<int64_t>(stride) * static_cast<int64_t>(h) > INT32_MAX) return false;
+        return true;
+    }
+
     static void FillTensorFromBgra32(
         const uint8_t* pixels, int32_t scaled_w, int32_t scaled_h, int32_t stride,
         float* tensor_buffer) noexcept
     {
+        if (!tensor_buffer || !IsValidPixelArgs(pixels, scaled_w, scaled_h, stride, 1)) return;
         constexpr int32_t plane_size = kModelInputSize * kModelInputSize;
         std::fill_n(tensor_buffer, 3 * plane_size, 114.0f);
 
@@ -105,6 +103,11 @@ public:
         const float* buffer, int32_t img_width, int32_t img_height, float scale,
         int32_t* out_raw_count)
     {
+        if (out_raw_count) *out_raw_count = 0;
+        if (!buffer || img_width <= 0 || img_height <= 0 || !std::isfinite(scale) || scale <= 0.0f) {
+            return {};
+        }
+
         std::vector<VnDetection> detections;
         detections.reserve(32);
 
@@ -130,18 +133,27 @@ public:
         std::span<const VnDetection> detections, int32_t img_width, int32_t img_height,
         VnSubjectBounds* out_bounds) noexcept
     {
-        if (detections.empty() || img_width <= 0 || img_height <= 0) return false;
+        if (!out_bounds || detections.empty() || img_width <= 0 || img_height <= 0) return false;
 
         float img_area = static_cast<float>(img_width) * static_cast<float>(img_height);
+        if (!std::isfinite(img_area) || img_area <= 0.0f) return false;
         const VnDetection* best = nullptr;
         float best_score = -3.402823466e+38F;
 
         for (const auto& d : detections) {
-            float area = (d.x2 - d.x1) * (d.y2 - d.y1);
-            if (area <= 0.0f) continue;
+            if (!std::isfinite(d.x1) || !std::isfinite(d.y1) ||
+                !std::isfinite(d.x2) || !std::isfinite(d.y2) ||
+                !std::isfinite(d.confidence)) {
+                continue;
+            }
+            float w_box = d.x2 - d.x1;
+            float h_box = d.y2 - d.y1;
+            if (w_box <= 0.0f || h_box <= 0.0f) continue;
+            float area = w_box * h_box;
+            if (!std::isfinite(area) || area <= 0.0f) continue;
             float area_share = area / img_area;
             float score = d.confidence * GetClassPriority(d.class_id) * std::sqrt(area_share) * GetCenterWeight(d, img_width, img_height);
-            if (score > best_score) {
+            if (std::isfinite(score) && score > best_score) {
                 best_score = score;
                 best = &d;
             }
@@ -167,25 +179,28 @@ public:
     }
 
     static VnCropRect GetPortraitCropRect(const VnDetection& face, int32_t width, int32_t height) noexcept {
-        float face_height = face.y2 - face.y1;
-        float face_width = face.x2 - face.x1;
-        float min_dim = static_cast<float>(std::min(width, height));
+        float face_height = (std::isfinite(face.y1) && std::isfinite(face.y2)) ? std::max(0.0f, face.y2 - face.y1) : 0.0f;
+        float face_width = (std::isfinite(face.x1) && std::isfinite(face.x2)) ? std::max(0.0f, face.x2 - face.x1) : 0.0f;
+        float min_dim = static_cast<float>(std::max(1, std::min(width, height)));
+        float raw_desired = std::max(face_height * 2.15f, face_width * 3.0f);
+        if (!std::isfinite(raw_desired)) raw_desired = min_dim;
         int32_t side = static_cast<int32_t>(std::ceil(std::clamp(
-            std::max(face_height * 2.15f, face_width * 3.0f),
+            raw_desired,
             min_dim * kMinCropRatio,
             min_dim)));
-        float top = face.y1 - face_height * 0.45f;
-        return BuildCropRect((face.x1 + face.x2) / 2.0f, top + side / 2.0f, width, height, side);
+        float top = (std::isfinite(face.y1) ? face.y1 : 0.0f) - face_height * 0.45f;
+        float cx = (std::isfinite(face.x1) && std::isfinite(face.x2)) ? (face.x1 + face.x2) / 2.0f : (width / 2.0f);
+        return BuildCropRect(cx, top + side / 2.0f, width, height, side);
     }
 
     static VnCropRect GetSinglePersonCropRect(const VnDetection& p, int32_t img_width, int32_t img_height, int32_t target_size) noexcept {
-        float person_width = p.x2 - p.x1;
-        float person_height = p.y2 - p.y1;
+        float person_width = (std::isfinite(p.x1) && std::isfinite(p.x2)) ? std::max(0.0f, p.x2 - p.x1) : 0.0f;
+        float person_height = (std::isfinite(p.y1) && std::isfinite(p.y2)) ? std::max(0.0f, p.y2 - p.y1) : 0.0f;
         float person_center_x = (p.x1 + p.x2) / 2.0f;
         float person_center_y = (p.y1 + p.y2) / 2.0f;
 
         int32_t crop_size = ComputeAdaptiveCropSize(person_width, person_height, img_width, img_height, target_size);
-        if (person_height > crop_size) {
+        if (person_height > crop_size && std::isfinite(p.y1)) {
             person_center_y = p.y1 - crop_size * 0.08f + crop_size / 2.0f;
         }
         return BuildCropRect(person_center_x, person_center_y, img_width, img_height, crop_size);
@@ -194,16 +209,26 @@ public:
     static VnCropRect GetGroupPersonCropRect(std::span<const VnDetection> persons, int32_t img_width, int32_t img_height, int32_t target_size) noexcept {
         float min_x = 3.402823466e+38F, min_y = 3.402823466e+38F;
         float max_x = -3.402823466e+38F, max_y = -3.402823466e+38F;
+        bool any_valid = false;
 
         for (const auto& p : persons) {
+            if (!std::isfinite(p.x1) || !std::isfinite(p.y1) || !std::isfinite(p.x2) || !std::isfinite(p.y2)) {
+                continue;
+            }
+            any_valid = true;
             if (p.x1 < min_x) min_x = p.x1;
             if (p.y1 < min_y) min_y = p.y1;
             if (p.x2 > max_x) max_x = p.x2;
             if (p.y2 > max_y) max_y = p.y2;
         }
 
-        float group_w = max_x - min_x;
-        float group_h = max_y - min_y;
+        if (!any_valid) {
+            int32_t fallback_size = ComputeAdaptiveCropSize(0.0f, 0.0f, img_width, img_height, target_size);
+            return BuildCropRect(img_width / 2.0f, img_height / 2.0f, img_width, img_height, fallback_size);
+        }
+
+        float group_w = std::max(0.0f, max_x - min_x);
+        float group_h = std::max(0.0f, max_y - min_y);
         float group_center_x = (min_x + max_x) / 2.0f;
         float group_center_y = (min_y + max_y) / 2.0f;
 
@@ -212,12 +237,21 @@ public:
     }
 
     static VnCropRect GetBestObjectCropRect(std::span<const VnDetection> objects, int32_t img_width, int32_t img_height, int32_t target_size) noexcept {
+        if (objects.empty()) {
+            int32_t fallback_size = ComputeAdaptiveCropSize(0.0f, 0.0f, img_width, img_height, target_size);
+            return BuildCropRect(img_width / 2.0f, img_height / 2.0f, img_width, img_height, fallback_size);
+        }
         const VnDetection* best_obj = &objects[0];
         float best_score = -3.402823466e+38F;
 
         for (const auto& d : objects) {
+            if (!std::isfinite(d.x1) || !std::isfinite(d.y1) ||
+                !std::isfinite(d.x2) || !std::isfinite(d.y2) ||
+                !std::isfinite(d.confidence)) {
+                continue;
+            }
             float score = d.confidence * GetCenterWeight(d, img_width, img_height) * GetClassPriority(d.class_id);
-            if (score > best_score) {
+            if (std::isfinite(score) && score > best_score) {
                 best_score = score;
                 best_obj = &d;
             }
@@ -225,8 +259,8 @@ public:
 
         float obj_center_x = (best_obj->x1 + best_obj->x2) / 2.0f;
         float obj_center_y = (best_obj->y1 + best_obj->y2) / 2.0f;
-        float obj_width = best_obj->x2 - best_obj->x1;
-        float obj_height = best_obj->y2 - best_obj->y1;
+        float obj_width = (std::isfinite(best_obj->x1) && std::isfinite(best_obj->x2)) ? std::max(0.0f, best_obj->x2 - best_obj->x1) : 0.0f;
+        float obj_height = (std::isfinite(best_obj->y1) && std::isfinite(best_obj->y2)) ? std::max(0.0f, best_obj->y2 - best_obj->y1) : 0.0f;
 
         int32_t obj_crop = ComputeAdaptiveCropSize(obj_width, obj_height, img_width, img_height, target_size);
         return BuildCropRect(obj_center_x, obj_center_y, img_width, img_height, obj_crop);
@@ -238,6 +272,9 @@ public:
     {
         int32_t max_crop_size = std::min(img_width, img_height);
         int32_t crop_size = std::min(target_size, max_crop_size);
+        if (!IsValidPixelArgs(pixels, w, h, stride, 8)) {
+            return BuildCropRect(img_width / 2.0f, img_height / 2.0f, img_width, img_height, crop_size);
+        }
 
         constexpr int32_t grid_size = 8;
         int32_t cell_w = w / grid_size;
@@ -273,11 +310,109 @@ public:
         return BuildCropRect(saliency_center_x, saliency_center_y, img_width, img_height, crop_size);
     }
 
+    static bool ComputeSaliencySubjectBounds(
+        const uint8_t* pixels, int32_t w, int32_t h, int32_t stride,
+        VnSubjectBounds* out_bounds) noexcept
+    {
+        if (!out_bounds || !IsValidPixelArgs(pixels, w, h, stride, 8)) {
+            return false;
+        }
+
+        double sum_w = 0.0;
+        double sum_x = 0.0;
+        double sum_y = 0.0;
+        double sum_xx = 0.0;
+        double sum_yy = 0.0;
+        int32_t active_pixels = 0;
+
+        const float inv_w = 1.0f / static_cast<float>(w);
+        const float inv_h = 1.0f / static_cast<float>(h);
+
+        for (int32_t y = 0; y + 1 < h; ++y) {
+            const float ny = (static_cast<float>(y) + 0.5f) * inv_h;
+            const float dy = ny - 0.46f;
+            const float dy2 = dy * dy;
+            const int32_t row_off = y * stride;
+            const int32_t next_row_off = (y + 1) * stride;
+
+            for (int32_t x = 0; x + 1 < w; ++x) {
+                const int32_t i = row_off + x * 4;
+                const int32_t i_right = i + 4;
+                const int32_t i_below = next_row_off + x * 4;
+
+                const uint8_t b = pixels[i];
+                const uint8_t g = pixels[i + 1];
+                const uint8_t r = pixels[i + 2];
+
+                const float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+                const float lum_r = 0.299f * pixels[i_right + 2] + 0.587f * pixels[i_right + 1] + 0.114f * pixels[i_right];
+                const float lum_b = 0.299f * pixels[i_below + 2] + 0.587f * pixels[i_below + 1] + 0.114f * pixels[i_below];
+
+                const float grad = (std::abs(lum - lum_r) + std::abs(lum - lum_b)) * (1.0f / 255.0f);
+                if (grad < 0.02f) {
+                    continue;
+                }
+
+                const uint8_t max_c = std::max(r, std::max(g, b));
+                const uint8_t min_c = std::min(r, std::min(g, b));
+                const float sat = max_c > 0u ? static_cast<float>(max_c - min_c) / static_cast<float>(max_c) : 0.0f;
+
+                const float lum_weight = (lum < 18.0f || lum > 242.0f) ? 0.25f : 1.0f;
+                const float nx = (static_cast<float>(x) + 0.5f) * inv_w;
+                const float dx = nx - 0.5f;
+                const float center_weight = std::max(0.15f, 1.0f - (dx * dx + dy2) * 1.8f);
+
+                const float weight = grad * (1.25f + sat * 0.85f) * lum_weight * center_weight;
+                if (weight > 0.02f) {
+                    const double dw = static_cast<double>(weight);
+                    const double dnx = static_cast<double>(nx);
+                    const double dny = static_cast<double>(ny);
+                    sum_w += dw;
+                    sum_x += dw * dnx;
+                    sum_y += dw * dny;
+                    sum_xx += dw * dnx * dnx;
+                    sum_yy += dw * dny * dny;
+                    ++active_pixels;
+                }
+            }
+        }
+
+        const int32_t total_samples = std::max(1, (w - 1) * (h - 1));
+        if (sum_w <= 1e-3 || active_pixels < std::max(4, total_samples / 64)) {
+            return false;
+        }
+
+        const float raw_cx = static_cast<float>(sum_x / sum_w);
+        const float raw_cy = static_cast<float>(sum_y / sum_w);
+        const float var_x = std::max(0.0f, static_cast<float>(sum_xx / sum_w) - raw_cx * raw_cx);
+        const float var_y = std::max(0.0f, static_cast<float>(sum_yy / sum_w) - raw_cy * raw_cy);
+        const float sx = std::sqrt(var_x);
+        const float sy = std::sqrt(var_y);
+
+        const float cx = std::clamp(raw_cx, 0.15f, 0.85f);
+        const float cy = std::clamp(raw_cy, 0.15f, 0.85f);
+        const float box_w = std::clamp(sx * 2.4f, 0.22f, 0.75f);
+        const float box_h = std::clamp(sy * 2.6f, 0.22f, 0.75f);
+        const float avg_sal = static_cast<float>(sum_w / static_cast<double>(std::max(1, (w - 1) * (h - 1))));
+        const float conf = std::clamp(avg_sal * 2.5f, 0.25f, 0.95f);
+
+        out_bounds->center_x = cx;
+        out_bounds->center_y = cy;
+        out_bounds->width = box_w;
+        out_bounds->height = box_h;
+        out_bounds->confidence = conf;
+        out_bounds->class_id = 0;
+        return true;
+    }
+
     static bool TryDetectTextCropRect(
         const uint8_t* pixels, int32_t w, int32_t h, int32_t stride,
         int32_t img_width, int32_t img_height, int32_t crop_size,
         VnCropRect* out_rect) noexcept
     {
+        if (!out_rect || img_width <= 0 || img_height <= 0 || !IsValidPixelArgs(pixels, w, h, stride, 8)) {
+            return false;
+        }
         constexpr int32_t grid_size = 8;
         int32_t cell_w = img_width / grid_size;
         int32_t cell_h = img_height / grid_size;
@@ -320,6 +455,9 @@ public:
         int32_t img_width, int32_t img_height,
         VnCropRect* out_regions, int32_t out_cap) noexcept
     {
+        if (img_width <= 0 || img_height <= 0 || !IsValidPixelArgs(pixels, w, h, stride, 8)) {
+            return 0;
+        }
         constexpr int32_t grid_size = 8;
         int32_t cell_w = img_width / grid_size;
         int32_t cell_h = img_height / grid_size;
@@ -347,12 +485,16 @@ public:
     }
 
     static VnCropRect BuildCropRect(float center_x, float center_y, int32_t img_width, int32_t img_height, int32_t crop_size) noexcept {
-        const int32_t max_side = std::max(1, std::min(img_width, img_height));
+        img_width = std::max(1, img_width);
+        img_height = std::max(1, img_height);
+        const int32_t max_side = std::min(img_width, img_height);
         crop_size = std::clamp(crop_size, 1, max_side);
         if (!std::isfinite(center_x)) center_x = img_width / 2.0f;
         if (!std::isfinite(center_y)) center_y = img_height / 2.0f;
-        int32_t crop_x = static_cast<int32_t>(center_x - crop_size / 2.0f);
-        int32_t crop_y = static_cast<int32_t>(center_y - crop_size / 2.0f);
+        float raw_x = std::clamp(center_x - crop_size / 2.0f, 0.0f, static_cast<float>(img_width - crop_size));
+        float raw_y = std::clamp(center_y - crop_size / 2.0f, 0.0f, static_cast<float>(img_height - crop_size));
+        int32_t crop_x = static_cast<int32_t>(raw_x);
+        int32_t crop_y = static_cast<int32_t>(raw_y);
         crop_x = std::max(0, std::min(crop_x, img_width - crop_size));
         crop_y = std::max(0, std::min(crop_y, img_height - crop_size));
         return VnCropRect{crop_x, crop_y, crop_size, crop_size};
@@ -364,20 +506,35 @@ private:
         int32_t grid_x, int32_t grid_y, int32_t stride, int32_t i,
         VnDetection* out_det) noexcept
     {
+        if (!buffer || !out_det || img_width <= 0 || img_height <= 0 ||
+            !std::isfinite(scale) || scale <= 0.0f) {
+            return false;
+        }
         constexpr int32_t channels = 85;
         int32_t offset = i * channels;
+        float raw_cx = buffer[offset];
+        float raw_cy = buffer[offset + 1];
+        float raw_w = buffer[offset + 2];
+        float raw_h = buffer[offset + 3];
         float objectness = buffer[offset + 4];
-        if (!std::isfinite(objectness) || objectness < kPersonConfidenceThreshold || objectness > 1.0f) {
+        if (!std::isfinite(raw_cx) || !std::isfinite(raw_cy) ||
+            !std::isfinite(raw_w) || !std::isfinite(raw_h) ||
+            !std::isfinite(objectness) ||
+            objectness < kPersonConfidenceThreshold || objectness > 1.0f) {
             return false;
         }
 
         float max_score = 0.0f;
         int32_t max_class_id = -1;
-        for (int32_t c = 5; c < channels; c++) {
-            float score = buffer[offset + c];
-            if (std::isfinite(score) && score > max_score && score <= 1.0f) {
-                max_score = score;
-                max_class_id = c - 5;
+        if (vnotch::cpu::SupportsX64V3()) {
+            max_score = vnotch::kernels::avx2::YoloxBestClass(buffer + offset + 5, &max_class_id);
+        } else {
+            for (int32_t c = 5; c < channels; c++) {
+                float score = buffer[offset + c];
+                if (std::isfinite(score) && score > max_score && score <= 1.0f) {
+                    max_score = score;
+                    max_class_id = c - 5;
+                }
             }
         }
 
@@ -386,26 +543,41 @@ private:
         bool is_person = (max_class_id == 0);
         max_score *= objectness;
         float threshold = is_person ? kPersonConfidenceThreshold : kConfidenceThreshold;
-        if (max_score < threshold) return false;
+        if (!std::isfinite(max_score) || max_score < threshold) return false;
 
-        float cx = (buffer[offset] + grid_x) * stride;
-        float cy = (buffer[offset + 1] + grid_y) * stride;
-        float w = std::exp(buffer[offset + 2]) * stride;
-        float h = std::exp(buffer[offset + 3]) * stride;
+        float cx = (raw_cx + grid_x) * stride;
+        float cy = (raw_cy + grid_y) * stride;
+        float w = std::exp(raw_w) * stride;
+        float h = std::exp(raw_h) * stride;
         if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(w) || !std::isfinite(h)) {
             return false;
         }
 
-        float x1 = std::clamp((cx - w / 2.0f) / scale, 0.0f, static_cast<float>(img_width));
-        float y1 = std::clamp((cy - h / 2.0f) / scale, 0.0f, static_cast<float>(img_height));
-        float x2 = std::clamp((cx + w / 2.0f) / scale, 0.0f, static_cast<float>(img_width));
-        float y2 = std::clamp((cy + h / 2.0f) / scale, 0.0f, static_cast<float>(img_height));
+        float max_w = static_cast<float>(img_width);
+        float max_h = static_cast<float>(img_height);
+        float raw_x1 = (cx - w / 2.0f) / scale;
+        float raw_y1 = (cy - h / 2.0f) / scale;
+        float raw_x2 = (cx + w / 2.0f) / scale;
+        float raw_y2 = (cy + h / 2.0f) / scale;
+        if (!std::isfinite(raw_x1) || !std::isfinite(raw_y1) ||
+            !std::isfinite(raw_x2) || !std::isfinite(raw_y2)) {
+            return false;
+        }
+
+        float x1 = std::clamp(raw_x1, 0.0f, max_w);
+        float y1 = std::clamp(raw_y1, 0.0f, max_h);
+        float x2 = std::clamp(raw_x2, 0.0f, max_w);
+        float y2 = std::clamp(raw_y2, 0.0f, max_h);
 
         float bbox_area = (x2 - x1) * (y2 - y1);
-        float area_ratio = bbox_area / (static_cast<float>(img_width) * img_height);
+        float img_area = max_w * max_h;
+        if (!std::isfinite(bbox_area) || !std::isfinite(img_area) || img_area <= 0.0f) {
+            return false;
+        }
+        float area_ratio = bbox_area / img_area;
         float min_ratio = is_person ? kMinPersonAreaRatio : kMinAreaRatio;
 
-        if (area_ratio < min_ratio || x2 - x1 < 5.0f || y2 - y1 < 5.0f) return false;
+        if (!std::isfinite(area_ratio) || area_ratio < min_ratio || x2 - x1 < 5.0f || y2 - y1 < 5.0f) return false;
 
         out_det->x1 = x1;
         out_det->y1 = y1;
@@ -417,16 +589,21 @@ private:
     }
 
     static float IoU(const VnDetection& a, const VnDetection& b) noexcept {
+        if (!std::isfinite(a.x1) || !std::isfinite(a.y1) || !std::isfinite(a.x2) || !std::isfinite(a.y2) ||
+            !std::isfinite(b.x1) || !std::isfinite(b.y1) || !std::isfinite(b.x2) || !std::isfinite(b.y2)) {
+            return 0.0f;
+        }
         float inter_x1 = std::max(a.x1, b.x1);
         float inter_y1 = std::max(a.y1, b.y1);
         float inter_x2 = std::min(a.x2, b.x2);
         float inter_y2 = std::min(a.y2, b.y2);
 
         float inter_area = std::max(0.0f, inter_x2 - inter_x1) * std::max(0.0f, inter_y2 - inter_y1);
-        float area_a = (a.x2 - a.x1) * (a.y2 - a.y1);
-        float area_b = (b.x2 - b.x1) * (b.y2 - b.y1);
+        float area_a = std::max(0.0f, a.x2 - a.x1) * std::max(0.0f, a.y2 - a.y1);
+        float area_b = std::max(0.0f, b.x2 - b.x1) * std::max(0.0f, b.y2 - b.y1);
+        float denom = area_a + area_b - inter_area + 1e-6f;
 
-        return inter_area / (area_a + area_b - inter_area + 1e-6f);
+        return (denom > 0.0f && std::isfinite(denom)) ? (inter_area / denom) : 0.0f;
     }
 
     static float GetCenterWeight(const VnDetection& d, int32_t img_width, int32_t img_height) noexcept {
@@ -440,13 +617,16 @@ private:
         float dy = (obj_center_y - img_center_y) / img_center_y;
         float dist = std::sqrt(dx * dx + dy * dy) / std::sqrt(2.0f);
 
-        return 1.0f - dist * 0.5f;
+        return std::isfinite(dist) ? (1.0f - dist * 0.5f) : 0.0f;
     }
 
     static int32_t ComputeAdaptiveCropSize(float subject_w, float subject_h, int32_t img_width, int32_t img_height, int32_t target_size) noexcept {
-        int32_t max_crop = std::min(img_width, img_height);
-        float subject_extent = std::max(subject_w, subject_h);
+        int32_t max_crop = std::max(1, std::min(img_width, img_height));
+        float safe_w = std::isfinite(subject_w) ? std::max(0.0f, subject_w) : 0.0f;
+        float safe_h = std::isfinite(subject_h) ? std::max(0.0f, subject_h) : 0.0f;
+        float subject_extent = std::max(safe_w, safe_h);
         float desired = subject_extent * (1.0f + 2.0f * kSubjectMarginRatio);
+        if (!std::isfinite(desired)) desired = static_cast<float>(max_crop);
         float min_crop = max_crop * kMinCropRatio;
         float size = std::clamp(desired, min_crop, static_cast<float>(max_crop));
         if (target_size > 0) {
@@ -543,7 +723,7 @@ VN_EXPORT int32_t vn_smartcrop_fill_tensor_from_bgra32(
     const uint8_t* pixels, int32_t scaled_w, int32_t scaled_h, int32_t stride,
     float* tensor_buffer) noexcept
 {
-    if (!pixels || !tensor_buffer || scaled_w <= 0 || scaled_h <= 0 || stride < scaled_w * 4) {
+    if (!tensor_buffer || !vnotch::services::SmartThumbnailCropService::IsValidPixelArgs(pixels, scaled_w, scaled_h, stride, 1)) {
         return VN_ERR_INVALID_ARG;
     }
     vnotch::services::SmartThumbnailCropService::FillTensorFromBgra32(pixels, scaled_w, scaled_h, stride, tensor_buffer);
@@ -576,9 +756,12 @@ VN_EXPORT int32_t vn_smartcrop_parse_yolox_and_nms(
     vnotch::services::VnDetection* out_detections, int32_t out_cap,
     int32_t* out_raw_count, int32_t* out_nms_count) noexcept
 {
-    if (!buffer || !out_nms_count) return VN_ERR_INVALID_ARG;
-    *out_nms_count = 0;
+    if (out_nms_count) *out_nms_count = 0;
     if (out_raw_count) *out_raw_count = 0;
+    if (!buffer || !out_nms_count || img_width <= 0 || img_height <= 0 ||
+        !std::isfinite(scale) || scale <= 0.0f) {
+        return VN_ERR_INVALID_ARG;
+    }
     try {
         auto res = vnotch::services::SmartThumbnailCropService::ParseYoloxAndNms(
             buffer, img_width, img_height, scale, out_raw_count);
@@ -654,9 +837,28 @@ VN_EXPORT int32_t vn_smartcrop_compute_saliency_crop_rect(
     int32_t img_width, int32_t img_height, int32_t target_size,
     vnotch::services::VnCropRect* out_rect) noexcept
 {
-    if (!pixels || !out_rect || w < 4 || h < 4 || stride < w * 4 || img_width <= 0 || img_height <= 0) return VN_ERR_INVALID_ARG;
+    if (!out_rect || img_width <= 0 || img_height <= 0 ||
+        !vnotch::services::SmartThumbnailCropService::IsValidPixelArgs(pixels, w, h, stride, 8)) {
+        return VN_ERR_INVALID_ARG;
+    }
     *out_rect = vnotch::services::SmartThumbnailCropService::ComputeSaliencyCropRect(
         pixels, w, h, stride, img_width, img_height, target_size);
+    return VN_OK;
+}
+
+VN_EXPORT int32_t __stdcall vn_smartcrop_compute_saliency_subject_bounds(
+    const uint8_t* pixels, int32_t w, int32_t h, int32_t stride,
+    VnSubjectBounds* out_bounds, uint8_t* out_found) noexcept
+{
+    if (!out_bounds || !out_found) {
+        return VN_ERR_INVALID_ARG;
+    }
+    *out_found = 0;
+    if (!vnotch::services::SmartThumbnailCropService::IsValidPixelArgs(pixels, w, h, stride, 8)) {
+        return VN_ERR_INVALID_ARG;
+    }
+    *out_found = vnotch::services::SmartThumbnailCropService::ComputeSaliencySubjectBounds(
+        pixels, w, h, stride, out_bounds) ? 1 : 0;
     return VN_OK;
 }
 
@@ -665,20 +867,12 @@ VN_EXPORT int32_t vn_smartcrop_try_detect_text_crop_rect(
     int32_t img_width, int32_t img_height, int32_t crop_size,
     vnotch::services::VnCropRect* out_rect, uint8_t* out_found) noexcept
 {
-    if (!pixels || !out_rect || !out_found || w < 8 || h < 8 || stride < w * 4 || img_width <= 0 || img_height <= 0) return VN_ERR_INVALID_ARG;
+    if (!out_rect || !out_found || img_width <= 0 || img_height <= 0 ||
+        !vnotch::services::SmartThumbnailCropService::IsValidPixelArgs(pixels, w, h, stride, 8)) {
+        return VN_ERR_INVALID_ARG;
+    }
     *out_found = vnotch::services::SmartThumbnailCropService::TryDetectTextCropRect(
         pixels, w, h, stride, img_width, img_height, crop_size, out_rect) ? 1 : 0;
-    return VN_OK;
-}
-
-VN_EXPORT int32_t vn_smartcrop_detect_text_regions(
-    const uint8_t* pixels, int32_t w, int32_t h, int32_t stride,
-    int32_t img_width, int32_t img_height,
-    vnotch::services::VnCropRect* out_regions, int32_t out_cap, int32_t* out_count) noexcept
-{
-    if (!pixels || !out_count || w < 8 || h < 8 || stride < w * 4 || img_width <= 0 || img_height <= 0) return VN_ERR_INVALID_ARG;
-    *out_count = vnotch::services::SmartThumbnailCropService::DetectTextRegions(
-        pixels, w, h, stride, img_width, img_height, out_regions, out_cap);
     return VN_OK;
 }
 

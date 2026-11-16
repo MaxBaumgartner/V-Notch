@@ -234,7 +234,7 @@ public partial class ControlCenterView
     private static void DrawSparkIn(Spark spark, double delayMs)
     {
         if (AnimationConfig.ReduceMotion) return;
-        spark.Reveal.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(0, 1, 1100, WeatherMotion.OutQuint, delayMs));
+        Motion.To(spark.Reveal, ScaleTransform.ScaleXProperty, 1, Motion.Tile, from: 0, delay: TimeSpan.FromMilliseconds(delayMs));
     }
 
     #endregion
@@ -267,8 +267,8 @@ public partial class ControlCenterView
         SetOrTint(dot.Ink, value < 50 ? PingGood : value < 100 ? PingSlow : PingBad, IsVisible ? 400 : 0);
         if (AnimationConfig.ReduceMotion || !IsVisible) return;
         dot.Ring.BeginAnimation(OpacityProperty, WeatherMotion.To(0.85, 0, 1000, WeatherMotion.Out));
-        dot.RingScale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(1, 4.2, 1000, WeatherMotion.Out));
-        dot.RingScale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(1, 4.2, 1000, WeatherMotion.Out));
+        Motion.To(dot.RingScale, ScaleTransform.ScaleXProperty, 4.2, Motion.Tile, from: 1);
+        Motion.To(dot.RingScale, ScaleTransform.ScaleYProperty, 4.2, Motion.Tile, from: 1);
     }
 
     /// <summary>An arrow hops in its direction when data moves, so traffic is felt without reading the number.</summary>
@@ -277,11 +277,8 @@ public partial class ControlCenterView
         if (AnimationConfig.ReduceMotion || !IsVisible) return;
         var shift = arrow.RenderTransform as TranslateTransform ?? new TranslateTransform();
         arrow.RenderTransform = shift;
-        var hop = new DoubleAnimationUsingKeyFrames { Duration = TimeSpan.FromMilliseconds(480) };
-        hop.KeyFrames.Add(new EasingDoubleKeyFrame(2.5 * direction, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(130)), PressEase));
-        hop.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(480)), ReleaseSpring));
-        Timeline.SetDesiredFrameRate(hop, AnimationConfig.TargetFps);
-        shift.BeginAnimation(TranslateTransform.YProperty, hop);
+        Motion.To(shift, TranslateTransform.YProperty, 2.5 * direction, Motion.PressDown,
+            done: () => Motion.To(shift, TranslateTransform.YProperty, 0, Motion.Press));
     }
 
     /// <summary>A big jump (say 20 to 90 %) lights the number up in the tab's colour for a moment.</summary>
@@ -370,7 +367,7 @@ public partial class ControlCenterView
         for (int i = 0; i < icon.Parts.Length; i++)
         {
             var part = icon.Parts[i];
-            double delay = delayMs + i * 90;
+            double delay = delayMs + Motion.Stagger(i).TotalMilliseconds;
             var scale = new ScaleTransform(0.4, 0.4);
             part.RenderTransform = scale;
             part.Opacity = 0;
@@ -382,8 +379,8 @@ public partial class ControlCenterView
                 part.Opacity = 1;
             };
             part.BeginAnimation(OpacityProperty, fade);
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(0.4, 1, 480, WeatherMotion.OutBack, delay));
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(0.4, 1, 480, WeatherMotion.OutBack, delay));
+            Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: TimeSpan.FromMilliseconds(delay));
+            Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: TimeSpan.FromMilliseconds(delay));
         }
     }
 
@@ -422,7 +419,8 @@ public partial class ControlCenterView
         };
         var tween = new WeatherTween { Step = t => value.Data = Arc(c, c, r, -90, Math.Min(359.5, 3.6 * t)) };
         bool animate = IsVisible && !AnimationConfig.ReduceMotion;
-        tween.Play(animate ? 0 : percent, percent, animate ? 1200 : 0, WeatherMotion.OutQuint, delayMs);
+        if (animate) tween.To(percent, from: 0, delay: TimeSpan.FromMilliseconds(delayMs));
+        else tween.Play(percent, percent, 0, WeatherMotion.OutQuint);
         return ring;
     }
 

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using VNotch.Controllers;
 using VNotch.Models;
@@ -18,9 +19,27 @@ internal sealed partial class SpotlightSearchService
         out int outLen,
         out int outLimit);
 
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int vn_spotlight_search_compare_keys(
+        double scoreA,
+        ReadOnlySpan<char> titleAPtr,
+        int titleALen,
+        ReadOnlySpan<char> idAPtr,
+        int idALen,
+        double scoreB,
+        ReadOnlySpan<char> titleBPtr,
+        int titleBLen,
+        ReadOnlySpan<char> idBPtr,
+        int idBLen,
+        out int outCmp);
 
     private const int MaxResults = 50;
+    private const int ProviderSearchDebounceMs = 75;
+
+    internal readonly record struct SearchUpdate(
+        IReadOnlyList<SpotlightSearchItem> Results, bool IsComplete, bool IsImmediateComplete);
     private static readonly Comparison<SpotlightSearchItem> s_mergeComparison = CompareMergedItems;
+    internal static readonly Comparison<SpotlightSearchItem> s_scoreAndTitleComparison = CompareScoreAndTitle;
 
     private readonly ISpotlightProvider[] _providers;
     private readonly ISpotlightProvider[] _instantProviders;
@@ -127,37 +146,132 @@ internal sealed partial class SpotlightSearchService
         CancellationToken cancellationToken) =>
         SearchProvidersCoreAsync(_providers, query, limit, cancellationToken);
 
+    internal IAsyncEnumerable<SearchUpdate> SearchUpdatesAsync(
+        string query, int limit, CancellationToken cancellationToken) =>
+        SearchUpdatesCoreAsync(_providers, query, limit, ProviderSearchDebounceMs, cancellationToken);
+
     private async Task<IReadOnlyList<SpotlightSearchItem>> SearchProvidersCoreAsync(
         ISpotlightProvider[] selectedProviders,
         string query,
         int limit,
         CancellationToken cancellationToken)
     {
+        IReadOnlyList<SpotlightSearchItem> results = Array.Empty<SpotlightSearchItem>();
+        await foreach (var update in SearchUpdatesCoreAsync(selectedProviders, query, limit, 0, cancellationToken)
+            .ConfigureAwait(false))
+            results = update.Results;
+        return results;
+    }
+
+    private async IAsyncEnumerable<SearchUpdate> SearchUpdatesCoreAsync(
+        ISpotlightProvider[] selectedProviders, string query, int limit, int debounceMilliseconds,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!TryNormalizeInput(query, limit, out query, out limit))
-            return Array.Empty<SpotlightSearchItem>();
+        {
+            yield return new(Array.Empty<SpotlightSearchItem>(), IsComplete: true, IsImmediateComplete: true);
+            yield break;
+        }
+
+        using var queryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        CancellationToken queryToken = queryCts.Token;
+        string normalizedForUsage = _usage != null ? SettingsSearchMatcher.Normalize(query) : string.Empty;
 
         var tasks = new Task<IReadOnlyList<SpotlightSearchItem>>[selectedProviders.Length];
+        var immediateProviders = new bool[selectedProviders.Length];
+        int immediateRemaining = 1; // Preference/history results are part of the immediate phase.
+        int everythingIndex = -1;
         for (int i = 0; i < selectedProviders.Length; i++)
         {
-            tasks[i] = SearchProviderAsync(selectedProviders[i], query, MaxResults, cancellationToken);
+            if (selectedProviders[i] is EverythingSearchProvider && everythingIndex < 0)
+                everythingIndex = i;
+            if (selectedProviders[i] is LocalFileSearchProvider) continue;
+            immediateProviders[i] = selectedProviders[i].IsInstant && selectedProviders[i] is not EverythingSearchProvider;
+            if (immediateProviders[i]) immediateRemaining++;
+            tasks[i] = SearchDelayedProviderAsync(selectedProviders[i], query,
+                immediateProviders[i] ? 0 : debounceMilliseconds, queryToken);
         }
-
-        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        string normalizedForUsage = _usage != null ? SettingsSearchMatcher.Normalize(query) : string.Empty;
-        var groups = new IReadOnlyList<SpotlightSearchItem>[results.Length + 2];
-        for (int i = 0; i < results.Length; i++)
+        for (int i = 0; i < selectedProviders.Length; i++)
         {
-            groups[i] = ApplyUsageBoost(results[i], normalizedForUsage);
+            if (selectedProviders[i] is LocalFileSearchProvider)
+                tasks[i] = SearchLocalFallbackAsync(selectedProviders[i],
+                    everythingIndex >= 0 ? tasks[everythingIndex] : null, query, queryToken,
+                    debounceMilliseconds);
         }
 
-        groups[results.Length] = _usage?.Preferences.Search(query) ?? Array.Empty<SpotlightSearchItem>();
-        groups[results.Length + 1] = ApplyUsageBoost(
-            _usage?.GetRememberedItems(query) ?? Array.Empty<SpotlightSearchItem>(),
-            normalizedForUsage);
+        // Preference/history lookup can probe local paths. Treat it as another
+        // independent source so it cannot hold up completed in-memory providers.
+        var personalization = Task.Run(() => new IReadOnlyList<SpotlightSearchItem>[]
+        {
+            _usage?.Preferences.Search(query) ?? Array.Empty<SpotlightSearchItem>(),
+            ApplyUsageBoost(_usage?.GetRememberedItems(query) ?? Array.Empty<SpotlightSearchItem>(), normalizedForUsage)
+        }, queryToken);
 
-        return Merge(groups, limit);
+        try
+        {
+            var groups = new IReadOnlyList<SpotlightSearchItem>[tasks.Length + 2];
+            Array.Fill(groups, Array.Empty<SpotlightSearchItem>());
+            var pending = new List<Task>(tasks) { personalization };
+
+            while (pending.Count > 0)
+            {
+                await Task.WhenAny(pending).WaitAsync(queryToken).ConfigureAwait(false);
+                queryToken.ThrowIfCancellationRequested();
+                // Collect providers that finished together into one UI update.
+                for (int index = 0; index < tasks.Length; index++)
+                {
+                    if (!tasks[index].IsCompleted || !pending.Remove(tasks[index])) continue;
+                    groups[index] = ApplyUsageBoost(await tasks[index].ConfigureAwait(false), normalizedForUsage);
+                    if (immediateProviders[index]) immediateRemaining--;
+                }
+                if (personalization.IsCompleted && pending.Remove(personalization))
+                {
+                    var personalized = await personalization.ConfigureAwait(false);
+                    groups[tasks.Length] = personalized[0];
+                    groups[tasks.Length + 1] = personalized[1];
+                    immediateRemaining--;
+                }
+                queryToken.ThrowIfCancellationRequested();
+                yield return new(Merge(groups, limit), IsComplete: pending.Count == 0,
+                    IsImmediateComplete: immediateRemaining == 0);
+            }
+        }
+        finally
+        {
+            queryCts.Cancel();
+            // A superseded provider may still be inside native IPC. Observe its
+            // eventual completion without keeping the replacement query waiting.
+            _ = Task.WhenAll(tasks.Cast<Task>().Append(personalization)).ContinueWith(completed => { _ = completed.Exception; },
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+    }
+
+    private static async Task<IReadOnlyList<SpotlightSearchItem>> SearchDelayedProviderAsync(
+        ISpotlightProvider provider, string query, int debounceMilliseconds, CancellationToken cancellationToken)
+    {
+        if (debounceMilliseconds > 0)
+            await Task.Delay(debounceMilliseconds, cancellationToken).ConfigureAwait(false);
+        return await SearchProviderAsync(provider, query, MaxResults, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<SpotlightSearchItem>> SearchLocalFallbackAsync(
+        ISpotlightProvider local, Task<IReadOnlyList<SpotlightSearchItem>>? indexedQuery,
+        string query, CancellationToken cancellationToken, int debounceMilliseconds = 0)
+    {
+        // Delay independently from in-memory results, rather than waiting for
+        // the entire instant phase before this provider can start.
+        if (debounceMilliseconds > 0)
+            await Task.Delay(debounceMilliseconds, cancellationToken).ConfigureAwait(false);
+        // A successful indexed query with zero matches is still authoritative.
+        // Await this query's IPC result so an unavailable / timed-out index keeps
+        // the disk fallback, including on the first search after startup.
+        if (indexedQuery != null) await indexedQuery.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_everythingSearchProvider?.IsAvailable == true)
+            return Array.Empty<SpotlightSearchItem>();
+        return await SearchProviderAsync(local, query, MaxResults, cancellationToken).ConfigureAwait(false);
     }
 
     private IReadOnlyList<SpotlightSearchItem> ApplyUsageBoost(
@@ -221,13 +335,34 @@ internal sealed partial class SpotlightSearchService
 
     private static int CompareMergedItems(SpotlightSearchItem a, SpotlightSearchItem b)
     {
-        int scoreCmp = b.Score.CompareTo(a.Score);
-        if (scoreCmp != 0) return scoreCmp;
+        string titleA = a.Title ?? string.Empty;
+        string titleB = b.Title ?? string.Empty;
+        string idA = a.Id ?? string.Empty;
+        string idB = b.Id ?? string.Empty;
+        _ = vn_spotlight_search_compare_keys(
+            a.Score,
+            titleA.AsSpan(), titleA.Length,
+            idA.AsSpan(), idA.Length,
+            b.Score,
+            titleB.AsSpan(), titleB.Length,
+            idB.AsSpan(), idB.Length,
+            out int cmp);
+        return cmp;
+    }
 
-        int titleCmp = StringComparer.CurrentCultureIgnoreCase.Compare(a.Title, b.Title);
-        if (titleCmp != 0) return titleCmp;
-
-        return StringComparer.Ordinal.Compare(a.Id, b.Id);
+    internal static int CompareScoreAndTitle(SpotlightSearchItem a, SpotlightSearchItem b)
+    {
+        string titleA = a.Title ?? string.Empty;
+        string titleB = b.Title ?? string.Empty;
+        _ = vn_spotlight_search_compare_keys(
+            a.Score,
+            titleA.AsSpan(), titleA.Length,
+            ReadOnlySpan<char>.Empty, 0,
+            b.Score,
+            titleB.AsSpan(), titleB.Length,
+            ReadOnlySpan<char>.Empty, 0,
+            out int cmp);
+        return cmp;
     }
 
     private static bool TryNormalizeInput(

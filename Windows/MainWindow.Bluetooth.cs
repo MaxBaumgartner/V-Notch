@@ -102,27 +102,16 @@ public partial class MainWindow
 
         PlayBluetoothBounce();
 
-        CollapsedContent.BeginAnimation(OpacityProperty, null);
-        CollapsedContent.Opacity = 0;
-        CollapsedContent.Visibility = Visibility.Collapsed;
-
-        if (MusicCompactContent.Visibility == Visibility.Visible)
-        {
-            MusicCompactContent.BeginAnimation(OpacityProperty, null);
-            MusicCompactContent.Opacity = 0;
-            MusicCompactContent.Visibility = Visibility.Collapsed;
-        }
+        HideCompactSurface(CollapsedContent);
+        HideCompactSurface(MusicCompactContent);
 
         var fadeIn = MakeCompactNotificationEntrance(0, 1);
         activeGrid.BeginAnimation(OpacityProperty, fadeIn);
 
-        var slideUp = MakeCompactNotificationEntrance(6, 0);
-        activeTranslate.BeginAnimation(
-            TranslateTransform.YProperty, slideUp, HandoffBehavior.SnapshotAndReplace);
+        Motion.To(activeTranslate, TranslateTransform.YProperty, 0, Motion.Tile, from: 6);
 
-        var iconScale = MakeAnim(0.8d, 1d, _dur400, _easeSpring, TimeSpan.FromMilliseconds(150));
-        activeIconScale.BeginAnimation(ScaleTransform.ScaleXProperty, iconScale);
-        activeIconScale.BeginAnimation(ScaleTransform.ScaleYProperty, iconScale);
+        Motion.To(activeIconScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(activeIconScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
     }
 
     private void AnimateBluetoothNotificationOut()
@@ -162,9 +151,9 @@ public partial class MainWindow
 
         activeGrid.BeginAnimation(OpacityProperty, fadeOut);
 
-        var slideDown = MakeCompactNotificationExit(0, -4);
-        activeTranslate.BeginAnimation(
-            TranslateTransform.YProperty, slideDown, HandoffBehavior.SnapshotAndReplace);
+        Motion.To(activeTranslate, TranslateTransform.YProperty, -4, Motion.Exit);
+        Motion.To(ActiveBluetoothIconScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(ActiveBluetoothIconScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
     }
 
     private void CancelBluetoothNotificationImmediate()
@@ -175,39 +164,29 @@ public partial class MainWindow
         _bluetoothNotificationToken = 0;
         _bluetoothController.MarkDismissed();
 
-        BluetoothNotification.BeginAnimation(OpacityProperty, null);
-        BluetoothNotificationTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-        BluetoothNotification.Opacity = 0;
+        Motion.Stop(BluetoothNotification, OpacityProperty, 0);
+        Motion.Stop(BluetoothNotificationTranslate, TranslateTransform.YProperty, 0);
+        Motion.Stop(BluetoothIconScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(BluetoothIconScale, ScaleTransform.ScaleYProperty, 1);
         BluetoothNotification.Visibility = Visibility.Collapsed;
 
-        BluetoothDisconnectNotification.BeginAnimation(OpacityProperty, null);
-        BluetoothDisconnectNotificationTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-        BluetoothDisconnectNotification.Opacity = 0;
+        Motion.Stop(BluetoothDisconnectNotification, OpacityProperty, 0);
+        Motion.Stop(BluetoothDisconnectNotificationTranslate, TranslateTransform.YProperty, 0);
+        Motion.Stop(BluetoothDisconnectIconScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(BluetoothDisconnectIconScale, ScaleTransform.ScaleYProperty, 1);
         BluetoothDisconnectNotification.Visibility = Visibility.Collapsed;
     }
 
     private void PlayBluetoothBounce()
     {
-        if (_isExpanded || _isAnimating) return;
-
-        var durPeak = TimeSpan.FromMilliseconds(140);
-        var durEnd = TimeSpan.FromMilliseconds(700);
-
-        var bounceX = new DoubleAnimationUsingKeyFrames();
-        bounceX.KeyFrames.Add(new EasingDoubleKeyFrame(1.08, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-        bounceX.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durEnd), _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(bounceX, VNotch.Services.AnimationConfig.TargetFps);
-
-        var bounceY = new DoubleAnimationUsingKeyFrames();
-        bounceY.KeyFrames.Add(new EasingDoubleKeyFrame(0.94, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-        bounceY.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durEnd), _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(bounceY, VNotch.Services.AnimationConfig.TargetFps);
-
-        NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounceX);
-        NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounceY);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounceX);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounceY);
+        if (_isExpanded || _isAnimating || AnimationConfig.ReduceMotion) return;
+        foreach (var scale in new[] { NotchScale, NotchShadowScale })
+        {
+            Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: 1.2);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: -0.9);
+        }
     }
 
     #endregion
 }
+

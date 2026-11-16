@@ -14,6 +14,7 @@ public partial class MainWindow
     #region Privacy Indicators (Mic/Camera In-Use — Single Dot)
 
     private bool _privacyIndicatorsVisible = false;
+    private int _privacyVisibilityToken;
     private PrivacyIndicatorState _lastPrivacyState = PrivacyIndicatorState.Empty;
 
     private const double PrivacyDotDefaultRightMargin = 27.0;
@@ -38,14 +39,15 @@ public partial class MainWindow
     private bool IsCompactPillForPrivacyIndicator =>
         _transitionCoordinator.ShapeState == VNotch.Controllers.NotchShapeState.Collapsed &&
         !_isAnimating &&
-        !_isGreetingActive;
+        !_isGreetingActive &&
+        !_isAppNotificationBannerVisible;
 
     /// <summary>Something else holds the dot's spot (an open notch, a pill, the audio view…).</summary>
     private bool IsPrivacySpotTaken => ShouldSuppressPrivacyDot(
         IsCompactPillForPrivacyIndicator,
         _isAudioView,
         _isVolumeIndicatorActive,
-        _isBluetoothNotificationVisible || _isClaudeNotificationVisible,
+        _isBluetoothNotificationVisible || _isClaudeNotificationVisible || _appPillToken != 0,
         _isClipboardPeekActive);
 
     // A muted mic in a call takes the dot's place.
@@ -144,22 +146,17 @@ public partial class MainWindow
 
     private void ShowPrivacyDot(PrivacyIndicatorState state)
     {
+        HookAmbientVisibility();
         _privacyIndicatorsVisible = true;
 
         if (IsPrivacyDotSuppressed)
             return;
 
-        PrivacyDot.Visibility = Visibility.Visible;
-        PrivacyIndicatorPanel.Visibility = Visibility.Visible;
-
         UpdatePrivacyDotPosition();
 
         ApplyDotColor(state, animate: false);
 
-        var fadeIn = MakeAnim(0d, 1d, _dur350, _easeExpOut7, null);
-        PrivacyIndicatorPanel.BeginAnimation(OpacityProperty, fadeIn);
-
-        AnimateDotIn(PrivacyDotScale);
+        FadePrivacyDot(show: true);
 
         StartBreathingAnimation(PrivacyDot);
 
@@ -174,14 +171,7 @@ public partial class MainWindow
 
         StopBreathingAnimation(PrivacyDot);
 
-        var fadeOut = MakeAnim(1d, 0d, _dur250, _easePowerIn2, null);
-        fadeOut.Completed += (_, _) =>
-        {
-            if (_privacyIndicatorsVisible) return;
-            PrivacyIndicatorPanel.Visibility = Visibility.Collapsed;
-            PrivacyDot.Visibility = Visibility.Collapsed;
-        };
-        PrivacyIndicatorPanel.BeginAnimation(OpacityProperty, fadeOut);
+        FadePrivacyDot(show: false);
 
         RuntimeLog.Log("PRIVACY", "Dot hidden");
     }
@@ -192,9 +182,7 @@ public partial class MainWindow
         if (!_privacyIndicatorsVisible) return;
 
         StopBreathingAnimation(PrivacyDot);
-        PrivacyIndicatorPanel.BeginAnimation(OpacityProperty, null);
-        PrivacyIndicatorPanel.Opacity = 0;
-        PrivacyIndicatorPanel.Visibility = Visibility.Collapsed;
+        FadePrivacyDot(show: false);
     }
 
     private void RestorePrivacyDotVisibility()
@@ -203,15 +191,11 @@ public partial class MainWindow
         if (!_privacyIndicatorsVisible) return;
         if (IsPrivacyDotSuppressed) return;
 
-        PrivacyDot.Visibility = Visibility.Visible;
-        PrivacyIndicatorPanel.Visibility = Visibility.Visible;
-
         UpdatePrivacyDotPosition();
 
         ApplyDotColor(_lastPrivacyState, animate: false);
 
-        var fadeIn = MakeAnim(0d, 1d, _dur250, _easePowerOut3, null);
-        PrivacyIndicatorPanel.BeginAnimation(OpacityProperty, fadeIn);
+        FadePrivacyDot(show: true);
 
         StartBreathingAnimation(PrivacyDot);
     }
@@ -231,25 +215,9 @@ public partial class MainWindow
             if (h > 0) top = Math.Max(0, (h - PrivacyDotSize) / 2.0);
         }
 
-        var current = PrivacyIndicatorPanel.Margin;
         var target = new Thickness(0, top, right, 0);
-
-        PrivacyIndicatorPanel.BeginAnimation(MarginProperty, null);
-        PrivacyIndicatorPanel.Margin = target;
-
-        if (animate && PrivacyIndicatorPanel.Visibility == Visibility.Visible &&
-            (Math.Abs(current.Right - target.Right) > 0.5 || Math.Abs(current.Top - target.Top) > 0.5))
-        {
-            // Matches the 450ms pill width animation in ApplyMusicCompactMode so
-            // the dot glides with the layout instead of snapping to its new spot.
-            var slide = new ThicknessAnimation(current, target, new Duration(TimeSpan.FromMilliseconds(450)))
-            {
-                EasingFunction = _easeExpOut6,
-                FillBehavior = FillBehavior.Stop
-            };
-            Timeline.SetDesiredFrameRate(slide, VNotch.Services.AnimationConfig.TargetFps);
-            PrivacyIndicatorPanel.BeginAnimation(MarginProperty, slide);
-        }
+        if (animate && PrivacyIndicatorPanel.IsVisible) Motion.MarginTo(PrivacyIndicatorPanel, target, Motion.Glide);
+        else PrivacyIndicatorPanel.Margin = target;
     }
 
     // A single dot prioritizes capture, mic, camera, then location.
@@ -268,12 +236,12 @@ public partial class MainWindow
     {
         Color targetColor = GetPrivacyDotColor(state);
 
-        if (animate)
+        if (animate && !AnimationConfig.ReduceMotion)
         {
             var colorAnim = new ColorAnimation
             {
                 To = targetColor,
-                Duration = new Duration(TimeSpan.FromMilliseconds(300)),
+                Duration = new Duration(TimeSpan.FromMilliseconds(180)),
                 EasingFunction = _easeSineInOut
             };
             Timeline.SetDesiredFrameRate(colorAnim, VNotch.Services.AnimationConfig.TargetFps);
@@ -286,23 +254,54 @@ public partial class MainWindow
         }
     }
 
-    private static void AnimateDotIn(ScaleTransform scale)
+    private void FadePrivacyDot(bool show)
     {
-        var popIn = new DoubleAnimationUsingKeyFrames();
-        popIn.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        popIn.KeyFrames.Add(new EasingDoubleKeyFrame(1.2, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(180)), _easeExpOut7));
-        popIn.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(400)), _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(popIn, VNotch.Services.AnimationConfig.TargetFps);
-
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, popIn);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, popIn);
+        int token = ++_privacyVisibilityToken;
+        bool entering = PrivacyIndicatorPanel.Visibility != Visibility.Visible;
+        if (!show && !PrivacyIndicatorPanel.IsVisible)
+        {
+            Motion.Stop(PrivacyIndicatorPanel, OpacityProperty, 0);
+            Motion.Stop(PrivacyDotScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale);
+            Motion.Stop(PrivacyDotScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale);
+            PrivacyIndicatorPanel.Visibility = Visibility.Collapsed;
+            PrivacyDot.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (show)
+        {
+            PrivacyDot.Visibility = Visibility.Visible;
+            PrivacyIndicatorPanel.Visibility = Visibility.Visible;
+        }
+        Motion.To(PrivacyDotScale, ScaleTransform.ScaleXProperty, show ? 1 : Motion.ExitToScale,
+            show ? Motion.TileScale : Motion.Exit, from: show && entering ? Motion.TileFromScale : null);
+        Motion.To(PrivacyDotScale, ScaleTransform.ScaleYProperty, show ? 1 : Motion.ExitToScale,
+            show ? Motion.TileScale : Motion.Exit, from: show && entering ? Motion.TileFromScale : null);
+        Motion.To(PrivacyIndicatorPanel, OpacityProperty, show ? 1 : 0, show ? Motion.Tile : Motion.Exit,
+            from: show && entering ? 0 : null, done: () =>
+            {
+                if (token != _privacyVisibilityToken || show) return;
+                Motion.Stop(PrivacyDotScale, ScaleTransform.ScaleXProperty);
+                Motion.Stop(PrivacyDotScale, ScaleTransform.ScaleYProperty);
+                PrivacyIndicatorPanel.Visibility = Visibility.Collapsed;
+                PrivacyDot.Visibility = Visibility.Collapsed;
+            });
     }
 
-    private static void StartBreathingAnimation(FrameworkElement dot)
+    private bool _privacyBreathing;
+
+    private void RefreshPrivacyBreathing()
     {
+        if (_privacyIndicatorsVisible && !IsPrivacyDotSuppressed && AmbientAnimationsAllowed && PrivacyDot.IsVisible)
+            StartBreathingAnimation(PrivacyDot);
+        else StopBreathingAnimation(PrivacyDot);
+    }
+
+    private void StartBreathingAnimation(FrameworkElement dot)
+    {
+        if (_privacyBreathing || !AmbientAnimationsAllowed || !dot.IsVisible) return;
+        _privacyBreathing = true;
         var breathing = new DoubleAnimation
         {
-            From = 1.0,
             To = 0.4,
             Duration = new Duration(TimeSpan.FromMilliseconds(1400)),
             AutoReverse = true,
@@ -315,10 +314,13 @@ public partial class MainWindow
         dot.BeginAnimation(OpacityProperty, breathing);
     }
 
-    private static void StopBreathingAnimation(FrameworkElement dot)
+    private void StopBreathingAnimation(FrameworkElement dot)
     {
+        _privacyBreathing = false;
+        double opacity = dot.IsVisible && AmbientAnimationsAllowed ? dot.Opacity : 1;
         dot.BeginAnimation(OpacityProperty, null);
-        dot.Opacity = 1.0;
+        // The panel owns the exit fade; resetting a breathing dot first would brighten it for one frame.
+        dot.Opacity = opacity;
     }
 
     #endregion

@@ -16,6 +16,7 @@ namespace VNotch.Controllers;
 public sealed class WebcamCaptureController : IDisposable
 {
     private readonly object _lifecycleLock = new();
+    private readonly object _frameBufferLock = new();
 
     private MediaCapture? _mediaCapture;
     private MediaFrameReader? _frameReader;
@@ -101,6 +102,7 @@ public sealed class WebcamCaptureController : IDisposable
 
     // The leased array may have headroom; only width * height * 4 bytes contain frame pixels.
     public event Action<byte[], int, int, int>? FrameAvailable;
+    internal Func<SoftwareBitmap, int, bool>? PresentNativeFrame { get; set; }
 
     public void ReleaseFrameBuffer()
     {
@@ -381,6 +383,7 @@ public sealed class WebcamCaptureController : IDisposable
             reader.FrameArrived -= OnFrameArrived;
         }
 
+        DiscardStoppedBuffers();
         return (reader, capture, initializingCapture);
     }
 
@@ -410,7 +413,24 @@ public sealed class WebcamCaptureController : IDisposable
             reader.FrameArrived -= OnFrameArrived;
         }
 
+        DiscardStoppedBuffers();
         return true;
+    }
+
+    private void DiscardStoppedBuffers()
+    {
+        lock (_frameBufferLock)
+        {
+            lock (_lifecycleLock)
+            {
+                if (_isActive) return;
+                // An already queued UI frame owns its array reference until it releases
+                // the lease. Drop controller references after any active copy completes.
+                _frameBuffer = Array.Empty<byte>();
+                _conversionBuffer = Array.Empty<byte>();
+                _frameBufferCapacity = 0;
+            }
+        }
     }
 
     public void EndGracefulStop(int fadeToken)
@@ -487,11 +507,16 @@ public sealed class WebcamCaptureController : IDisposable
 
         if (Volatile.Read(ref _frameBufferInUse) != 0) return;
         using var frame = sender.TryAcquireLatestFrame();
-        if (frame?.VideoMediaFrame?.SoftwareBitmap == null) return;
-        ProcessFrame(frame.VideoMediaFrame.SoftwareBitmap, frameToken);
+        using var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
+        if (bitmap != null) ProcessFrame(bitmap, frameToken);
     }
 
     internal void ProcessFrame(SoftwareBitmap softwareBitmap, int frameToken)
+    {
+        lock (_frameBufferLock) ProcessFrameUnderLock(softwareBitmap, frameToken);
+    }
+
+    private void ProcessFrameUnderLock(SoftwareBitmap softwareBitmap, int frameToken)
     {
         lock (_lifecycleLock)
         {
@@ -511,6 +536,8 @@ public sealed class WebcamCaptureController : IDisposable
         bool handedOff = false;
         try
         {
+            // The capture callback owns the WinRT bitmap until this synchronous upload returns.
+            if (PresentNativeFrame?.Invoke(softwareBitmap, frameToken) == true) return;
             int width = softwareBitmap.PixelWidth;
             int height = softwareBitmap.PixelHeight;
             int requiredSize = checked(width * height * 4);

@@ -14,6 +14,62 @@ namespace VNotch.Tests;
 [Collection("Localization")]
 public sealed class ClipboardCardRenderingTests
 {
+    [Fact]
+    public void CardKindAndPinBindingsFollowMetadataReplacements() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        using var tray = new ClipboardTray();
+        var entry = new ClipboardEntry { Kind = ClipboardKind.File, Title = "document.txt" };
+        var model = new ClipboardCardViewModel(entry);
+        var cards = (System.Collections.ObjectModel.ObservableCollection<ClipboardCardViewModel>)typeof(ClipboardTray)
+            .GetField("_cards", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(tray)!;
+        cards.Add(model);
+        var window = new BackgroundWindow { Content = tray, Width = 800, Height = 400 };
+        try
+        {
+            window.Show();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            var list = (ListBox)tray.FindName("Cards");
+            var container = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0);
+            Border? FileBadge() => Descendants(container).OfType<Border>().SingleOrDefault(element => element.Name == "FileBadgePanel");
+            var actions = Descendants(container).OfType<Border>().Single(element => element.Name == "CardActions");
+            Assert.Equal(Visibility.Visible, FileBadge()!.Visibility);
+            model.UpdateEntry(entry with { Kind = ClipboardKind.Image, IsPinned = true });
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Assert.Null(FileBadge());
+            Assert.Equal(1, TrayMotion.GetOpacity(actions));
+            model.UpdateEntry(entry);
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Assert.Equal(Visibility.Visible, FileBadge()!.Visibility);
+            Assert.Equal("document.txt", Descendants(container).OfType<TextBlock>().Single(element => element.Name == "FileHeroName").Text);
+            Assert.Equal(0, TrayMotion.GetOpacity(actions));
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
+    [InlineData(ClipboardKind.File)]
+    [InlineData(ClipboardKind.Image)]
+    public void NonTextCardsSkipUnusedTextVisualsButKeepSensitiveContentMasked(ClipboardKind kind) => SharedStaTestRunner.Run(() =>
+    {
+        using var tray = new ClipboardTray();
+        var list = (ListBox)tray.FindName("Cards");
+        var card = Assert.IsType<Border>(list.ItemTemplate.LoadContent());
+        var entry = new ClipboardEntry { Kind = kind, Title = "document.txt", IsSensitive = false };
+        card.DataContext = new ClipboardCardViewModel(entry, false);
+        Layout(card, 150);
+        Assert.DoesNotContain(Descendants(card), child => child is DustParticleOverlay || child is TextBlock { Name: "CardPreviewText" });
+
+        var secret = new ClipboardCardViewModel(entry with { IsSensitive = true, Title = "private document" }, true);
+        card.DataContext = secret;
+        Layout(card, 150);
+        Assert.True(Descendants(card).OfType<DustParticleOverlay>().Single().IsActive);
+        Assert.DoesNotContain(Descendants(card).OfType<TextBlock>(), text => text.Text.Contains("private document"));
+
+        card.DataContext = new ClipboardCardViewModel(entry, false);
+        Layout(card, 150);
+        Assert.DoesNotContain(Descendants(card), child => child is DustParticleOverlay);
+    });
+
     [Theory]
     [InlineData(140, false)]
     [InlineData(140, true)]
@@ -101,6 +157,57 @@ public sealed class ClipboardCardRenderingTests
                 SaveArtifact(bitmap, $"clipboard-rounded-card-{height}-{dpi}.png");
             }
         }
+    });
+
+    [Fact]
+    public void RoundedCardClipsDoNotCombineWithRedundantLayoutClips() => SharedStaTestRunner.Run(() =>
+    {
+        using var tray = new ClipboardTray();
+        var card = CreateCard(tray, new ClipboardEntry { Kind = ClipboardKind.Image }, 150);
+        var backdrop = Descendants(card).OfType<CardActionBackdrop>().Single();
+        var actionGlass = Assert.IsType<Border>(VisualTreeHelper.GetParent(backdrop));
+        foreach (double height in new[] { 150d, 210d, 173.25d })
+        {
+            card.Height = height;
+            Layout(card, height);
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(static () => { }, System.Windows.Threading.DispatcherPriority.Background);
+            var cardClip = Assert.IsType<RectangleGeometry>(VisualTreeHelper.GetClip(card));
+            var actionClip = Assert.IsType<RectangleGeometry>(VisualTreeHelper.GetClip(actionGlass));
+            Assert.Same(card.Clip, cardClip);
+            Assert.Same(actionGlass.Clip, actionClip);
+            Assert.True(cardClip.IsFrozen);
+            Assert.True(actionClip.IsFrozen);
+            for (int i = 0; i < 20; i++) { _ = cardClip.Bounds; _ = actionClip.Bounds; }
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 100; i++) { _ = cardClip.Bounds; _ = actionClip.Bounds; }
+            Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 1024);
+        }
+    });
+
+    [Fact]
+    public void CreateBitmapBounds4kScreenshotWidthAndFreezesResult() => SharedStaTestRunner.Run(() =>
+    {
+        int stride = (3840 + 7) / 8;
+        var source = BitmapSource.Create(
+            3840,
+            2160,
+            96,
+            96,
+            PixelFormats.Indexed1,
+            BitmapPalettes.BlackAndWhite,
+            new byte[stride * 2160],
+            stride);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(source));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+
+        var bitmap = ClipboardTray.CreateBitmap(stream.ToArray());
+
+        Assert.True(bitmap.PixelWidth <= 420);
+        Assert.Equal(420, bitmap.PixelWidth);
+        Assert.True(bitmap.PixelHeight <= 420);
+        Assert.True(bitmap.IsFrozen);
     });
 
     private static Border CreateCard(ClipboardTray tray, ClipboardEntry entry, double height)

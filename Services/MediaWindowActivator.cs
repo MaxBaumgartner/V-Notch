@@ -5,7 +5,6 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Windows.Automation;
 using VNotch.Models;
 using static VNotch.Services.Win32Interop;
 
@@ -169,22 +168,46 @@ internal static partial class MediaWindowActivator
         return vn_mediaactivator_is_chromium_window(hwnd, out byte isChrom) == 0 && isChrom != 0;
     }
 
-    private static bool IsMediaBrowserWindow(IntPtr hwnd, string sourceAppId)
+    internal static bool IsMediaBrowserWindow(IntPtr hwnd, string sourceAppId)
     {
         if (string.IsNullOrWhiteSpace(sourceAppId)) return false;
         GetWindowThreadProcessId(hwnd, out uint processId);
         if (processId == 0) return false;
-        string? resolvedName = ProcessNameResolver.TryGetName(processId);
-        if (!string.IsNullOrEmpty(resolvedName) && !IsBrowserProcess(resolvedName) && !IsChromiumWindow(hwnd))
-            return false;
+        return IsMediaBrowserWindowCore(
+            hwnd,
+            sourceAppId,
+            processId,
+            ProcessNameResolver.TryGetName,
+            IsChromiumWindow,
+            static pid => Process.GetProcessById((int)pid));
+    }
+
+    internal static bool IsMediaBrowserWindowCore(
+        IntPtr hwnd,
+        string sourceAppId,
+        uint processId,
+        Func<uint, string?> resolveProcessName,
+        Func<IntPtr, bool> isChromiumWindow,
+        Func<uint, Process> getProcessById)
+    {
+        if (string.IsNullOrWhiteSpace(sourceAppId) || processId == 0) return false;
+        string? resolvedName = resolveProcessName(processId);
+        if (!string.IsNullOrEmpty(resolvedName))
+        {
+            if (!IsBrowserProcess(resolvedName) && !isChromiumWindow(hwnd))
+                return false;
+
+            if (SourceAppIdMatchesProcessName(sourceAppId, resolvedName))
+                return true;
+        }
+
         try
         {
-            using var process = Process.GetProcessById((int)processId);
+            using var process = getProcessById(processId);
             string processName = !string.IsNullOrEmpty(resolvedName) ? resolvedName : process.ProcessName;
-            if (!IsBrowserProcess(processName) && !IsChromiumWindow(hwnd)) return false;
+            if (!IsBrowserProcess(processName) && !isChromiumWindow(hwnd)) return false;
 
-            if (Regex.IsMatch(sourceAppId, @"(?:^|[\\/.!_\-])" + Regex.Escape(processName) +
-                @"(?:$|[\\/.!_\-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250)))
+            if (string.IsNullOrEmpty(resolvedName) && SourceAppIdMatchesProcessName(sourceAppId, processName))
                 return true;
 
             return ProcessAppUserModelIdEquals(process.Handle, sourceAppId);
@@ -194,6 +217,10 @@ internal static partial class MediaWindowActivator
             return false;
         }
     }
+
+    private static bool SourceAppIdMatchesProcessName(string sourceAppId, string processName) =>
+        Regex.IsMatch(sourceAppId, @"(?:^|\b|[\\/.!_\-])" + Regex.Escape(processName) +
+            @"(?:$|\b|[\\/.!_\-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
 
     internal static bool IsBrowserMediaSession(string sourceAppId)
     {
@@ -209,83 +236,13 @@ internal static partial class MediaWindowActivator
     internal static bool TryGoBackInMediaTab(MediaInfo info)
     {
         if (!WindowTitleScanner.IsBrowserUrlInspectionAllowed()) return false;
-        string track = NormalizeMediaTitle(info.CurrentTrack, info.MediaSource);
-        if (track.Length < 3) return false;
-
-        IntPtr targetWindow = IntPtr.Zero;
-        AutomationElement? targetTab = null;
-        bool ambiguous = false;
-        try
+        var windows = new List<nint>();
+        EnumWindows((hwnd, _) =>
         {
-            EnumWindows((hwnd, _) =>
-            {
-                if (!IsWindowVisible(hwnd)) return true;
-                try
-                {
-                    if (!IsMediaBrowserWindow(hwnd, info.SourceAppId)) return true;
-
-                    var root = AutomationElement.FromHandle(hwnd);
-                    var tabs = WindowTitleScanner.FindBrowserChromeElements(root, ControlType.TabItem);
-                    foreach (AutomationElement tab in tabs)
-                    {
-                        if (!NormalizeTitle(tab.Current.Name).Contains(track, StringComparison.OrdinalIgnoreCase))
-                            continue;
-                        if (targetTab != null)
-                        {
-                            ambiguous = true;
-                            return false;
-                        }
-                        targetWindow = hwnd;
-                        targetTab = tab;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    RuntimeLog.Log(LogTag, $"Browser back: window inspection failed: {ex.Message}");
-                }
-                return true;
-            }, IntPtr.Zero);
-
-            if (ambiguous || targetTab == null || !TrySelectTab(targetTab)) return false;
-            if (!targetTab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selection) ||
-                selection is not SelectionItemPattern selected || !selected.Current.IsSelected)
-                return false;
-
-            var window = AutomationElement.FromHandle(targetWindow);
-            if (IsChromiumWindow(targetWindow))
-            {
-                const uint wmAppCommand = 0x0319;
-                const int browserBackward = 1;
-                return SendMessageTimeout(targetWindow, wmAppCommand, targetWindow,
-                    new IntPtr(browserBackward << 16), 0x0002, 500, out _) != IntPtr.Zero;
-            }
-            var toolbars = WindowTitleScanner.FindBrowserChromeElements(window, ControlType.ToolBar);
-            foreach (AutomationElement toolbar in toolbars)
-            {
-                var buttons = WindowTitleScanner.FindBrowserChromeElements(toolbar, ControlType.Button);
-                foreach (AutomationElement button in buttons)
-                {
-                    string name = button.Current.Name ?? string.Empty;
-                    bool isBack = button.Current.AutomationId == "back_button" ||
-                        name.Equals("Back", StringComparison.OrdinalIgnoreCase) ||
-                        name.StartsWith("Back (", StringComparison.OrdinalIgnoreCase) ||
-                        name.Equals("Quay lại", StringComparison.OrdinalIgnoreCase) ||
-                        name.StartsWith("Quay lại (", StringComparison.OrdinalIgnoreCase);
-                    if (!isBack || !button.Current.IsEnabled || button.Current.IsOffscreen) continue;
-                    if (button.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern) &&
-                        pattern is InvokePattern invoke)
-                    {
-                        invoke.Invoke();
-                        return true;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            RuntimeLog.Error(LogTag, $"Browser back failed: {ex.Message}");
-        }
-        return false;
+            if (IsWindowVisible(hwnd) && IsMediaBrowserWindow(hwnd, info.SourceAppId)) windows.Add(hwnd);
+            return true;
+        }, IntPtr.Zero);
+        return InvokeNativeTabAction(windows, info, back: true);
     }
 
     private static bool TryActivateProcessWindows(string processName)
@@ -329,42 +286,29 @@ internal static partial class MediaWindowActivator
     public static bool TryActivateExactBrowserTab(MediaInfo info, ISet<string> processNames)
     {
         if (!WindowTitleScanner.IsBrowserUrlInspectionAllowed()) return false;
-        IntPtr bestHwnd = IntPtr.Zero;
-        AutomationElement? bestTabItem = null;
-        int bestScore = 0;
-
-        try
+        var windows = new List<nint>();
+        EnumWindows((hwnd, _) =>
         {
-            EnumWindows((hwnd, _) =>
-            {
-                if (!IsWindowVisible(hwnd)) return true;
-
-                GetWindowThreadProcessId(hwnd, out uint processId);
-                if (processId == 0) return true;
-
-                string? processName = ProcessNameResolver.TryGetName(processId);
-                if (string.IsNullOrEmpty(processName)) return true;
-
-                if (!IsCandidateBrowserWindow(processName, processNames)) return true;
-
-                InspectBrowserWindowTabs(hwnd, info, ref bestHwnd, ref bestTabItem, ref bestScore);
-                return true;
-            }, IntPtr.Zero);
-        }
-        catch (Exception ex)
-        {
-            RuntimeLog.Error(LogTag, $"TryActivateExactBrowserTab failed: {ex.Message}");
-        }
-
-        if (bestHwnd != IntPtr.Zero && bestTabItem != null && bestScore >= 30)
-        {
-            bool activated = TryActivateWindow(bestHwnd);
-            bool tabSelected = TrySelectTab(bestTabItem);
-            return activated || tabSelected;
-        }
-
-        return false;
+            if (!IsWindowVisible(hwnd)) return true;
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            string? name = pid == 0 ? null : ProcessNameResolver.TryGetName(pid);
+            if (!string.IsNullOrEmpty(name) && IsCandidateBrowserWindow(name, processNames)) windows.Add(hwnd);
+            return true;
+        }, IntPtr.Zero);
+        return InvokeNativeTabAction(windows, info, back: false);
     }
+
+    private static bool InvokeNativeTabAction(List<nint> windows, MediaInfo info, bool back)
+        => windows.Count > 0 && vn_media_browser_tab_action(CollectionsMarshal.AsSpan(windows), windows.Count, back ? (byte)1 : (byte)0,
+            info.CurrentTrack.AsSpan(), info.CurrentTrack?.Length ?? 0, info.CurrentArtist.AsSpan(), info.CurrentArtist?.Length ?? 0,
+            info.YouTubeTitle.AsSpan(), info.YouTubeTitle?.Length ?? 0, info.YouTubeVideoId.AsSpan(), info.YouTubeVideoId?.Length ?? 0,
+            info.MediaSource.AsSpan(), info.MediaSource?.Length ?? 0, (int)info.Platform, out byte success) == 0 && success != 0;
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_media_browser_tab_action(ReadOnlySpan<nint> windows, int count, byte back,
+        ReadOnlySpan<char> track, int trackLength, ReadOnlySpan<char> artist, int artistLength,
+        ReadOnlySpan<char> youtubeTitle, int youtubeTitleLength, ReadOnlySpan<char> youtubeId, int youtubeIdLength,
+        ReadOnlySpan<char> source, int sourceLength, int platform, out byte success);
 
     private static bool TryActivatePipWindow(MediaInfo info)
     {
@@ -389,74 +333,6 @@ internal static partial class MediaWindowActivator
         if (!IsBrowserProcess(processName)) return false;
         if (processNames.Count > 0 && processNames.Any(IsBrowserProcess) && !processNames.Contains(processName)) return false;
         return true;
-    }
-
-    private static void InspectBrowserWindowTabs(
-        IntPtr hwnd,
-        MediaInfo info,
-        ref IntPtr bestHwnd,
-        ref AutomationElement? bestTabItem,
-        ref int bestScore)
-    {
-        try
-        {
-            var rootElement = AutomationElement.FromHandle(hwnd);
-            if (rootElement == null) return;
-
-            var tabs = WindowTitleScanner.FindBrowserChromeElements(rootElement, ControlType.TabItem);
-            if (tabs.Count == 0) return;
-
-            foreach (AutomationElement tab in tabs)
-            {
-                string tabTitle = tab.Current.Name ?? string.Empty;
-                string tabHelp = tab.Current.HelpText ?? string.Empty;
-
-                int score = ScoreTabItem(tabTitle, tabHelp, info);
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    bestHwnd = hwnd;
-                    bestTabItem = tab;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            RuntimeLog.Error(LogTag, $"Error inspecting browser tabs for HWND {hwnd}: {ex.Message}");
-        }
-    }
-
-    private static bool TrySelectTab(AutomationElement tabItem)
-    {
-        try
-        {
-            if (tabItem.TryGetCurrentPattern(SelectionItemPattern.Pattern, out object? pattern) &&
-                pattern is SelectionItemPattern selPattern)
-            {
-                selPattern.Select();
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            RuntimeLog.Error(LogTag, $"SelectionItemPattern failed: {ex.Message}");
-        }
-
-        try
-        {
-            if (tabItem.TryGetCurrentPattern(InvokePattern.Pattern, out object? invPattern) &&
-                invPattern is InvokePattern invokePattern)
-            {
-                invokePattern.Invoke();
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            RuntimeLog.Error(LogTag, $"InvokePattern failed: {ex.Message}");
-        }
-
-        return false;
     }
 
     private static int ScoreTabItem(string tabTitle, string tabHelp, MediaInfo info)

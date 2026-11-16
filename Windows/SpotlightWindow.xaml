@@ -34,12 +34,10 @@
         <SolidColorBrush x:Key="TitleTextBrush" Color="#EDFFFFFF"/>
         <SolidColorBrush x:Key="SecondaryTextBrush" Color="#8AFFFFFF"/>
         <SolidColorBrush x:Key="TertiaryTextBrush" Color="#8AFFFFFF"/>
-        <SolidColorBrush x:Key="AccentBrush" Color="#F2F2F2"/>
         <!-- Fully opaque OLED black to match the notch; any translucency lets
              the window behind bleed through the search field. -->
         <SolidColorBrush x:Key="ShellBrush" Color="#FF000000"/>
         <SolidColorBrush x:Key="ShellBorderBrush" Color="Transparent"/>
-        <SolidColorBrush x:Key="SelectedItemBrush" Color="#24FFFFFF"/>
         <SolidColorBrush x:Key="HoverItemBrush" Color="#10FFFFFF"/>
 
         <Style x:Key="AiActionStyle" TargetType="Button">
@@ -265,7 +263,13 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="{StaticResource SelectedItemBrush}"/>
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSubtleBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSubtleBrush}"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="Selected">
+                                <Setter TargetName="Root" Property="Background" Value="{DynamicResource AccentSubtleBrush}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -276,6 +280,8 @@
         <Style x:Key="ResultItemStyle" TargetType="ListBoxItem">
             <EventSetter Event="MouseLeftButtonUp" Handler="ResultItem_MouseLeftButtonUp"/>
             <EventSetter Event="MouseRightButtonUp" Handler="ResultItem_MouseRightButtonUp"/>
+            <EventSetter Event="MouseEnter" Handler="ResultItem_MouseEnter"/>
+            <EventSetter Event="MouseLeave" Handler="ResultItem_MouseLeave"/>
             <Setter Property="Focusable" Value="False"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="0"/>
@@ -294,28 +300,6 @@
                             </Border>
                         </Grid>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="HoverSurface"
-                                                             Storyboard.TargetProperty="Opacity"
-                                                             To="1"
-                                                             Duration="0:0:0.10"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="HoverSurface"
-                                                             Storyboard.TargetProperty="Opacity"
-                                                             To="0"
-                                                             Duration="0:0:0.16"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
-                            </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45"/>
                             </Trigger>
@@ -344,14 +328,14 @@
                 VerticalAlignment="Top"
                 IsHitTestVisible="False">
             <Grid.Effect>
-                <DropShadowEffect Color="#000000"
+                <DropShadowEffect x:Name="ShellShadowEffect" Color="#000000"
                                   BlurRadius="20"
                                   ShadowDepth="4"
                                   Direction="270"
                                   Opacity="0.6"
                                   RenderingBias="Performance"/>
             </Grid.Effect>
-            <Border Background="Black"
+            <Border x:Name="ShellShadowBorder" Background="Black"
                     CornerRadius="{Binding CornerRadius, ElementName=Shell}"/>
         </Grid>
     <Border x:Name="Shell"
@@ -397,7 +381,7 @@
             <!-- Material bounds follow shell bounds during morphs; desktop texture
                  contributes no desired size so content min-size is not inherited. -->
             <Canvas IsHitTestVisible="False">
-            <Grid x:Name="GlassMaterialClipHost"
+            <controls:GlassClipGrid x:Name="GlassMaterialClipHost"
                   Width="{Binding ActualWidth, ElementName=Shell}"
                   Height="{Binding ActualHeight, ElementName=Shell}"
                   IsHitTestVisible="False"
@@ -569,7 +553,7 @@
                         </RadialGradientBrush>
                     </Border.BorderBrush>
                 </Border>
-            </Grid>
+            </controls:GlassClipGrid>
 
             </Canvas>
 
@@ -583,6 +567,7 @@
                 </Grid.RenderTransform>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="64"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
@@ -698,9 +683,20 @@
                 </controls:MorphingSettingsIcon>
             </Grid>
 
+            <Border x:Name="SpotlightIntroPanel" Grid.Row="1" Visibility="Collapsed"
+                    BorderBrush="#20FFFFFF" BorderThickness="0,1,0,0" Padding="22,18,22,18">
+                <StackPanel>
+                    <TextBlock x:Name="SpotlightIntroTitle" FontSize="11" Foreground="#AAAAAA"/>
+                    <TextBlock x:Name="SpotlightIntroHeadline" FontSize="20" FontWeight="Bold" Foreground="#FFFFFF" Margin="0,5,0,8"/>
+                    <TextBlock x:Name="SpotlightIntroBody" FontSize="13" Foreground="#CCCCCC" TextWrapping="Wrap"/>
+                    <Button x:Name="SpotlightIntroClose" HorizontalAlignment="Left" Padding="14,7" Margin="0,14,0,0"
+                            Click="SpotlightIntroClose_Click"/>
+                </StackPanel>
+            </Border>
+
             <!-- Results appear only after the user starts searching. -->
             <Border x:Name="ContentRegion"
-                    Grid.Row="1"
+                    Grid.Row="2"
                     BorderBrush="#14FFFFFF"
                     BorderThickness="0,1,0,0"
                     Visibility="Collapsed">
@@ -713,7 +709,7 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,6,0,7">
+                    <Grid Grid.Row="0" Margin="0,6,0,7" ClipToBounds="True">
                         <StackPanel x:Name="AiPanel" Visibility="Collapsed" Margin="20,10,20,4" TextElement.FontFamily="{StaticResource SFProDisplay}" TextElement.FontWeight="Bold">
                             <!-- Unified macOS Header Toolbar -->
                             <Grid x:Name="AiHeader" Margin="0,0,0,10">
@@ -771,22 +767,8 @@
                                 <ScrollViewer.Resources><Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/></ScrollViewer.Resources>
                                 <StackPanel x:Name="AiTranscript" Margin="0,0,8,0"/>
                             </ScrollViewer>
-                            <Border x:Name="AiTopEdge" Height="22" VerticalAlignment="Top" IsHitTestVisible="False" Opacity="0">
-                                <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#F0000000" Offset="0"/><GradientStop Color="#00000000" Offset="1"/></LinearGradientBrush></Border.Background>
-                                <Border.OpacityMask><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="White" Offset="0"/><GradientStop Color="Transparent" Offset="1"/></LinearGradientBrush></Border.OpacityMask>
-                                <Rectangle>
-                                    <Rectangle.Fill><VisualBrush x:Name="AiTopEdgeBrush" Visual="{Binding ElementName=AiTranscriptScroll}" ViewboxUnits="RelativeToBoundingBox" Viewbox="0,0,1,0.07" Stretch="Fill"/></Rectangle.Fill>
-                                    <Rectangle.Effect><BlurEffect Radius="5"/></Rectangle.Effect>
-                                </Rectangle>
-                            </Border>
-                            <Border x:Name="AiBottomEdge" Height="22" VerticalAlignment="Bottom" IsHitTestVisible="False" Opacity="0">
-                                <Border.Background><LinearGradientBrush StartPoint="0,1" EndPoint="0,0"><GradientStop Color="#F0000000" Offset="0"/><GradientStop Color="#00000000" Offset="1"/></LinearGradientBrush></Border.Background>
-                                <Border.OpacityMask><LinearGradientBrush StartPoint="0,1" EndPoint="0,0"><GradientStop Color="White" Offset="0"/><GradientStop Color="Transparent" Offset="1"/></LinearGradientBrush></Border.OpacityMask>
-                                <Rectangle>
-                                    <Rectangle.Fill><VisualBrush x:Name="AiBottomEdgeBrush" Visual="{Binding ElementName=AiTranscriptScroll}" ViewboxUnits="RelativeToBoundingBox" Viewbox="0,0,1,0.07" Stretch="Fill"/></Rectangle.Fill>
-                                    <Rectangle.Effect><BlurEffect Radius="5"/></Rectangle.Effect>
-                                </Rectangle>
-                            </Border>
+                            <Border x:Name="AiTopEdge" Height="22" VerticalAlignment="Top" IsHitTestVisible="False" Opacity="0" Background="#CC121216"/>
+                            <Border x:Name="AiBottomEdge" Height="22" VerticalAlignment="Bottom" IsHitTestVisible="False" Opacity="0" Background="#CC121216"/>
                             </Grid>
 
                             <!-- Unified Bottom Status and Action Row (Cancel button, status, and token usage on 1 line) -->
@@ -849,9 +831,13 @@
                                  Background="Transparent"
                                  BorderThickness="0"
                                  MaxHeight="440"
+                                 VerticalAlignment="Top"
                                  AlternationCount="20"
                                  VirtualizingPanel.IsVirtualizing="False"
                                  AutomationProperties.Name="Search results">
+                            <ListBox.RenderTransform>
+                                <TranslateTransform x:Name="ResultsListTranslate" X="0"/>
+                            </ListBox.RenderTransform>
                             <ListBox.Resources>
                                 <Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/>
                             </ListBox.Resources>
@@ -867,7 +853,7 @@
                                             <Border x:Name="SelectionGlide"
                                                     HorizontalAlignment="Left"
                                                     VerticalAlignment="Top"
-                                                    Background="{StaticResource SelectedItemBrush}"
+                                                    Background="{DynamicResource AccentSubtleBrush}"
                                                     CornerRadius="8"
                                                     Opacity="0"
                                                     IsHitTestVisible="False">
@@ -878,7 +864,7 @@
                                                 <Border Width="3"
                                                         Margin="0,4"
                                                         CornerRadius="1.5"
-                                                        Background="{StaticResource AccentBrush}"
+                                                        Background="{DynamicResource AccentBrush}"
                                                         HorizontalAlignment="Left"
                                                         VerticalAlignment="Stretch"/>
                                             </Border>
@@ -995,6 +981,102 @@
                         </ListBox>
 
                         <controls:SpotlightHomePanel x:Name="HomePanel" Visibility="Collapsed"/>
+
+                        <StackPanel x:Name="QuickActionsPanel"
+                                    Visibility="Collapsed"
+                                    Opacity="0"
+                                    VerticalAlignment="Top">
+                            <StackPanel.RenderTransform>
+                                <TranslateTransform x:Name="QuickActionsTranslate" X="0"/>
+                            </StackPanel.RenderTransform>
+                            <Grid Margin="14,6,18,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="QuickActionsBackButton"
+                                        Style="{StaticResource AiToolbarStyle}"
+                                        Click="QuickActionsBack_Click"
+                                        Margin="0,0,10,0"
+                                        VerticalAlignment="Center">
+                                    <Path Data="{x:Static local:SpotlightWindow.AiArrowLeftGeometry}"
+                                          Fill="{x:Static local:SpotlightWindow.ChatIconBrush}"
+                                          Stretch="Uniform"
+                                          Width="11"
+                                          Height="11"/>
+                                </Button>
+                                <Image x:Name="QuickActionsTargetIcon"
+                                       Grid.Column="1"
+                                       Width="24"
+                                       Height="24"
+                                       Margin="0,0,10,0"
+                                       VerticalAlignment="Center"
+                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                                <Viewbox x:Name="QuickActionsTargetSolidBox"
+                                         Grid.Column="1"
+                                         Width="20"
+                                         Height="20"
+                                         Margin="2,0,12,0"
+                                         Stretch="Uniform"
+                                         VerticalAlignment="Center"
+                                         Visibility="Collapsed">
+                                    <Canvas Width="24" Height="24">
+                                        <Path x:Name="QuickActionsTargetSolidIcon"
+                                              Stretch="None"
+                                              Fill="#C8C8C8"/>
+                                    </Canvas>
+                                </Viewbox>
+                                <StackPanel Grid.Column="2"
+                                            VerticalAlignment="Center"
+                                            Margin="0,0,12,0">
+                                    <TextBlock x:Name="QuickActionsTargetTitle"
+                                               FontFamily="{StaticResource SFProDisplay}"
+                                               FontSize="14"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource TitleTextBrush}"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock x:Name="QuickActionsTargetSubtitle"
+                                               FontFamily="{StaticResource SFProDisplay}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource TertiaryTextBrush}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="0,1,0,0"/>
+                                </StackPanel>
+                                <TextBlock Grid.Column="3"
+                                           Text="← Esc"
+                                           FontFamily="{StaticResource SFProDisplay}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           Foreground="#78FFFFFF"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                            <Border Height="1"
+                                    Background="#14FFFFFF"
+                                    Margin="14,2,14,4"/>
+                            <Grid Margin="0,0,0,2">
+                                <Border x:Name="QuickActionsSelectionGlide"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Top"
+                                        Background="{DynamicResource AccentSubtleBrush}"
+                                        CornerRadius="8"
+                                        Opacity="0"
+                                        IsHitTestVisible="False">
+                                    <Border.RenderTransform>
+                                        <TranslateTransform x:Name="QuickActionsGlideTransform"/>
+                                    </Border.RenderTransform>
+                                    <Border Width="3"
+                                            Margin="0,4"
+                                            CornerRadius="1.5"
+                                            Background="{DynamicResource AccentBrush}"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Stretch"/>
+                                </Border>
+                                <StackPanel x:Name="QuickActionsItems"/>
+                            </Grid>
+                        </StackPanel>
 
                         <Grid x:Name="StatusPanel"
                               MinHeight="112"

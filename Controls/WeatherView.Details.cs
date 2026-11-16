@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -101,11 +101,11 @@ public sealed partial class WeatherView
             Grid.SetColumn(highText, 5);
             grid.Children.Add(highText);
 
-            double rowDelay = 200 + i * 55;
+            double rowDelay = Motion.Stagger(i).TotalMilliseconds;
             if (entrance)
             {
                 WeatherMotion.Rise(row, rowDelay, dy: 0, dx: 16, ms: 480);
-                WeatherMotion.Grow(segment, rowDelay + 120, horizontal: true, new Point(0, 0.5), 720);
+                WeatherMotion.Grow(segment, rowDelay, horizontal: true, new Point(0, 0.5));
             }
 
             if (today)
@@ -120,7 +120,7 @@ public sealed partial class WeatherView
                 var holder = new Canvas { RenderTransform = breathe };
                 holder.Children.Add(mark);
                 bar.Children.Add(holder);
-                if (entrance) WeatherMotion.Pop(mark, rowDelay + 620, 0.2, 420);
+                if (entrance) WeatherMotion.Pop(mark, rowDelay);
                 _loops.Swing(breathe, ScaleTransform.ScaleXProperty, 1, 1.28, 1.4, entrance ? 1.2 : 0);
                 _loops.Swing(breathe, ScaleTransform.ScaleYProperty, 1, 1.28, 1.4, entrance ? 1.2 : 0);
             }
@@ -151,28 +151,26 @@ public sealed partial class WeatherView
             if (row.Background is SolidColorBrush brush)
                 WeatherMotion.Tint(brush, date == day ? RowSelected : row.IsMouseOver ? RowHover : RowIdle, 220);
 
-        var old = _chartHost.Children.Count > 0 ? _chartHost.Children[0] as FrameworkElement : null;
+        var old = _chartHost.Children.Count > 0 ? _chartHost.Children[^1] as FrameworkElement : null;
         if (old == null || AnimationConfig.ReduceMotion)
         {
             ShowChart(_forecast, 0);
             return;
         }
-        // The chart's own pulse loops stay in _loops; the old one is about to be removed anyway.
+        // Keep the outgoing curve under its replacement so a new selection starts immediately.
         old.IsHitTestVisible = false;
-        var slide = new TranslateTransform();
+        var slide = WeatherMotion.Transform<TranslateTransform>(old);
         old.RenderTransform = slide;
         double direction = day == null ? 1 : -1;
-        var fade = WeatherMotion.To(old.Opacity, 0, 200, WeatherMotion.Out);
+        var host = _chartHost;
+        ShowChart(_forecast, 0);
+        host.Children.Insert(0, old);
+        var fade = WeatherMotion.To(old.Opacity, 0, 160, WeatherMotion.Out);
+        fade.Completed += (_, _) => host.Children.Remove(old);
         old.BeginAnimation(OpacityProperty, fade);
-        slide.BeginAnimation(TranslateTransform.XProperty, WeatherMotion.To(0, 24 * direction, 220, WeatherMotion.Out));
-        var forecast = _forecast;
-        fade.Completed += (_, _) =>
-        {
-            if (_forecast != forecast || _chartHost == null) return;
-            ShowChart(forecast, 0);
-            if (_chartHost.Children.Count > 0 && _chartHost.Children[0] is FrameworkElement fresh)
-                WeatherMotion.Rise(fresh, 0, dy: 0, dx: -18 * direction, ms: 420);
-        };
+        Motion.To(slide, TranslateTransform.XProperty, 24 * direction, Motion.Exit);
+        if (host.Children.Count > 1 && host.Children[1] is FrameworkElement fresh)
+            WeatherMotion.Rise(fresh, 0, dy: 0, dx: -18 * direction);
     }
 
     #endregion
@@ -187,7 +185,7 @@ public sealed partial class WeatherView
     {
         tile.MouseEnter += (_, _) =>
         {
-            Bump(tile, 1.035);
+            Bump(tile, ControlCenterView.HoverScale(tile));
             if (tile.Background is SolidColorBrush brush) WeatherMotion.Tint(brush, TileHover);
         };
         tile.MouseLeave += (_, _) =>
@@ -197,45 +195,50 @@ public sealed partial class WeatherView
         };
     }
 
-    /// <summary>Springs an element to a scale from wherever its entrance left it.</summary>
-    private static readonly IEasingFunction PressRelease = CreatePressRelease();
-
-    private static IEasingFunction CreatePressRelease()
-    {
-        var ease = new ElasticEase { Oscillations = 1, Springiness = 7, EasingMode = EasingMode.EaseOut };
-        ease.Freeze();
-        return ease;
-    }
-
     /// <summary>Like the other tabs' cards: sinks a little while pressed (wider than tall) and springs back.</summary>
     private static void PressSquish(FrameworkElement element, double restScale = 1)
     {
+        bool pressed = false;
+        ScaleTransform Scale()
+        {
+            element.RenderTransformOrigin = new Point(0.5, 0.5);
+            return WeatherMotion.Transform<ScaleTransform>(element);
+        }
+        void Settle()
+        {
+            pressed = false;
+            var scale = Scale();
+            double rest = element.IsMouseOver ? restScale * ControlCenterView.HoverScale(element, 1.025) : restScale;
+            Motion.To(scale, ScaleTransform.ScaleXProperty, rest, Motion.Press);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, rest, Motion.Press);
+        }
+        element.MouseEnter += (_, _) => { if (!pressed) Settle(); };
         element.PreviewMouseLeftButtonDown += (_, _) =>
         {
-            if (AnimationConfig.ReduceMotion) return;
-            Bump(element, restScale); // makes sure there is a live scale to squeeze
-            var scale = (ScaleTransform)element.RenderTransform;
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, restScale * 0.97, 100, WeatherMotion.Out));
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, restScale * 0.9, 100, WeatherMotion.Out));
+            pressed = true;
+            var scale = Scale();
+            Motion.To(scale, ScaleTransform.ScaleXProperty, restScale * 0.97, Motion.PressDown);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, restScale * 0.9, Motion.PressDown);
         };
-        element.PreviewMouseLeftButtonUp += (_, _) =>
+        element.PreviewMouseLeftButtonUp += (_, _) => Settle();
+        element.MouseLeave += (_, _) => Settle();
+        element.LostMouseCapture += (_, _) => Settle();
+        element.IsVisibleChanged += (_, _) =>
         {
-            if (AnimationConfig.ReduceMotion || element.RenderTransform is not ScaleTransform scale) return;
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, WeatherMotion.To(scale.ScaleX, restScale, 520, PressRelease));
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, WeatherMotion.To(scale.ScaleY, restScale, 520, PressRelease));
+            if (element.IsVisible) return;
+            pressed = false;
+            var scale = Scale();
+            Motion.Stop(scale, ScaleTransform.ScaleXProperty, restScale);
+            Motion.Stop(scale, ScaleTransform.ScaleYProperty, restScale);
         };
     }
 
     private static void Bump(FrameworkElement element, double scale)
     {
-        if (element.RenderTransform is not ScaleTransform transform || transform.IsFrozen)
-        {
-            transform = new ScaleTransform(1, 1);
-            element.RenderTransformOrigin = new Point(0.5, 0.5);
-            element.RenderTransform = transform;
-        }
-        WeatherMotion.Glide(transform, ScaleTransform.ScaleXProperty, scale, 220);
-        WeatherMotion.Glide(transform, ScaleTransform.ScaleYProperty, scale, 220);
+        var transform = WeatherMotion.Transform<ScaleTransform>(element);
+        element.RenderTransformOrigin = new Point(0.5, 0.5);
+        Motion.To(transform, ScaleTransform.ScaleXProperty, scale, Motion.Press);
+        Motion.To(transform, ScaleTransform.ScaleYProperty, scale, Motion.Press);
     }
 
     private FrameworkElement BuildTiles(WeatherForecast forecast, bool entrance)
@@ -260,11 +263,29 @@ public sealed partial class WeatherView
             Grid.SetColumn(tiles[i], i % 2 == 0 ? 0 : 2);
             Grid.SetRow(tiles[i], i < 2 ? 0 : 2);
             grid.Children.Add(tiles[i]);
-            if (entrance) WeatherMotion.Pop(tiles[i], 220 + i * 70, 0.86, 520);
+            if (entrance) WeatherMotion.Pop(tiles[i], Motion.Stagger(i).TotalMilliseconds);
             HoverLift(tiles[i]);
         }
         return grid;
     }
+
+    // What the tiles showed before the last redraw: a refresh glides and rolls from there instead of jumping.
+    private double _shownWindKmh = double.NaN;
+    private double _shownWindAngle = double.NaN;
+    private double _shownHumidity = double.NaN;
+    private double _shownUv = double.NaN;
+
+    /// <summary>On a refresh, the tile's number counts from what it showed to the new value, like the temperature.</summary>
+    private static void RollTileValue(StackPanel text, bool entrance, double shown, double target, Func<double, string> format)
+    {
+        if (entrance || AnimationConfig.ReduceMotion || !double.IsFinite(shown) || Math.Round(shown) == Math.Round(target)) return;
+        if (text.Children.Count < 2 || text.Children[1] is not TextBlock value) return;
+        new WeatherTween { Step = v => value.Text = format(v) }.To(target, from: shown);
+    }
+
+    /// <summary>Whether a refresh should move a part from its old value (and not an entrance, which has its own motion).</summary>
+    private static bool Refreshing(bool entrance, double shown, double target) =>
+        !entrance && !AnimationConfig.ReduceMotion && double.IsFinite(shown) && Math.Abs(shown - target) > 0.001;
 
     private static (Border Tile, Grid Body, StackPanel Text) Tile(string label, string value, string? detail, double reserveRight = 0)
     {
@@ -283,7 +304,9 @@ public sealed partial class WeatherView
     {
         var now = forecast.Now;
         string? gusts = now.GustKmh is { } g && g >= now.WindKmh + 5 ? Loc.Get("weather.gusts", (int)Math.Round(g)) : null;
-        var (tile, body, _) = Tile(Loc.Get("weather.wind"), $"{(int)Math.Round(now.WindKmh)} km/h", gusts, reserveRight: 38);
+        var (tile, body, windText) = Tile(Loc.Get("weather.wind"), $"{(int)Math.Round(now.WindKmh)} km/h", gusts, reserveRight: 38);
+        RollTileValue(windText, entrance, _shownWindKmh, now.WindKmh, v => $"{(int)Math.Round(v)} km/h");
+        _shownWindKmh = now.WindKmh;
 
         var dial = new Canvas { Width = 34, Height = 34, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         dial.Children.Add(new Ellipse { Width = 34, Height = 34, Stroke = WeatherIcons.Brush(Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF)), StrokeThickness = 1.2 });
@@ -317,8 +340,13 @@ public sealed partial class WeatherView
 
         double target = (now.WindFrom + 180) % 360;
         if (entrance && !AnimationConfig.ReduceMotion)
-            aim.BeginAnimation(RotateTransform.AngleProperty, WeatherMotion.To(target - 150, target, 1400, WeatherMotion.Spring, 380));
+            Motion.To(aim, RotateTransform.AngleProperty, target, Motion.Press, from: target - 150);
+        else if (Refreshing(entrance, _shownWindAngle, target))
+            // The wind turned: the arrow swings the short way round from where it pointed.
+            Motion.To(aim, RotateTransform.AngleProperty, target, Motion.Press,
+                from: target + ((_shownWindAngle - target + 540) % 360 - 180));
         else aim.Angle = target;
+        _shownWindAngle = target;
         double gustiness = now.GustKmh is { } gk ? Math.Clamp((gk - now.WindKmh) / 4, 0, 9) : 2;
         double swing = 3 + gustiness + Math.Min(now.WindKmh, 40) / 10;
         _loops.Swing(gust, RotateTransform.AngleProperty, -swing, swing, Math.Max(0.6, 1.6 - now.WindKmh / 60), entrance ? 1.8 : 0);
@@ -328,7 +356,8 @@ public sealed partial class WeatherView
     private Border HumidityTile(WeatherForecast forecast, bool entrance)
     {
         int humidity = Math.Clamp(forecast.Now.Humidity, 0, 100);
-        var (tile, body, _) = Tile(Loc.Get("weather.humidity"), $"{humidity} %", null, reserveRight: 38);
+        var (tile, body, humidityText) = Tile(Loc.Get("weather.humidity"), $"{humidity} %", null, reserveRight: 38);
+        RollTileValue(humidityText, entrance, _shownHumidity, humidity, v => $"{(int)Math.Round(v)} %");
 
         var ring = new Grid { Width = 34, Height = 34, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         const double thickness = 3.6, size = 32;
@@ -348,7 +377,11 @@ public sealed partial class WeatherView
         };
         ring.Children.Add(progress);
         if (entrance && !AnimationConfig.ReduceMotion)
-            progress.BeginAnimation(Shape.StrokeDashOffsetProperty, WeatherMotion.To(units, units * (1 - humidity / 100.0), 1200, WeatherMotion.OutQuint, 420));
+            Motion.To(progress, Shape.StrokeDashOffsetProperty, units * (1 - humidity / 100.0), Motion.Glide, from: units);
+        else if (Refreshing(entrance, _shownHumidity, humidity))
+            Motion.To(progress, Shape.StrokeDashOffsetProperty, units * (1 - humidity / 100.0), Motion.Glide,
+                from: units * (1 - _shownHumidity / 100.0));
+        _shownHumidity = humidity;
 
         var drop = new Path
         {
@@ -404,8 +437,11 @@ public sealed partial class WeatherView
         bar.Children.Add(knob);
         double x = Math.Clamp(uv / 11.0, 0, 1) * (barWidth - 8);
         if (entrance && !AnimationConfig.ReduceMotion)
-            slide.BeginAnimation(TranslateTransform.XProperty, WeatherMotion.To(0, x, 1000, WeatherMotion.OutBack, 480));
+            Motion.To(slide, TranslateTransform.XProperty, x, Motion.Glide, from: 0);
+        else if (Refreshing(entrance, _shownUv, uv))
+            Motion.To(slide, TranslateTransform.XProperty, x, Motion.Glide, from: Math.Clamp(_shownUv / 11.0, 0, 1) * (barWidth - 8));
         else slide.X = x;
+        _shownUv = uv;
         body.Children.Add(bar);
         return tile;
     }
@@ -426,7 +462,7 @@ public sealed partial class WeatherView
             (from, to) = (s.Rise, s.Set);
             label = Loc.Get("weather.sunset");
             value = Clock(s.Set);
-            detail = "↑ " + Clock(s.Rise);
+            detail = "â†‘ " + Clock(s.Rise);
         }
         else if (today is { } s2)
         {
@@ -436,11 +472,11 @@ public sealed partial class WeatherView
             else (from, to) = (yesterday?.Set ?? s2.Set.AddDays(-1), s2.Rise);
             label = Loc.Get("weather.sunrise");
             value = Clock(to);
-            detail = "↓ " + Clock(from);
+            detail = "â†“ " + Clock(from);
         }
         else
         {
-            var polar = Tile(Loc.Get("weather.sunrise"), "—", null);
+            var polar = Tile(Loc.Get("weather.sunrise"), "â€”", null);
             return polar.Tile;
         }
         var (tile, body, _) = Tile(label, value, detail, reserveRight: 54);
@@ -483,7 +519,7 @@ public sealed partial class WeatherView
                 place.Y = h - 3 - Math.Sin(angle) * r;
             }
         };
-        if (entrance) tween.Play(0, fraction, 1500, WeatherMotion.OutQuint, 520);
+        if (entrance) tween.To(fraction, from: 0);
         else tween.Play(fraction, fraction, 0, WeatherMotion.Out);
         body.Children.Add(arc);
         return tile;
@@ -491,3 +527,4 @@ public sealed partial class WeatherView
 
     #endregion
 }
+

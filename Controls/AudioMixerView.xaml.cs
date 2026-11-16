@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -193,7 +193,6 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
     private const double ColPercent = 50;
     private const double ColDevice = 206;
 
-    private static readonly Brush AudioGreen = Frozen("#3FD15B");
     private static readonly Brush AudioTrack = Frozen("#4D4D4D");
     private static readonly Brush AudioMuted = Frozen("#8C8C8C");
     private static readonly Brush AudioComboBg = Frozen("#33000000");
@@ -497,7 +496,7 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
             var quick = ReadAudioSnapshot(includeIcons: false);
             QueueAudioSnapshot(token, quick, afterBuild);
 
-            var detailedSessions = SafeCall(() => AudioMixer.GetSessions(includeIcons: true));
+            var detailedSessions = SafeCall(() => AudioMixer.ResolveSessionIcons(quick.Sessions));
             if (detailedSessions == null || token != System.Threading.Volatile.Read(ref _audioPopulateToken))
                 return;
 
@@ -821,13 +820,7 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
             : 1;
         _audioSectionAnimationGenerations[rows] = generation;
 
-        double currentAngle = chevron.Angle;
-        chevron.BeginAnimation(RotateTransform.AngleProperty, null);
-        chevron.Angle = currentAngle;
-
-        var rotAnim = new DoubleAnimation(currentAngle, expand ? 0 : -90, dur) { EasingFunction = ease };
-        Timeline.SetDesiredFrameRate(rotAnim, fps);
-        chevron.BeginAnimation(RotateTransform.AngleProperty, rotAnim, HandoffBehavior.SnapshotAndReplace);
+        Motion.To(chevron, RotateTransform.AngleProperty, expand ? 0 : -90, Motion.Press, fps: fps);
 
         if (columnLabels != null)
         {
@@ -865,10 +858,9 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
             ? Math.Clamp(rows.Opacity, 0.0, 1.0)
             : 0.0;
 
-        rows.BeginAnimation(HeightProperty, null);
-        rows.BeginAnimation(OpacityProperty, null);
-        rows.Height = currentHeight;
-        rows.Opacity = rowsOpacity;
+        double heightSpeed = Motion.VelocityOf(rows, HeightProperty);
+        Motion.Stop(rows, HeightProperty, currentHeight);
+        Motion.Stop(rows, OpacityProperty, rowsOpacity);
 
         double newFit;
 
@@ -890,11 +882,9 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
             rows.Height = currentHeight;
             rows.Opacity = rowsOpacity;
 
-            var hAnim = new DoubleAnimation(currentHeight, target, dur) { EasingFunction = ease };
-            var oAnim = new DoubleAnimation(rowsOpacity, 1, dur) { EasingFunction = ease };
-            Timeline.SetDesiredFrameRate(hAnim, fps);
-            Timeline.SetDesiredFrameRate(oAnim, fps);
-            hAnim.Completed += (_, _) =>
+            // A group that is flipped again mid-way keeps its speed instead of restarting.
+            Motion.To(rows, OpacityProperty, 1, Motion.Glide, from: rowsOpacity, fps: fps);
+            Motion.To(rows, HeightProperty, target, Motion.Glide, from: currentHeight, velocity: Math.Max(0, heightSpeed), fps: fps, done: () =>
             {
                 if (!_audioSectionAnimationGenerations.TryGetValue(rows, out int currentGeneration) ||
                     currentGeneration != generation)
@@ -902,13 +892,9 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
                     return;
                 }
 
-                rows.BeginAnimation(HeightProperty, null);
-                rows.Height = double.NaN;
-                rows.BeginAnimation(OpacityProperty, null);
-                rows.Opacity = 1;
-            };
-            rows.BeginAnimation(HeightProperty, hAnim, HandoffBehavior.SnapshotAndReplace);
-            rows.BeginAnimation(OpacityProperty, oAnim, HandoffBehavior.SnapshotAndReplace);
+                Motion.Stop(rows, HeightProperty, double.NaN);
+                Motion.Stop(rows, OpacityProperty, 1);
+            });
         }
         else
         {
@@ -917,11 +903,8 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
             rows.Height = currentHeight;
             rows.Opacity = rowsOpacity;
 
-            var hAnim = new DoubleAnimation(currentHeight, 0, dur) { EasingFunction = ease };
-            var oAnim = new DoubleAnimation(rowsOpacity, 0, dur) { EasingFunction = ease };
-            Timeline.SetDesiredFrameRate(hAnim, fps);
-            Timeline.SetDesiredFrameRate(oAnim, fps);
-            hAnim.Completed += (_, _) =>
+            Motion.To(rows, OpacityProperty, 0, Motion.Exit, from: rowsOpacity, fps: fps);
+            Motion.To(rows, HeightProperty, 0, Motion.PopBack, from: currentHeight, velocity: Math.Min(0, heightSpeed), fps: fps, done: () =>
             {
                 if (!_audioSectionAnimationGenerations.TryGetValue(rows, out int currentGeneration) ||
                     currentGeneration != generation)
@@ -930,15 +913,11 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
                 }
 
                 rows.Visibility = Visibility.Collapsed;
-                rows.BeginAnimation(HeightProperty, null);
-                rows.Height = double.NaN;
-                rows.BeginAnimation(OpacityProperty, null);
-                rows.Opacity = 1;
+                Motion.Stop(rows, HeightProperty, double.NaN);
+                Motion.Stop(rows, OpacityProperty, 1);
                 if (AudioScrollViewer != null)
                     AudioScrollViewer.Height = Math.Max(0, newFit - _audioViewChrome);
-            };
-            rows.BeginAnimation(HeightProperty, hAnim, HandoffBehavior.SnapshotAndReplace);
-            rows.BeginAnimation(OpacityProperty, oAnim, HandoffBehavior.SnapshotAndReplace);
+            });
         }
 
         _audioViewHeight = newFit;
@@ -1207,13 +1186,13 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
         {
             Height = 4,
             CornerRadius = new CornerRadius(4),
-            Background = AudioGreen,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
             Width = 0,
             RenderTransformOrigin = new Point(0, 0.5)
         };
         var fillScale = new ScaleTransform(0, 1);
+        fill.SetResourceReference(Border.BackgroundProperty, "AccentBrush");
         fill.RenderTransform = fillScale;
         area.Children.Add(fill);
 
@@ -1511,10 +1490,10 @@ public sealed partial class AudioMixerView : UserControl, IDisposable
                     Text = "\uE73E",
                     FontFamily = SegoeSymbolFont,
                     FontSize = 12,
-                    Foreground = AudioGreen,
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(8, 0, 0, 0)
                 };
+                check.SetResourceReference(TextBlock.ForegroundProperty, "AccentBrushStrong");
                 Grid.SetColumn(check, 1);
                 g.Children.Add(check);
             }

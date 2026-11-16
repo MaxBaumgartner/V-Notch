@@ -23,6 +23,7 @@ public sealed class MainWindowModulePresentationTests
     {
         await using var fixture = CreateFixture();
         var window = fixture.Window;
+        using var host = new HudContentHost(window);
         var settings = Field<NotchSettings>(window, "_settings");
         settings.EnablePrivacyIndicators = true;
         settings.EnableDynamicIslandMode = island;
@@ -35,11 +36,22 @@ public sealed class MainWindowModulePresentationTests
             await WpfFrameWaiter.UntilAsync(() => window.PrivacyDotBrush.Color.R == expected.R && window.PrivacyDotBrush.Color.G == expected.G && window.PrivacyDotBrush.Color.B == expected.B, "privacy dot color", ct);
             Assert.True(window.PrivacyDot.HasAnimatedProperties);
         }
+        window.NotchBorder.Visibility = Visibility.Hidden;
+        Assert.False(window.PrivacyDot.HasAnimatedProperties);
+        window.NotchBorder.Visibility = Visibility.Visible;
+        Assert.True(window.PrivacyDot.HasAnimatedProperties);
+        Set(window, "_isHiddenByFullscreen", true);
+        Invoke(window, "RefreshAmbientAnimations");
+        Assert.False(window.PrivacyDot.HasAnimatedProperties);
+        Set(window, "_isHiddenByFullscreen", false);
+        Invoke(window, "RefreshAmbientAnimations");
+        Assert.True(window.PrivacyDot.HasAnimatedProperties);
         Set(window, "_isMusicCompactMode", true);
         Invoke(window, "UpdatePrivacyDotPosition", true);
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.PrivacyIndicatorPanel.Margin.Right - 34) < 1e-6, "privacy dot follows compact music", ct);
         Set(window, "_isVolumeIndicatorActive", true);
         Invoke(window, "SyncPrivacyDotVisibilityForCurrentView");
+        await WpfFrameWaiter.UntilAsync(() => window.PrivacyIndicatorPanel.Visibility == Visibility.Collapsed, "privacy dot leaves for HUD", ct);
         Assert.Equal(Visibility.Collapsed, window.PrivacyIndicatorPanel.Visibility);
         Assert.False(window.PrivacyDot.HasAnimatedProperties);
         Set(window, "_isVolumeIndicatorActive", false);
@@ -158,6 +170,11 @@ public sealed class MainWindowModulePresentationTests
         configureSettings: settings => { settings.EnableLocalOnlyMode = true; },
         configureServices: services => services.AddSingleton<IMediaDetectionService>(new FakeMediaDetectionService()));
     private static T Field<T>(MainWindow window, string name) => (T)typeof(MainWindow).GetField(name, Private)!.GetValue(window)!;
-    private static void Set(MainWindow window, string name, object value) => typeof(MainWindow).GetField(name, Private)!.SetValue(window, value);
+    private static void Set(MainWindow window, string name, object value)
+    {
+        var field = typeof(MainWindow).GetField(name, Private);
+        if (field != null) field.SetValue(window, value);
+        else typeof(MainWindow).GetProperty(name, Private)!.SetValue(window, value);
+    }
     private static void Invoke(MainWindow window, string name, params object?[] args) => typeof(MainWindow).GetMethod(name, Private)!.Invoke(window, args);
 }

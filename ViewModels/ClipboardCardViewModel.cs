@@ -29,6 +29,8 @@ public sealed partial class ClipboardCardViewModel : ObservableObject
     private string? _size;
     internal int SlotIndex { get; set; } = -1;
     public ClipboardEntry Entry { get; private set; }
+    public ClipboardKind Kind => Entry.Kind;
+    public bool IsPinned => Entry.IsPinned;
 
     public void UpdateEntry(ClipboardEntry entry)
         => UpdatePreparedEntry(entry, null);
@@ -138,6 +140,7 @@ public sealed partial class ClipboardCardViewModel : ObservableObject
 
     internal void ReleaseMaskedPreviewSize()
     {
+        if (_maskedPreviewSize == null) return;
         _maskedPreviewSize = null;
         OnPropertyChanged(nameof(MaskedPreviewWidth));
         OnPropertyChanged(nameof(MaskedPreviewHeight));
@@ -373,18 +376,19 @@ public sealed partial class ClipboardCardViewModel : ObservableObject
     }
 
     private static Brush CreateSurfaceBrush()
+        => CreateFrozenSurfaceGradient();
+
+    private static LinearGradientBrush CreateFrozenSurfaceGradient()
     {
-        var brush = new LinearGradientBrush
-        {
-            StartPoint = new System.Windows.Point(0, 0),
-            EndPoint = new System.Windows.Point(0, 1),
-            GradientStops =
+        var brush = new LinearGradientBrush(
+            new GradientStopCollection
             {
-                new GradientStop(ClipboardTrayTokens.CardTop, 0),
-                new GradientStop(ClipboardTrayTokens.CardMiddle, 0.55),
-                new GradientStop(ClipboardTrayTokens.CardBottom, 1)
-            }
-        };
+                new(ClipboardTrayTokens.CardTop, 0.0),
+                new(ClipboardTrayTokens.CardMiddle, 0.55),
+                new(ClipboardTrayTokens.CardBottom, 1.0)
+            },
+            new System.Windows.Point(0, 0),
+            new System.Windows.Point(0, 1));
         brush.Freeze();
         return brush;
     }

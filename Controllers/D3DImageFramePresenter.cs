@@ -58,6 +58,9 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
     private GlassDirtyRows _pendingDirtyRows;
     private long _transferredBytes;
     private long _submittedFrames;
+    private double _lastQueueMs;
+    internal long ImageBusyRetries { get; private set; }
+    internal double LastQueueMs => Volatile.Read(ref _lastQueueMs);
     private long _queueTicks;
     private long _lastUploadTicks;
     private long _lastSubmitTicks;
@@ -72,7 +75,15 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
     internal void SetFrameIntervalMs(double intervalMs)
     {
         if (double.IsFinite(intervalMs) && intervalMs > 0.0)
+        {
             Volatile.Write(ref _frameIntervalMs, intervalMs);
+            // Completion polling is latency, not frame pacing. A fixed 16.7ms
+            // retry held high-FPS frames until the next 60Hz timer tick.
+            var retryInterval = TimeSpan.FromMilliseconds(Math.Clamp(intervalMs * 0.25, 1, 4));
+            void UpdateRetryInterval() { if (!_disposed && _retryTimer.Interval != retryInterval) _retryTimer.Interval = retryInterval; }
+            if (_dispatcher.CheckAccess()) UpdateRetryInterval();
+            else if (!_dispatcher.HasShutdownStarted) _dispatcher.BeginInvoke(DispatcherPriority.Background, (Action)UpdateRetryInterval);
+        }
     }
 
     internal (long Bytes, long Frames, double MeanQueueMs) TakeStatistics()
@@ -102,7 +113,9 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         int surfaceWidth,
         int surfaceHeight,
         ID3DFrameTarget? frameTarget = null,
-        bool ultimateGpuMode = false)
+        bool ultimateGpuMode = false,
+        bool useGpuCapture = false,
+        bool webcam = false)
     {
         _image = frameTarget ?? new D3DFrameTarget();
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
@@ -118,6 +131,8 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         _surfaceWidth = surfaceWidth;
         _surfaceHeight = surfaceHeight;
         _ultimateGpuMode = ultimateGpuMode;
+        _useGpuCapture = useGpuCapture;
+        _webcam = webcam;
         _presentAction = PresentPendingFrame;
         // CompositionTarget.Rendering already retries at the display cadence.
         // This fallback yields to input and allows one frame interval between attempts.
@@ -145,7 +160,9 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
                 PresentationInterval = PresentInterval.Immediate
             };
 
-            uint preferredAdapter = ultimateGpuMode ? SelectBestHardwareAdapter(_direct3D) : 0u;
+            uint preferredAdapter = useGpuCapture
+                ? NativeGpuFindAdapter(_direct3D.NativePointer, windowHandle)
+                : ultimateGpuMode ? SelectBestHardwareAdapter(_direct3D) : 0u;
             const CreateFlags deviceFlags =
                 CreateFlags.Multithreaded |
                 CreateFlags.FpuPreserve |
@@ -189,7 +206,49 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         }
 
         _image.IsFrontBufferAvailableChanged += OnFrontBufferAvailableChanged;
+        // State-driven: CompositionTarget.Rendering is hooked only while a frame is pending
+        // (see RequestRenderingHook), so an idle presenter adds zero per-vsync UI ticks.
+    }
+
+    // 0 = unhooked, 1 = hook requested or active. Handler add/remove runs on the dispatcher only.
+    private int _renderingHookState;
+
+    private void RequestRenderingHook()
+    {
+        if (_disposed || _failed || Interlocked.CompareExchange(ref _renderingHookState, 1, 0) != 0)
+            return;
+        if (_dispatcher.CheckAccess())
+        {
+            HookRendering();
+            return;
+        }
+        try { _dispatcher.BeginInvoke(DispatcherPriority.Send, (Action)HookRendering); }
+        catch (Exception) { Volatile.Write(ref _renderingHookState, 0); } // dispatcher shut down
+    }
+
+    private void HookRendering()
+    {
+        CompositionTarget.Rendering -= OnRendering;
+        if (_disposed || _failed)
+        {
+            Volatile.Write(ref _renderingHookState, 0);
+            return;
+        }
         CompositionTarget.Rendering += OnRendering;
+    }
+
+    private void DropRenderingHook()
+    {
+        Volatile.Write(ref _renderingHookState, 0);
+        CompositionTarget.Rendering -= OnRendering;
+    }
+
+    private void UnhookRendering()
+    {
+        DropRenderingHook();
+        // A frame uploaded between the pending check and the unhook must not wait for the next upload.
+        if (!_disposed && !_failed && Volatile.Read(ref _pendingFrame))
+            RequestRenderingHook();
     }
 
     internal static uint SelectBestHardwareAdapter(IDirect3D9Ex direct3D)
@@ -308,6 +367,8 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
                 }
             }
 
+            if (uploaded)
+                RequestRenderingHook();
             if (shouldSchedule)
                 SchedulePresent();
 
@@ -326,6 +387,7 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
 
     private void EnsureResources()
     {
+        if (_useGpuCapture && Volatile.Read(ref _gpuHandle) != null) return;
         if (Volatile.Read(ref _uploadSurface) != null && Volatile.Read(ref _renderSurface) != null)
             return;
 
@@ -345,6 +407,8 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         if (_disposed || _device == null)
             throw new ObjectDisposedException(nameof(D3DImageFramePresenter));
 
+        if (_useGpuCapture) { CreateGpuResources(); return; }
+
         if (Volatile.Read(ref _uploadSurface) != null && Volatile.Read(ref _renderSurface) != null)
             return;
 
@@ -352,26 +416,36 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         IDirect3DSurface9? nextRender = null;
         try
         {
-            nextUpload = _device.CreateOffscreenPlainSurface(
-                (uint)_surfaceWidth,
-                (uint)_surfaceHeight,
-                Format.X8R8G8B8,
-                Pool.SystemMemory);
-            nextRender = _device.CreateRenderTarget(
-                (uint)_surfaceWidth,
-                (uint)_surfaceHeight,
-                Format.X8R8G8B8,
-                MultisampleType.None,
-                0,
-                lockable: false);
-            // A partial first capture must not expose uninitialized pixels in
-            // the fixed-size texture around it. Initialize once, not per frame.
-            LockedRectangle initial = nextUpload.LockRect(LockFlags.None);
-            try { ClearSurface(initial.DataPointer, initial.Pitch, _surfaceHeight); }
-            finally { nextUpload.UnlockRect(); }
-            _device.UpdateSurface(nextUpload,
-                new Vortice.Direct3D9.Rect(0, 0, _surfaceWidth, _surfaceHeight),
-                nextRender, new Int2(0, 0));
+            if (_webcam)
+            {
+                // Write only to the detached target. WPF owns the front target until
+                // the next successful back-buffer swap under the image lock.
+                nextUpload = CreateWebcamTarget();
+                nextRender = CreateWebcamTarget();
+            }
+            else
+            {
+                nextUpload = _device.CreateOffscreenPlainSurface(
+                    (uint)_surfaceWidth,
+                    (uint)_surfaceHeight,
+                    Format.X8R8G8B8,
+                    Pool.SystemMemory);
+                nextRender = _device.CreateRenderTarget(
+                    (uint)_surfaceWidth,
+                    (uint)_surfaceHeight,
+                    Format.X8R8G8B8,
+                    MultisampleType.None,
+                    0,
+                    lockable: false);
+                // A partial first capture must not expose uninitialized pixels in
+                // the fixed-size texture around it. Initialize once, not per frame.
+                LockedRectangle initial = nextUpload.LockRect(LockFlags.None);
+                try { ClearSurface(initial.DataPointer, initial.Pitch, _surfaceHeight); }
+                finally { nextUpload.UnlockRect(); }
+                _device.UpdateSurface(nextUpload,
+                    new Vortice.Direct3D9.Rect(0, 0, _surfaceWidth, _surfaceHeight),
+                    nextRender, new Int2(0, 0));
+            }
         }
         catch
         {
@@ -444,20 +518,25 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
                 if (frameWidth <= 0 || frameHeight <= 0)
                     return;
 
-                if (_renderSurface == null || _uploadSurface == null)
+                if (!_useGpuCapture && (_renderSurface == null || _uploadSurface == null))
                     return;
 
                 // WPF D3DImage.LockImpl increments its lock count even on timeout.
                 // Every non-throwing TryLock needs Unlock; false only forbids writes.
                 // Otherwise one busy compositor frame permanently blocks presentation.
-                bool imageWritable = _image.TryLock(new Duration(TimeSpan.Zero));
+                // A zero-time probe can miss the compositor releasing its copy
+                // by a fraction of a millisecond and lose an entire display tick.
+                // Bound that handoff to 1 ms; retain nonblocking CPU uploads.
+                bool imageWritable = _image.TryLock(new Duration(_useGpuCapture ? TimeSpan.FromMilliseconds(1) : TimeSpan.Zero));
                 try
                 {
                     if (!imageWritable)
                     {
+                        ImageBusyRetries++;
                         ScheduleRetry();
                         return;
                     }
+                    if (_useGpuCapture && !TakeReadyGpuSurface()) return;
                     // Transfer full visible region on resize/recovery; otherwise transfer
                     // only rows modified since the last successful present.
                     bool fullDirty = frameWidth != _lastDirtyWidth || frameHeight != _lastDirtyHeight;
@@ -466,19 +545,23 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
                     int dirtyBottom = dirtyRows.Bottom;
                     var frameRect = new Vortice.Direct3D9.Rect(
                         0, dirtyTop, frameWidth, dirtyBottom);
-                    _device.UpdateSurface(
-                        _uploadSurface,
-                        frameRect,
-                        _renderSurface,
-                        new Int2(0, dirtyTop));
-                    Interlocked.Add(ref _transferredBytes, (long)frameWidth * (dirtyBottom - dirtyTop) * 4);
+                    if (_webcam)
+                    {
+                        (_renderSurface, _uploadSurface) = (_uploadSurface, _renderSurface);
+                    }
+                    else if (!_useGpuCapture)
+                    {
+                        _device.UpdateSurface(_uploadSurface!, frameRect, _renderSurface!, new Int2(0, dirtyTop));
+                        Interlocked.Add(ref _transferredBytes, (long)frameWidth * (dirtyBottom - dirtyTop) * 4);
+                    }
 
                     if (!ReferenceEquals(_attachedSurface, _renderSurface))
                     {
                         _image.SetBackBuffer(
                             D3DResourceType.IDirect3DSurface9,
-                            _renderSurface.NativePointer,
+                            _renderSurface!.NativePointer,
                             enableSoftwareFallback: true);
+                        if (_useGpuCapture) _attachedSurface?.Dispose();
                         _attachedSurface = _renderSurface;
                     }
 
@@ -494,15 +577,23 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
                     _pendingForcePresent = false;
                     _pendingDirtyRows = default;
                     _presentedTag = _uploadTag;
+                    SubmittedGpuRenderMs = LastGpuRenderMs;
+                    SubmittedGpuWaitMs = LastGpuWaitMs;
                     presented = true;
-                    long submitNow = Stopwatch.GetTimestamp();
-                    Volatile.Write(ref _lastSubmitTicks, submitNow);
-                    Interlocked.Add(ref _queueTicks, submitNow - _lastUploadTicks);
-                    Interlocked.Increment(ref _submittedFrames);
                 }
                 finally
                 {
                     _image.Unlock();
+                }
+                if (presented)
+                {
+                    // Unlock publishes the dirty surface to WPF. Include its
+                    // handoff cost in the submission latency shown by diagnostics.
+                    long submitNow = Stopwatch.GetTimestamp();
+                    Volatile.Write(ref _lastSubmitTicks, submitNow);
+                    Interlocked.Add(ref _queueTicks, submitNow - _lastUploadTicks);
+                    Interlocked.Increment(ref _submittedFrames);
+                    Volatile.Write(ref _lastQueueMs, (submitNow - _lastUploadTicks) * 1000.0 / Stopwatch.Frequency);
                 }
             }
             finally
@@ -543,20 +634,6 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
     internal void BeginSession(int generation)
     {
         SuspendPresentation();
-        if (_dispatcher.CheckAccess())
-        {
-            CompositionTarget.Rendering -= OnRendering;
-            CompositionTarget.Rendering += OnRendering;
-        }
-        else
-        {
-            _dispatcher.BeginInvoke(DispatcherPriority.Send, (Action)(() =>
-            {
-                if (_disposed || _failed) return;
-                CompositionTarget.Rendering -= OnRendering;
-                CompositionTarget.Rendering += OnRendering;
-            }));
-        }
 
         lock (_surfaceSync)
         {
@@ -573,13 +650,14 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         _retryTimer.Stop();
         Interlocked.Exchange(ref _retryScheduled, 0);
         if (_dispatcher.CheckAccess())
-            CompositionTarget.Rendering -= OnRendering;
+            DropRenderingHook();
         else
-            _dispatcher.BeginInvoke(DispatcherPriority.Send, (Action)(() => CompositionTarget.Rendering -= OnRendering));
+            _dispatcher.BeginInvoke(DispatcherPriority.Send, (Action)DropRenderingHook);
 
         lock (_surfaceSync)
         {
             _acceptingFrames = false;
+            if (_gpuHandle != null) NativeGpuReset(_gpuHandle);
             _pendingFrame = false;
             _pendingForcePresent = false;
             _pendingDirtyRows = default;
@@ -608,7 +686,10 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         // Consume at composition boundary so capture presenter does not stall
         // when queued dispatcher callbacks run while WPF owns the buffer.
         if (_disposed || _failed || !Volatile.Read(ref _pendingFrame))
+        {
+            UnhookRendering();
             return;
+        }
 
         long nowTicks = Stopwatch.GetTimestamp();
         long lastSubmit = Volatile.Read(ref _lastSubmitTicks);
@@ -652,6 +733,9 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
 
     internal void AttachBackBuffer()
     {
+        // A retry can run before D3D11 completes the first frame. Do not attach
+        // the freshly allocated D3D9 target until its GPU copy has initialized it.
+        if ((_useGpuCapture && !_hasGpuBackBuffer) || (_webcam && _attachedSurface == null)) return;
         var surface = _attachedSurface ?? _renderSurface;
         if (surface == null || !_image.IsFrontBufferAvailable)
             return;
@@ -767,7 +851,7 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
         _disposed = true;
         _retryTimer.Stop();
         _retryTimer.Tick -= OnRetryTick;
-        CompositionTarget.Rendering -= OnRendering;
+        DropRenderingHook();
         _image.IsFrontBufferAvailableChanged -= OnFrontBufferAvailableChanged;
 
         lock (_surfaceSync)
@@ -785,6 +869,8 @@ internal sealed partial class D3DImageFramePresenter : IDisposable
             if (_renderSurface != null && !ReferenceEquals(_renderSurface, _attachedSurface))
                 _renderSurface.Dispose();
             _attachedSurface?.Dispose();
+            _gpuHandle?.Dispose();
+            _gpuHandle = null;
             _device?.Dispose();
             _direct3D?.Dispose();
             _uploadSurface = null;

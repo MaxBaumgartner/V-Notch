@@ -39,128 +39,121 @@ public partial class SettingsWindow
 
             if (!confirmed) return;
 
-            var defaults = new NotchSettings();
+            _livePreviewDebounce?.Stop();
+            _hasRevertedLivePreview = false;
 
-            WidthSlider.Value = defaults.Width;
-            DynamicIslandWidthSlider.Value = defaults.DynamicIslandWidth;
-            DynamicIslandHeightSlider.Value = defaults.DynamicIslandHeight;
-            HeightSlider.Value = defaults.Height;
-            RadiusSlider.Value = defaults.CornerRadius;
-            OpacitySlider.Value = defaults.Opacity * 100;
-            BlurBrightnessSlider.Value = defaults.MediaBlurBrightnessBoost * 100;
-            BlurDarkOverlaySlider.Value = defaults.MediaBlurDarkOverlay * 100;
-            SpotifyCanvasBrightnessSlider.Value = defaults.SpotifyCanvasBrightness * 100;
-            AnimationFpsSlider.Value = defaults.AnimationFps;
-            AutoAnimationFpsCheck.IsChecked = defaults.AutoAnimationFps;
-            InteractionSoundsCheck.IsChecked = defaults.EnableInteractionSounds;
-            InteractionSoundVolumeSlider.Value = defaults.InteractionSoundVolume * 100;
-            UpdateInteractionSoundControls();
-            EnableBlurEffectsCheck.IsChecked = defaults.EnableBlurEffects;
-            MediaArtBackgroundCheck.IsChecked = defaults.ShowMediaArtBackground;
-            _settings.NotchStyle = defaults.NotchStyle;
-            _settings.LiquidGlass = (defaults.LiquidGlass ?? new Models.LiquidGlassConfig()).Clone();
-            LoadLiquidGlassUi();
-            EnableSubjectBlurCheck.IsChecked = defaults.EnableSubjectBlur;
-            EnableSmartCropCheck.IsChecked = defaults.EnableSmartCrop;
-            UpdatePerformanceDependentControls(defaults.EnableBlurEffects);
-            EnableSpotifyLyricsCheck.IsChecked = defaults.EnableSpotifyLyrics;
-            BrightenDarkLyricsBackgroundCheck.IsChecked = defaults.BrightenDarkLyricsBackground;
+            _settings = new NotchSettings();
             SpotifyCanvasConsent.Revoke(_settings);
-            EnableSpotifyCanvasCheck.IsChecked = defaults.EnableSpotifyCanvas;
-            EnableYouTubeSubtitlesCheck.IsChecked = defaults.EnableYouTubeSubtitles;
-            IgnoreYouTubeAutoSubtitlesCheck.IsChecked = defaults.IgnoreYouTubeAutoSubtitles;
-            UpdateLyricsDependentControls(defaults.EnableSpotifyLyrics);
-            UpdateSpotifyCanvasDependentControls();
-            UpdateYouTubeSubtitlesDependentControls(defaults.EnableYouTubeSubtitles);
+            Loc.SetLanguage(_settings.Language);
 
-            _settings.SubtitlePriority = defaults.SubtitlePriority;
-            LoadSubtitlePriority();
+            LoadSettings();
 
-            DynamicIslandModeCheck.IsChecked = defaults.EnableDynamicIslandMode;
-            UpdateDynamicIslandDependentControls(defaults.EnableDynamicIslandMode);
-
-            HoverExpandCheck.IsChecked = defaults.EnableHoverExpand;
-            HoverDelaySlider.Value = defaults.HoverExpandDelay;
-            HoverDelaySlider.IsEnabled = defaults.EnableHoverExpand;
-            HoverDelaySlider.Opacity = defaults.EnableHoverExpand ? 1.0 : 0.4;
-            DisableMouseLeaveAutoCloseCheck.IsChecked = defaults.DisableMouseLeaveAutoClose;
-            ReopenLastViewCheck.IsChecked = defaults.ReopenLastViewOnExpand;
-            KeepMediaPinnedCheck.IsChecked = defaults.KeepMediaPinnedOnTrackChange;
-
-            MusicNotifyCheck.IsChecked = defaults.ShowMusicNotifications;
-            SystemNotifyCheck.IsChecked = defaults.ShowSystemNotifications;
-            ResetAppNotifications(defaults);
-            StayBehindWindowsCheck.IsChecked = defaults.StayBehindWindows;
-            EnableSpotlightCheck.IsChecked = defaults.EnableSpotlight;
-            LoadSpotlightAiSettings(defaults);
-            EnableDebugModeCheck.IsChecked = defaults.EnableDebugMode;
-            ShowBatteryCheck.IsChecked = defaults.ShowBatteryIndicator;
-            HideCameraCheck.IsChecked = defaults.HideCamera;
-            ClipboardHotkeyBox.Text = defaults.ClipboardHotkey;
-            LoadTrayAdvanced(defaults);
-            _settings.BatteryDeviceId = defaults.BatteryDeviceId;
-            HideOnExclusiveFullscreenCheck.IsChecked = defaults.HideOnExclusiveFullscreen;
-            HideOnWindowedFullscreenCheck.IsChecked = defaults.HideOnWindowedFullscreen;
-            IdleAutoHideCheck.IsChecked = defaults.EnableIdleAutoHide;
-            IdleAutoHideDelaySlider.Value = Math.Max(2, defaults.IdleAutoHideDelay / 1000.0);
-            IdleAutoHideDelaySlider.IsEnabled = defaults.EnableIdleAutoHide;
-            IdleAutoHideDelaySlider.Opacity = defaults.EnableIdleAutoHide ? 1.0 : 0.4;
-
-            LocalOnlyModeCheck.IsChecked = defaults.EnableLocalOnlyMode;
-            AutoCheckUpdatesCheck.IsChecked = defaults.AutoCheckUpdates;
-            EnableOnlineArtworkCheck.IsChecked = defaults.EnableOnlineArtworkLookup;
-            EnableOnlineLyricsCheck.IsChecked = defaults.EnableOnlineLyrics;
-            EnablePrivacyIndicatorsCheck.IsChecked = defaults.EnablePrivacyIndicators;
-            EnableBrowserUrlInspectionCheck.IsChecked = defaults.EnableBrowserUrlInspection;
-            EnableDiagnosticLoggingCheck.IsChecked = defaults.EnableDiagnosticLogging;
-            EnableSpotlightHistoryCheck.IsChecked = defaults.EnableSpotlightHistory;
-            LoadAdditionalPrivacy(defaults);
-            LoadPiSchoolSettings(defaults);
-            UpdateLocalOnlyDependentControls(defaults.EnableLocalOnlyMode);
-            int defLangIndex = 0;
-            for (int i = 0; i < LanguageCombo.Items.Count; i++)
+            _isLoadingSettings = true;
+            try
             {
-                if (LanguageCombo.Items[i] is System.Windows.Controls.ComboBoxItem item && item.Tag as string == defaults.Language)
-                {
-                    defLangIndex = i;
-                    break;
-                }
+                AutoStartCheck.IsChecked = _settings.AutoStart;
             }
-            LanguageCombo.SelectedIndex = defLangIndex;
-            _settings.ExpandedWidget = defaults.ExpandedWidget;
-            _settings.ClockPageStyle = defaults.ClockPageStyle;
-            _settings.NavTabOrder = defaults.NavTabOrder;
-            _settings.VisibleNavTabs = defaults.VisibleNavTabs;
-            WidgetCombo.SelectedIndex = defaults.ExpandedWidget switch
+            finally
             {
-                "clock" => 1,
-                "wordclock" => 2,
-                "digitalclock" => 3,
-                "weather" => 4,
-                "sysmon" => 5,
-                "none" => 6,
-                _ => 0
-            };
-            PopulateClockPageStyleCombo();
-            PopulateNavTabsSettings();
+                _isLoadingSettings = false;
+            }
+
+            UpdateSliderValues();
+            UpdateSectionHeader();
+            RefreshSearchRows();
             ApplyEffectiveGpuPreference();
+            ProcessPriorityPolicy.Apply(_settings.ProcessPriority);
+            RuntimeLog.MinimumLevel = _settings.EnableDiagnosticLogging ? LogLevel.Debug : LogLevel.Info;
+            (Application.Current?.MainWindow as MainWindow)?.ToggleDebugMode(_settings.EnableDebugMode);
+
+            ApplyPreview(ReadSettingsFromUi());
         }
         catch (Exception ex)
         {
             VNotch.Services.RuntimeLog.Error(LogCategory, ex, "Error in Reset_Click");
+            MessageBox.Show(this, Loc.Get("error.unexpected", ex.Message), Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private void UpdateSliderValues()
+    {
+        if (WidthValue != null) WidthValue.Text = ((int)WidthSlider.Value).ToString();
+        if (DynamicIslandWidthValue != null) DynamicIslandWidthValue.Text = ((int)DynamicIslandWidthSlider.Value).ToString();
+        if (DynamicIslandHeightValue != null) DynamicIslandHeightValue.Text = ((int)DynamicIslandHeightSlider.Value).ToString();
+        if (HeightValue != null) HeightValue.Text = ((int)HeightSlider.Value).ToString();
+        if (RadiusValue != null) RadiusValue.Text = ((int)RadiusSlider.Value).ToString();
+        if (OpacityValue != null) OpacityValue.Text = ((int)OpacitySlider.Value).ToString();
+        if (BlurBrightnessValue != null) BlurBrightnessValue.Text = ((int)BlurBrightnessSlider.Value).ToString();
+        if (BlurDarkOverlayValue != null) BlurDarkOverlayValue.Text = ((int)BlurDarkOverlaySlider.Value).ToString();
+        if (HoverDelayValue != null) HoverDelayValue.Text = ((int)HoverDelaySlider.Value).ToString();
+        if (AnimationFpsValue != null) AnimationFpsValue.Text = ((int)Math.Round(AnimationFpsSlider.Value)).ToString();
+    }
+
+    internal async Task ApplyImportedSettingsAsync(NotchSettings imported, CancellationToken ct = default)
+    {
+        if (imported == null) throw new ArgumentNullException(nameof(imported));
+
+        _livePreviewDebounce?.Stop();
+        _hasRevertedLivePreview = false;
+
+        _settings = imported.Clone();
+        Loc.SetLanguage(_settings.Language);
+        LoadSettings();
+        UpdateSliderValues();
+        UpdateSectionHeader();
+        RefreshSearchRows();
+
+        _settings = ReadSettingsFromUi();
+        ApplyPreview(_settings);
+        SyncAppNotificationRestore(_settings);
+        await _settingsAppService.ApplyAsync(_settings, ct);
+        _editSession.Commit(_settings);
+    }
+
+    private bool _hasRevertedLivePreview;
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
         RevertLivePreviewIfNeeded();
         CloseWithAnimation();
     }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (!_isSaving && !_hasRevertedLivePreview && HasUncommittedLivePreview())
+        {
+            RevertLivePreviewIfNeeded();
+        }
+        base.OnClosing(e);
+    }
+
+    private bool HasUncommittedLivePreview()
+    {
+        var baseline = _editSession.Baseline;
+        return !baseline.ValueEquals(_editSession.Applied)
+            || !baseline.ValueEquals(_settings)
+            || !string.Equals(Loc.CurrentLanguage, baseline.Language, StringComparison.OrdinalIgnoreCase);
+    }
+
     private void RevertLivePreviewIfNeeded()
     {
+        _livePreviewDebounce?.Stop();
+        _hasRevertedLivePreview = true;
         var baseline = _editSession.Revert();
+        _settings = baseline.Clone();
+        AccentTheme.Apply(baseline.AccentColor, animate: IsLoaded);
         ApplyGpuPreference(GetEffectiveGpuPreference(baseline));
         InteractionSounds.Configure(baseline.EnableInteractionSounds, baseline.InteractionSoundVolume);
+        ProcessPriorityPolicy.Apply(baseline.ProcessPriority);
+        WindowTitleScanner.UpdateInspectionAllowed(baseline.EnableBrowserUrlInspection);
+        RuntimeLog.MinimumLevel = baseline.EnableDiagnosticLogging ? LogLevel.Debug : LogLevel.Info;
+        _lastAppliedFps = baseline.AnimationFps;
+        AnimationConfig.Configure(baseline.AnimationFps, baseline.AutoAnimationFps);
+        (Application.Current?.MainWindow as MainWindow)?.ToggleDebugMode(baseline.EnableDebugMode);
+        if (Loc.CurrentLanguage != baseline.Language)
+        {
+            Loc.SetLanguage(baseline.Language);
+        }
         SettingsChanged?.Invoke(this, baseline);
     }
 
@@ -171,19 +164,6 @@ public partial class SettingsWindow
     private void DonatePaypal_Click(object sender, RoutedEventArgs e) => SafeLauncher.TryOpenUrl(string.Concat("https://", "www.paypal.com/paypalme/PhuocLe678"));
     private void StarRepoButton_Click(object sender, RoutedEventArgs e) => SafeLauncher.TryOpenUrl(string.Concat("https://", "github.com/w0otdev/V-Notch"));
 
-    /// <summary>
-    /// The star on the donate card pulses only while it is on screen. The window is prepared hidden at start-up, and
-    /// a Forever storyboard started there would keep every window on this thread redrawing at the display's rate.
-    /// </summary>
-    private void PulseStarWhileShown()
-    {
-        if (AnimatedStarPath.Resources["StarPulse"] is not Storyboard pulse) return;
-        AnimatedStarPath.IsVisibleChanged += (_, _) =>
-        {
-            if (AnimatedStarPath.IsVisible) pulse.Begin(AnimatedStarPath, isControllable: true);
-            else pulse.Stop(AnimatedStarPath);
-        };
-    }
     private void ProjectVertex_Click(object sender, RoutedEventArgs e) => SafeLauncher.TryOpenUrl(string.Concat("https://", "github.com/w0otdev/Vertex"));
     private void ProjectScrollV_Click(object sender, RoutedEventArgs e) => SafeLauncher.TryOpenUrl(string.Concat("https://", "github.com/w0otdev/Scroll-V"));
     private void ReportBug_Click(object sender, RoutedEventArgs e) => SafeLauncher.TryOpenUrl(string.Concat("https://", "github.com/w0otdev/V-Notch/issues/new"));
@@ -224,6 +204,7 @@ public partial class SettingsWindow
         catch (Exception ex)
         {
             VNotch.Services.RuntimeLog.Error(LogCategory, ex, "Error in ClearCache_Click");
+            MessageBox.Show(this, Loc.Get("error.unexpected", ex.Message), Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -568,6 +549,7 @@ public partial class SettingsWindow
     internal NotchSettings ReadSettingsFromUi()
     {
         var snapshot = _settings.Clone();
+        snapshot.AccentColor = _selectedAccent;
 
         snapshot.Width = (int)WidthSlider.Value;
         snapshot.DynamicIslandWidth = Math.Max(100, (int)DynamicIslandWidthSlider.Value);
@@ -588,6 +570,7 @@ public partial class SettingsWindow
         snapshot.EnableSubjectBlur = EnableSubjectBlurCheck.IsChecked ?? true;
         snapshot.EnableSmartCrop = EnableSmartCropCheck.IsChecked ?? true;
         snapshot.EnableSpotifyLyrics = EnableSpotifyLyricsCheck.IsChecked ?? true;
+        snapshot.LyricsProviderPriority = string.Join(',', LyricsProviderList.Items.Cast<string>());
         snapshot.BrightenDarkLyricsBackground = BrightenDarkLyricsBackgroundCheck.IsChecked == true;
         snapshot.EnableSpotifyCanvas = EnableSpotifyCanvasCheck.IsChecked == true && SpotifyCanvasConsent.HasAccepted(snapshot);
         snapshot.EnableYouTubeSubtitles = EnableYouTubeSubtitlesCheck.IsChecked ?? true;
@@ -596,6 +579,7 @@ public partial class SettingsWindow
         snapshot.SubtitlePriority = GetSubtitlePriorityString();
 
         snapshot.EnableDynamicIslandMode = DynamicIslandModeCheck.IsChecked ?? false;
+        snapshot.EnableShadow = EnableShadowCheck.IsChecked ?? true;
 
         snapshot.EnableHoverExpand = HoverExpandCheck.IsChecked ?? true;
         snapshot.HoverExpandDelay = (int)HoverDelaySlider.Value;
@@ -612,6 +596,7 @@ public partial class SettingsWindow
             snapshot.CameraDeviceId = selectedCamera.Id;
         if (VisualizerAudioCombo.SelectedItem is AudioDeviceItem selectedAudioDevice)
             snapshot.VisualizerAudioDeviceId = selectedAudioDevice.Id;
+        snapshot.ShowMutedMicGlyph = ShowMutedMicGlyphCheck.IsChecked ?? true;
         snapshot.AutoStart = AutoStartCheck.IsChecked ?? false;
         snapshot.StayBehindWindows = StayBehindWindowsCheck.IsChecked ?? false;
         snapshot.EnableHelloGreeting = HelloGreetingCheck.IsChecked ?? true;
@@ -622,11 +607,14 @@ public partial class SettingsWindow
         snapshot.HideOnExclusiveFullscreen = HideOnExclusiveFullscreenCheck.IsChecked ?? true;
         snapshot.HideOnWindowedFullscreen = HideOnWindowedFullscreenCheck.IsChecked ?? true;
         snapshot.EnableIdleAutoHide = IdleAutoHideCheck.IsChecked ?? false;
-        snapshot.IdleAutoHideDelay = Math.Max(1000, (int)(IdleAutoHideDelaySlider.Value * 1000));
+        snapshot.IdleAutoHideDelay = Math.Max(100, (int)Math.Round(IdleAutoHideDelaySlider.Value * 1000));
         snapshot.ShowMusicNotifications = MusicNotifyCheck.IsChecked ?? true;
         snapshot.ShowSystemNotifications = SystemNotifyCheck.IsChecked ?? true;
         ReadAppNotifications(snapshot);
+        snapshot.AutoDismissNotifications = AutoDismissNotifyCheck.IsChecked ?? true;
+        snapshot.NotificationDuration = Math.Clamp((int)Math.Round(NotificationDurationSlider.Value * 1000), 1500, 15000);
         snapshot.ShowBatteryIndicator = ShowBatteryCheck.IsChecked ?? true;
+        snapshot.BatteryDeviceId = BatteryDeviceCombo.SelectedValue as string ?? _settings.BatteryDeviceId;
         snapshot.HideCamera = HideCameraCheck.IsChecked ?? false;
         snapshot.ClipboardHotkey = ClipboardHotkeyBox.Text.Trim();
         snapshot.ClipboardAutoDeleteSensitive = TraySensitiveCheck.IsChecked == true;
@@ -663,11 +651,19 @@ public partial class SettingsWindow
         if (ClockPageStyleCombo?.SelectedItem is System.Windows.Controls.ComboBoxItem clockItem && clockItem.Tag is string clockCode)
             snapshot.ClockPageStyle = clockCode;
 
+        if (ProcessPriorityCombo?.SelectedItem is System.Windows.Controls.ComboBoxItem priorityItem && priorityItem.Tag is string priorityTag)
+            snapshot.ProcessPriority = ProcessPriorityPolicy.Normalize(priorityTag);
+
+        if (GpuPreferenceCombo?.SelectedItem is System.Windows.Controls.ComboBoxItem gpuItem && gpuItem.Tag is string gpuTag && int.TryParse(gpuTag, out int gpuPref))
+            snapshot.GpuPreference = gpuPref;
+
         return snapshot;
     }
 
     internal bool ApplyPreview(NotchSettings snapshot)
     {
+        AccentTheme.Apply(snapshot.AccentColor, animate: IsLoaded);
+        _hasRevertedLivePreview = false;
         var appliedSettings = _editSession.Applied;
         InteractionSounds.Configure(snapshot.EnableInteractionSounds, snapshot.InteractionSoundVolume);
         if (_lastAppliedFps != snapshot.AnimationFps || appliedSettings.AutoAnimationFps != snapshot.AutoAnimationFps)
@@ -714,6 +710,7 @@ public partial class SettingsWindow
 
     internal async Task SaveAsync(NotchSettings snapshot, CancellationToken ct = default)
     {
+        SyncAppNotificationRestore(snapshot);
         await _settingsAppService.ApplyAsync(snapshot, ct);
         _editSession.Commit(snapshot);
     }

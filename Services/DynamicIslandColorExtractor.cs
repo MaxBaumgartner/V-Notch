@@ -11,7 +11,6 @@ namespace VNotch.Services;
 internal static partial class DynamicIslandColorExtractor
 {
     public readonly record struct Palette(Color Main, Color Sub);
-    public readonly record struct PaletteColor(Color Color, int Population, double Score);
 
     private const string LogTag = "COLOR-PICK";
     private static readonly Palette DefaultPalette = new(Color.FromRgb(34, 34, 34), Color.FromRgb(180, 180, 180));
@@ -32,6 +31,13 @@ internal static partial class DynamicIslandColorExtractor
     private sealed record CroppedPalette(Int32Rect Crop, Palette Palette);
     private static readonly ConditionalWeakTable<BitmapSource, CroppedPalette> _croppedPaletteCache = new();
     private static readonly ConditionalWeakTable<BitmapSource, BoxedDim> _dimCache = new();
+
+    internal static void ClearCache()
+    {
+        _paletteCache.Clear();
+        _croppedPaletteCache.Clear();
+        _dimCache.Clear();
+    }
 
     #region Public entry points
 
@@ -238,11 +244,7 @@ internal static partial class DynamicIslandColorExtractor
 
         try
         {
-            var formattedBitmap = ArtworkAnalysisSource.GetBgra32(bitmap);
-
-            double scaleX = (double)analysisSize / formattedBitmap.PixelWidth;
-            double scaleY = (double)analysisSize / formattedBitmap.PixelHeight;
-            var small = new TransformedBitmap(formattedBitmap, new ScaleTransform(scaleX, scaleY));
+            var small = ArtworkAnalysisSource.GetSample(bitmap, analysisSize, analysisSize);
 
             int width = small.PixelWidth;
             int height = small.PixelHeight;

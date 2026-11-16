@@ -157,9 +157,11 @@ public partial class ControlCenterView
         if (key == _piKey) return;
         _piKey = key;
 
+        bool arriving = _piSchoolSection.Children.OfType<SkeletonPlaceholder>().Any() && _piSchool != null;
         BuildPiSchool();
         BuildPiExams();
         BuildPiTodos();
+        if (arriving && IsVisible) RevealRows(TimeSpan.Zero);
         ContentHeightChanged?.Invoke();
     }
 
@@ -210,10 +212,26 @@ public partial class ControlCenterView
         _ => SchoolCalm
     };
 
+    // Parts of the school tab that follow each other in when the tab opens (see RevealSchoolDetails).
+    private readonly List<(FrameworkElement Part, int Index)> _schoolDetails = new();
+    private Action? _resweepSchoolRing;
+
+    /// <summary>
+    /// Opening the school tab: the hero's ring sweeps up to its share again and the parts of the hero and the
+    /// test cards follow each other in, like Claude's hero.
+    /// </summary>
+    private void RevealSchoolDetails()
+    {
+        _resweepSchoolRing?.Invoke();
+        foreach (var (part, index) in _schoolDetails) DetailArrive(part, index);
+    }
+
     private void BuildPiSchool()
     {
         _accent = _mood;
         _piSchoolSection.Children.Clear();
+        _schoolDetails.Clear();
+        _resweepSchoolRing = null;
         if (_isLocalOnly() || _pi?.IsConfigured != true)
         {
             _piSchoolSection.Children.Add(NewRow("\uE7BA", Loc.Get(_isLocalOnly() ? "pi.localOnly" : "pi.notConfigured"), muted: true));
@@ -221,7 +239,8 @@ public partial class ControlCenterView
         }
         if (_piSchool is not { } school)
         {
-            _piSchoolSection.Children.Add(NewRow("\uE7BA", Loc.Get(_piReachable ? "pi.loading" : "pi.unreachable"), muted: true));
+            _piSchoolSection.Children.Add(new SkeletonPlaceholder(!_piReachable,
+                Loc.Get(_piReachable ? "pi.loading" : "pi.unreachable"), 108, 34, 34, 34));
             return;
         }
 
@@ -247,7 +266,13 @@ public partial class ControlCenterView
             var left = deadline.Due - now;
             var row = NewRow("\uE916", deadline.Name);
             Brush urgency = left < TimeSpan.FromDays(1) ? DueToday : left < TimeSpan.FromDays(3) ? DueSoon : Muted;
-            AddStatus(row, $"{ShortCourse(deadline.Course)} · {DueText(deadline.Due, left)}", urgency);
+            var status = AddStatus(row, "", urgency);
+            LiveText(status, () =>
+            {
+                string due = $"{ShortCourse(deadline.Course)} · {DueText(deadline.Due, deadline.Due - DateTimeOffset.Now)}";
+                status.ToolTip = due;
+                return due;
+            });
             // Open the project or the WMC repo, fetch the task's files, hand maths photos in: like the dashboard's panel.
             if (deadline.Cmid > 0) AddAction(row, PiTaskActions(deadline, row));
             // Straight to the assignment's page, where it is handed in (a WMC task: its Moodle link to Classroom 50).
@@ -283,11 +308,17 @@ public partial class ControlCenterView
         const double Stroke = 7;
         double r = (HeroRing - Stroke) / 2, c = HeroRing / 2;
         var value = new Path { Stroke = _mood, StrokeThickness = Stroke, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
-        bool hours = left < TimeSpan.FromDays(1);
-        var number = MakeLabel(hours ? $"{Math.Max(0, (int)left.TotalHours)}" : $"{(int)Math.Ceiling(left.TotalDays)}", 20, VNotch.Services.UiPalette.PrimaryBrush);
+        var number = MakeLabel("", 20, VNotch.Services.UiPalette.PrimaryBrush);
         number.HorizontalAlignment = HorizontalAlignment.Center;
-        var unit = MakeLabel(Loc.Get(hours ? "school.hours" : "school.days"), 10, Muted);
+        var unit = MakeLabel("", 10, Muted);
         unit.HorizontalAlignment = HorizontalAlignment.Center;
+        // Days, then hours on the last day: counted on between the Pi's reads.
+        LiveText(number, () =>
+        {
+            var l = deadline.Due - DateTimeOffset.Now;
+            return l < TimeSpan.FromDays(1) ? $"{Math.Max(0, (int)l.TotalHours)}" : $"{(int)Math.Ceiling(l.TotalDays)}";
+        });
+        LiveText(unit, () => Loc.Get(deadline.Due - DateTimeOffset.Now < TimeSpan.FromDays(1) ? "school.hours" : "school.days"));
         var ring = new Grid
         {
             Width = HeroRing,
@@ -303,11 +334,20 @@ public partial class ControlCenterView
         // The ring sweeps to its share when the tab opens.
         var tween = new WeatherTween { Step = t => value.Data = Arc(c, c, r, -90, Math.Min(359.5, 360 * t)) };
         bool animate = IsVisible && !AnimationConfig.ReduceMotion;
-        tween.Play(animate ? 0 : share, share, animate ? 1100 : 0, WeatherMotion.OutQuint, 150);
+        if (animate) tween.To(share, from: 0);
+        else tween.Play(share, share, 0, WeatherMotion.OutQuint);
+        // A reopened tab sweeps the last stretch again; a sweep still on its way just carries on.
+        _resweepSchoolRing = () =>
+        {
+            if (ring.IsVisible && !Motion.IsRunning(tween, WeatherTween.ValueProperty)) tween.To(share, from: share * .8);
+        };
 
         var title = MakeLabel(deadline.Name, 16, VNotch.Services.UiPalette.PrimaryBrush);
         var meta = MakeLabel($"{ShortCourse(deadline.Course)} · {deadline.Due.ToLocalTime().ToString("ddd d.M. · HH:mm", Loc.GetCulture())}", 12, _moodSoft);
         meta.Margin = new Thickness(0, 3, 0, 0);
+        _schoolDetails.Add((ring, 0));
+        _schoolDetails.Add((title, 1));
+        _schoolDetails.Add((meta, 2));
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0), Children = { title, meta } };
 
         var hero = new Grid { Margin = new Thickness(0, 0, 0, 6), Background = Brushes.Transparent };
@@ -356,8 +396,13 @@ public partial class ControlCenterView
             card.Child = new StackPanel { Children = { date, subject, kind } };
             card.ToolTip = exam.Title;
             Pressable(card, () => soon ? Wash(DueToday, 0.18) : CardBg, CardHover, grow: true);
+            // The subject leans towards the pointer, independently of the card's squish.
+            DetailHover(card, subject);
             OpenOnClick(card, () => SchoolLinks.Untis(_untisUrl()), SignInToSchoolAsync);
             PlaceTile(grid, card, i, PiMaxExams);
+            _schoolDetails.Add((date, 3 + i));
+            _schoolDetails.Add((subject, 4 + i));
+            _schoolDetails.Add((kind, 5 + i));
         }
         _piExamSection.Children.Add(grid);
     }
@@ -395,20 +440,30 @@ public partial class ControlCenterView
         element.Cursor = Cursors.Hand;
         if (element is Border card)
         {
-            // Pressable cards fade their own background; plain ones swap it.
+            // Cards without feedback share the same press and hover motion as the other tabs.
             if (card.RenderTransform is not ScaleTransform)
             {
                 Brush rest = card.Background;
-                card.MouseEnter += (_, _) => card.Background = CardHover;
-                card.MouseLeave += (_, _) => card.Background = rest;
+                Pressable(card, () => rest, CardHover);
             }
         }
         else
         {
             // Transparent, not null: the whole row takes the click, not just its text.
             if (element is Panel { Background: null } panel) panel.Background = Brushes.Transparent;
-            element.MouseEnter += (_, _) => element.Opacity = 0.7;
-            element.MouseLeave += (_, _) => element.Opacity = 1;
+            var scale = new ScaleTransform(1, 1);
+            element.RenderTransformOrigin = new Point(0.5, 0.5);
+            element.RenderTransform = scale;
+            void Grow(double value, SpringMotion spring)
+            {
+                Motion.To(scale, ScaleTransform.ScaleXProperty, value, spring);
+                Motion.To(scale, ScaleTransform.ScaleYProperty, value, spring);
+            }
+            element.MouseEnter += (_, _) => Grow(HoverScale(element, 1.02), Motion.Press);
+            element.MouseLeave += (_, _) => Grow(1, Motion.Press);
+            element.PreviewMouseLeftButtonDown += (_, _) => Grow(0.96, Motion.PressDown);
+            element.PreviewMouseLeftButtonUp += (_, _) => Grow(element.IsMouseOver ? HoverScale(element, 1.02) : 1, Motion.Press);
+            element.LostMouseCapture += (_, _) => Grow(1, Motion.Press);
         }
         element.MouseLeftButtonDown += async (_, e) =>
         {
@@ -455,13 +510,19 @@ public partial class ControlCenterView
             string id = todo.Id;
             AddStatus(row, "", Muted, Toggle(false, done =>
             {
-                // Ticked off: once the switch has landed the row slides away to the right.
+                // The box ticks itself with a little hop as the row leaves; the switch and row move together.
+                if (done && RowGlyph(row) is { } glyph)
+                {
+                    glyph.Text = "";
+                    DetailReaction(glyph);
+                }
                 if (done && !AnimationConfig.ReduceMotion)
                 {
                     var away = new TranslateTransform();
                     row.RenderTransform = away;
-                    row.BeginAnimation(OpacityProperty, WeatherMotion.To(1, 0.15, 360, WeatherMotion.Out, 260));
-                    away.BeginAnimation(TranslateTransform.XProperty, WeatherMotion.To(0, 28, 420, WeatherMotion.OutQuint, 260));
+                    Motion.To(row, OpacityProperty, 0, Motion.Exit);
+                    Motion.To(away, TranslateTransform.XProperty, 28, Motion.Exit);
+                    GlideHeight(row, 0, from: row.ActualHeight);
                 }
                 SetTodoDone(id, done);
             }));
@@ -469,6 +530,10 @@ public partial class ControlCenterView
         }
         if (shown == 0) _piTodoSection.Children.Add(NewRow("\uE73E", Loc.Get("pi.todosEmpty"), muted: true));
     }
+
+    /// <summary>The glyph at the start of a <see cref="NewRow"/>.</summary>
+    private static TextBlock? RowGlyph(Grid row) =>
+        row.Children.OfType<StackPanel>().FirstOrDefault()?.Children.OfType<TextBlock>().FirstOrDefault();
 
     /// <summary>A one-line box: Enter adds the to-do on the Pi and keeps the box ready for the next.</summary>
     private FrameworkElement TodoComposer()
@@ -553,8 +618,6 @@ public partial class ControlCenterView
     {
         if (_pi == null) return;
         await _pi.SetTodoDoneAsync(id, done);
-        // Lets the switch finish sliding before the row leaves.
-        await Task.Delay(450);
         _piKey = "";
         RefreshPi();
     }

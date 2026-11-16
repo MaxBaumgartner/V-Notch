@@ -1,0 +1,307 @@
+using System.Collections;
+using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Reflection;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using VNotch.Controls;
+using VNotch.Services;
+using VNotch.Services.ClaudeCode;
+using Xunit;
+
+namespace VNotch.Tests;
+
+[Collection("Localization")]
+public sealed class ClaudeDetailMotionTests
+{
+    private const BindingFlags Fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+    [Fact]
+    public void LimitBarsFillAndRetargetAcrossRebuildsWithoutLosingPositionOrVelocity() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new Fixture(25);
+            var bar = fixture.Bar;
+            var grow = Field<ScaleTransform>(bar, "Grow");
+            var number = Field<WeatherTween>(bar, "Number");
+            Assert.True(grow.ScaleX < .25);
+            await Settled(fixture.Bar, ct);
+            Assert.Equal(.25, grow.ScaleX, 8);
+            fixture.SetUsage(85);
+            await WpfFrameWaiter.UntilAsync(() => grow.ScaleX > .35, "limit advancing", ct);
+            double position = grow.ScaleX, velocity = Motion.VelocityOf(grow, ScaleTransform.ScaleXProperty);
+            double shown = number.Value;
+            fixture.SetUsage(10);
+            Assert.Same(bar, fixture.Bar);
+            Assert.Equal(position, grow.ScaleX, 6);
+            Assert.Equal(shown, number.Value, 6);
+            // Rebuilding and laying out the card takes real time; momentum must survive that interval.
+            Assert.InRange(Motion.VelocityOf(grow, ScaleTransform.ScaleXProperty) / velocity, .5, 1.5);
+            await Settled(fixture.Bar, ct);
+            Assert.Equal(.1, grow.ScaleX, 8);
+            Assert.Equal(10, number.Value, 8);
+            fixture.View.Visibility = Visibility.Collapsed;
+            Assert.False(grow.HasAnimatedProperties);
+            Assert.False(number.HasAnimatedProperties);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void ReducedMotionSetsExactLimitsAndHidingStopsAnUnfinishedFill() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(true);
+        try
+        {
+            using var fixture = new Fixture(40);
+            var grow = Field<ScaleTransform>(fixture.Bar, "Grow");
+            var number = Field<WeatherTween>(fixture.Bar, "Number");
+            fixture.SetUsage(80);
+            Assert.Equal(.8, grow.ScaleX);
+            Assert.Equal(80, number.Value);
+            Assert.False(grow.HasAnimatedProperties);
+            Assert.False(number.HasAnimatedProperties);
+            AnimationConfig.SetReduceMotion(false);
+            fixture.SetUsage(20);
+            await WpfFrameWaiter.UntilAsync(() => grow.ScaleX < .7, "limit starts leaving", ct);
+            fixture.View.Visibility = Visibility.Collapsed;
+            Assert.False(grow.HasAnimatedProperties);
+            Assert.False(number.HasAnimatedProperties);
+            Assert.Equal(.2, grow.ScaleX);
+            Assert.Equal(20, number.Value);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void TaskShareCountsToItsLatestValueAndStopsWhenHidden() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new Fixture(30);
+            var session = new ClaudeSession { Id = "fake" };
+            var host = (FrameworkElement)Invoke(fixture.View, "TokenStats", session)!;
+            fixture.Section.Children.Add(host);
+            object row = Field<object>(fixture.View, "_tokenRow");
+            void Show(double? share) => Invoke(fixture.View, "ShowTokens", row,
+                new ClaudeSessionTokens(default, default, 1000, share), false);
+            Show(12);
+            Show(68);
+            var number = Field<WeatherTween>(Field<object>(row, "ShareNumber"), "_tween");
+            Assert.Equal(12, number.Value);
+            await WpfFrameWaiter.UntilAsync(() => number.Value > 20, "task share counts", ct);
+            double shown = number.Value;
+            Show(25);
+            Assert.Equal(shown, number.Value, 6);
+            await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(number, WeatherTween.ValueProperty), "task share settles", ct);
+            Assert.Equal(ControlCenterView.FormatShare(25), Field<TextBlock>(row, "Share").Text);
+            Show(null);
+            await WpfFrameWaiter.UntilAsync(() => Field<TextBlock>(row, "Share").Text == "–", "unknown share fades in", ct);
+            Assert.Equal("–", Field<TextBlock>(row, "Share").Text);
+            Assert.False(number.HasAnimatedProperties);
+            Show(75);
+            fixture.View.Visibility = Visibility.Collapsed;
+            Assert.False(number.HasAnimatedProperties);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void RepeatedUnknownSharesAndAnInterruptedPlaceholderKeepTheLatestReadout() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new Fixture(30);
+            var host = (FrameworkElement)Invoke(fixture.View, "TokenStats", new ClaudeSession { Id = "fake" })!;
+            fixture.Section.Children.Add(host);
+            object row = Field<object>(fixture.View, "_tokenRow");
+            var text = Field<TextBlock>(row, "Share");
+            var number = Field<WeatherTween>(Field<object>(row, "ShareNumber"), "_tween");
+            void Show(double? share) => Invoke(fixture.View, "ShowTokens", row,
+                new ClaudeSessionTokens(default, default, 1000, share), false);
+            async Task Settle() => await WpfFrameWaiter.UntilAsync(() =>
+                !Motion.IsRunning(number, WeatherTween.ValueProperty) && !Motion.IsRunning(text, UIElement.OpacityProperty),
+                "latest task share and label settle", ct);
+
+            Show(12);
+            await Settle();
+            Show(null);
+            await WpfFrameWaiter.UntilAsync(() => text.Opacity < .9, "unknown share starts its dip", ct);
+            double opacity = text.Opacity;
+            Show(65);
+            Assert.Equal(opacity, text.Opacity, 6);
+            await Settle();
+            Assert.Equal(ControlCenterView.FormatShare(65), text.Text);
+            Assert.Equal(1, text.Opacity);
+
+            Show(null);
+            await Settle();
+            Assert.Equal("–", text.Text);
+            Show(null);
+            Assert.Equal("–", text.Text);
+            Assert.False(number.HasAnimatedProperties);
+
+            Show(42);
+            await Settle();
+            Assert.Equal(ControlCenterView.FormatShare(42), text.Text);
+            fixture.View.Visibility = Visibility.Collapsed;
+            Assert.False(number.HasAnimatedProperties);
+            Assert.False(text.HasAnimatedProperties);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void ClaudeActivityRebuildKeepsTheLiveDipAndStopsDetachedLabels() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new Fixture(30);
+            var session = new ClaudeSession
+            {
+                Id = "detail-session", Title = "Motion tests", Status = ClaudeSessionStatus.Working,
+                Activity = "Reading motion", LastEventUtc = DateTime.UtcNow, TurnStartedUtc = DateTime.UtcNow
+            };
+            fixture.SetSession(session);
+            var texts = Field<Dictionary<(string Session, string Part), TextBlock>>(fixture.View, "_claudeTexts");
+            var activity = texts[(session.Id, "activity")];
+            session.Activity = "Writing motion";
+            fixture.SetSession(session);
+            await WpfFrameWaiter.UntilAsync(() => activity.Opacity < .8, "Claude activity starts its dip", ct);
+            double opacity = activity.Opacity;
+            var shift = WeatherMotion.Transform<TranslateTransform>(activity);
+            double y = shift.Y;
+            double velocity = Motion.VelocityOf(shift, TranslateTransform.YProperty);
+            session.Activity = "Checking motion";
+            fixture.SetSession(session);
+            Assert.Same(activity, texts[(session.Id, "activity")]);
+            Assert.Equal(opacity, activity.Opacity, 6);
+            Assert.Equal(y, shift.Y, 6);
+            Assert.Equal(Math.Sign(velocity), Math.Sign(Motion.VelocityOf(shift, TranslateTransform.YProperty)));
+            await WpfFrameWaiter.UntilAsync(() => activity.Text == "Checking motion" &&
+                !Motion.IsRunning(activity, UIElement.OpacityProperty), "latest Claude activity settles", ct);
+
+            session.Activity = "Finishing motion";
+            fixture.SetSession(session);
+            await WpfFrameWaiter.UntilAsync(() => activity.Opacity < .8, "detached activity starts leaving", ct);
+            fixture.RemoveSessions();
+            Assert.False(activity.HasAnimatedProperties);
+            Assert.False(shift.HasAnimatedProperties);
+            Assert.Empty(texts);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void ReusedLimitCaptionsFollowLanguageChanges() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        string language = Loc.CurrentLanguage;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new Fixture(30);
+            var bar = fixture.Bar;
+            var caption = Field<TextBlock>(bar, "Label");
+            Loc.SetLanguage(language == "en" ? "de" : "en");
+            string expected = Loc.Get("control.claude.limit5h");
+            await WpfFrameWaiter.UntilAsync(() => caption.Text == expected &&
+                !Motion.IsRunning(caption, UIElement.OpacityProperty), "cached limit caption changes language", ct);
+            Assert.Same(bar, fixture.Bar);
+            Assert.Equal(expected, caption.Text);
+            fixture.View.Visibility = Visibility.Collapsed;
+            Assert.False(caption.HasAnimatedProperties);
+        }
+        finally
+        {
+            Loc.SetLanguage(language);
+            AnimationConfig.SetReduceMotion(previous);
+        }
+    });
+
+    internal static async Task Settled(object bar, CancellationToken ct)
+    {
+        var grow = Field<ScaleTransform>(bar, "Grow");
+        var number = Field<WeatherTween>(bar, "Number");
+        double used = Field<double>(bar, "Used");
+        await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(grow, ScaleTransform.ScaleXProperty) &&
+            !Motion.IsRunning(number, WeatherTween.ValueProperty) && grow.ScaleX == used / 100 && number.Value == used,
+            "Claude limit settles", ct);
+    }
+
+    internal static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, Fields)!.GetValue(target)!;
+    internal static object? Invoke(object target, string name, params object?[] args) =>
+        target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, args);
+
+    internal sealed class Fixture : IDisposable
+    {
+        internal ControlCenterView View { get; } = new() { Page = ControlCenterPage.Claude };
+        internal Window Window { get; }
+        private readonly DetailMotionFrames _frames;
+        private readonly ClaudeSessionTracker _tracker = new();
+        private readonly ClaudeUsageClient _usage = new(new FakeHandler(), Path.Combine(Path.GetTempPath(), "vnotch-no-claude-profile"));
+        internal StackPanel Section => Field<StackPanel>(View, "_claudeSection");
+        internal object Bar => Field<IDictionary>(View, "_limitVisuals")["5h"]!;
+
+        internal Fixture(double percent)
+        {
+            Set("_claude", _tracker);
+            Set("_claudeInstalled", true);
+            Set("_usage", _usage);
+            Set("_codexReading", true);
+            Set("_tokenReading", true);
+            _usage.Latest = Limits(percent);
+            Window = new BackgroundWindow
+            {
+                Left = -20000, Top = -20000, Width = 620, Height = 410, WindowStyle = WindowStyle.None,
+                ShowActivated = false, ShowInTaskbar = false, Background = new SolidColorBrush(Color.FromRgb(23, 23, 25)), Content = View
+            };
+            Window.Show();
+            Window.UpdateLayout();
+            _frames = new DetailMotionFrames(View);
+        }
+
+        internal void SetUsage(double percent)
+        {
+            _usage.Latest = Limits(percent);
+            Invoke(View, "BuildClaudeSection");
+            Window.UpdateLayout();
+        }
+
+        internal void SetSession(ClaudeSession session)
+        {
+            Field<Dictionary<string, ClaudeSession>>(_tracker, "_sessions")[session.Id] = session;
+            Invoke(View, "BuildClaudeSection");
+            Window.UpdateLayout();
+        }
+
+        internal void RemoveSessions()
+        {
+            Field<Dictionary<string, ClaudeSession>>(_tracker, "_sessions").Clear();
+            Invoke(View, "BuildClaudeSection");
+            Window.UpdateLayout();
+        }
+
+        private static ClaudeLimits Limits(double percent) => new(new ClaudeLimitWindow(percent, null), new ClaudeLimitWindow(33, null));
+        private void Set(string name, object value) => View.GetType().GetField(name, Fields)!.SetValue(View, value);
+        public void Dispose() { _frames.Dispose(); View.Dispose(); Window.Close(); _usage.Dispose(); }
+    }
+
+    private sealed class FakeHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+    }
+}

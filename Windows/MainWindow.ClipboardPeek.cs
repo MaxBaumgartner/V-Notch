@@ -18,41 +18,14 @@ public partial class MainWindow
 
     private void PlayClipboardPeek()
     {
-
-        if (!_isExpanded && !_isAnimating)
-        {
-            NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-            NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-
-            var peakTime = TimeSpan.FromMilliseconds(100);
-            var endTime = TimeSpan.FromMilliseconds(500);
-
-            var bounceX = new DoubleAnimationUsingKeyFrames();
-            bounceX.KeyFrames.Add(new EasingDoubleKeyFrame(1.06,
-                KeyTime.FromTimeSpan(peakTime), _easeQuadOut));
-            bounceX.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-                KeyTime.FromTimeSpan(endTime), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(bounceX, VNotch.Services.AnimationConfig.TargetFps);
-
-            var bounceY = new DoubleAnimationUsingKeyFrames();
-            bounceY.KeyFrames.Add(new EasingDoubleKeyFrame(0.95,
-                KeyTime.FromTimeSpan(peakTime), _easeQuadOut));
-            bounceY.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-                KeyTime.FromTimeSpan(endTime), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(bounceY, VNotch.Services.AnimationConfig.TargetFps);
-
-            NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounceX);
-            NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounceY);
-            NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounceX);
-            NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounceY);
-        }
-
-        if (_isMusicCompactMode && !_isExpanded)
-        {
-            ShowClipboardCopiedState();
-        }
+        if (!_isExpanded && !_isAnimating && !AnimationConfig.ReduceMotion)
+            foreach (var scale in new[] { NotchScale, NotchShadowScale })
+            {
+                Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: Motion.VelocityOf(scale, ScaleTransform.ScaleXProperty) + 1);
+                Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: Motion.VelocityOf(scale, ScaleTransform.ScaleYProperty) - 0.8);
+            }
+        if (_isMusicCompactMode && !_isExpanded) ShowClipboardCopiedState();
+        else if (!_isExpanded && !_isAnimating) ShowCopiedPill();
     }
     private void ShowClipboardCopiedState()
     {
@@ -68,16 +41,13 @@ public partial class MainWindow
 
         CancelThumbnailSwitchAnimations();
 
-        CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
-        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        var thumbFadeOut = MakeAnim(1.0, 0.0, _dur150, _easeQuadOut);
-        thumbFadeOut.Completed += (s, e) =>
+        Motion.To(CompactThumbnailScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(CompactThumbnailScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
+        Motion.To(CompactThumbnailBorder, OpacityProperty, 0, Motion.Exit, done: () =>
         {
             if (_isClipboardPeekActive && !IsCompactSlotStale(token))
                 CompactThumbnailBorder.Visibility = Visibility.Collapsed;
-        };
-        CompactThumbnailBorder.BeginAnimation(OpacityProperty, thumbFadeOut);
+        });
 
         MusicViz.BeginAnimation(OpacityProperty, null);
         MusicViz.Opacity = 1;
@@ -90,18 +60,10 @@ public partial class MainWindow
 
         HideCompactSurface(ClipboardCheckIcon);
 
+        bool entering = ClipboardCopiedText.Visibility != Visibility.Visible;
         ClipboardCopiedText.Visibility = Visibility.Visible;
-        ClipboardCopiedText.BeginAnimation(OpacityProperty, null);
-        ClipboardCopiedTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-
-        ClipboardCopiedTranslate.X = -8;
-
-        var textFadeIn = MakeAnim(0.0, 1.0, _dur250, _easeQuadOut);
-        var textSlideIn = MakeAnim(-8.0, 0.0, _dur350, _easeExpOut6);
-        Timeline.SetDesiredFrameRate(textSlideIn, VNotch.Services.AnimationConfig.TargetFps);
-
-        ClipboardCopiedText.BeginAnimation(OpacityProperty, textFadeIn);
-        ClipboardCopiedTranslate.BeginAnimation(TranslateTransform.XProperty, textSlideIn);
+        Motion.To(ClipboardCopiedText, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null, delay: Motion.Stagger(1));
+        Motion.To(ClipboardCopiedTranslate, TranslateTransform.XProperty, 0, Motion.Tile, from: entering ? -8 : null, delay: Motion.Stagger(1));
 
         StopClipboardRevertTimer();
 
@@ -139,31 +101,17 @@ public partial class MainWindow
         MusicViz.SetCopiedFeedback(false);
         HideCompactSurface(ClipboardCheckIcon);
 
-        ClipboardCopiedText.BeginAnimation(OpacityProperty, null);
-        ClipboardCopiedTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-
-        var textFadeOut = MakeAnim(1.0, 0.0, _dur250, _easeQuadOut);
-        var textSlideOut = MakeAnim(0.0, -8.0, _dur350, _easeExpOut6);
-        Timeline.SetDesiredFrameRate(textSlideOut, VNotch.Services.AnimationConfig.TargetFps);
-
-        textFadeOut.Completed += (s, e) =>
+        Motion.To(ClipboardCopiedText, OpacityProperty, 0, Motion.Exit, done: () =>
         {
             if (!_isClipboardPeekActive)
                 ClipboardCopiedText.Visibility = Visibility.Collapsed;
-        };
+        });
+        Motion.To(ClipboardCopiedTranslate, TranslateTransform.XProperty, -8, Motion.Exit);
 
-        ClipboardCopiedText.BeginAnimation(OpacityProperty, textFadeOut);
-        ClipboardCopiedTranslate.BeginAnimation(TranslateTransform.XProperty, textSlideOut);
-
-        CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
-        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        CompactThumbnailScale.ScaleX = 1.0;
-        CompactThumbnailScale.ScaleY = 1.0;
         CompactThumbnailBorder.Visibility = Visibility.Visible;
-        CompactThumbnailBorder.Opacity = 0;
-        var thumbFadeIn = MakeAnim(0.0, 1.0, _dur200, _easeQuadOut);
-        CompactThumbnailBorder.BeginAnimation(OpacityProperty, thumbFadeIn);
+        Motion.To(CompactThumbnailBorder, OpacityProperty, 1, Motion.Tile);
+        Motion.To(CompactThumbnailScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale);
+        Motion.To(CompactThumbnailScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale);
 
         ShowMusicVisualizer(duration: _dur100);
     }
@@ -183,11 +131,9 @@ public partial class MainWindow
         ClipboardCheckIcon.Opacity = 0;
         ClipboardCheckIcon.Visibility = Visibility.Collapsed;
 
-        ClipboardCopiedText.BeginAnimation(OpacityProperty, null);
-        ClipboardCopiedTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-        ClipboardCopiedText.Opacity = 0;
+        Motion.Stop(ClipboardCopiedText, OpacityProperty, 0);
+        Motion.Stop(ClipboardCopiedTranslate, TranslateTransform.XProperty, 0);
         ClipboardCopiedText.Visibility = Visibility.Collapsed;
-
     }
 
     private void StopClipboardRevertTimer()

@@ -25,4 +25,14 @@ public sealed class StartupModeTests
         Assert.False(App.IsSetupOrUninstall(["--restart"], "V-Notch.exe"));
         Assert.False(App.IsSetupOrUninstall(["--setup-source", "  "], "V-Notch.exe"));
     }
+
+    [Fact]
+    public void OnlyADeadRenderThreadCountsAsRenderFailure()
+    {
+        Assert.True(App.IsRenderThreadFailure(
+            new System.Runtime.InteropServices.COMException("UCEERR_RENDERTHREADFAILURE", unchecked((int)0x88980406))));
+        Assert.False(App.IsRenderThreadFailure(
+            new System.Runtime.InteropServices.COMException("other", unchecked((int)0x80004005))));
+        Assert.False(App.IsRenderThreadFailure(new InvalidOperationException()));
+    }
 }

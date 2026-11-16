@@ -1,11 +1,10 @@
-using System.IO;
-using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using VNotch.Controllers;
 using VNotch.Models;
 using VNotch.Services;
+using VNotch.Services.Clipboard;
 using VNotch.ViewModels;
 
 namespace VNotch.Controls;
@@ -119,7 +118,6 @@ public sealed partial class ClipboardTray
     {
         var card = load.Card;
         var cancellation = load.Cancellation.Token;
-        byte[]? bytes = null;
         bool acquired = false;
         bool IsCurrent() => !_disposed && !cancellation.IsCancellationRequested && IsCardInViewport(element)
             && _realizedCardElements.Contains(element) && ReferenceEquals(element.DataContext, card)
@@ -144,40 +142,7 @@ public sealed partial class ClipboardTray
                 if (icon != null) card.FileIcon = icon;
             }
             if (card.Entry.Kind != ClipboardKind.Image || card.Image != null || !IsCurrent()) return;
-            bytes = await controller.Store.GetImageAsync(card.Entry.Id, cancellation);
-            if (bytes == null || !IsCurrent()) return;
-            var image = await Task.Run(() =>
-            {
-                cancellation.ThrowIfCancellationRequested();
-                using var stream = new MemoryStream(bytes);
-                var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
-                var frame = decoder.Frames[0];
-                bool landscape = frame.PixelWidth >= frame.PixelHeight;
-                stream.Position = 0;
-                var bitmap = new BitmapImage();
-                bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                // Bound both portrait and landscape previews. Width alone can
-                // decode a very tall screenshot into a huge bitmap.
-                if (landscape) bitmap.DecodePixelWidth = Math.Min(420, frame.PixelWidth);
-                else bitmap.DecodePixelHeight = Math.Min(420, frame.PixelHeight);
-                bitmap.StreamSource = stream;
-                bitmap.EndInit();
-                cancellation.ThrowIfCancellationRequested();
-                // Copy only the decoded pixels so a retained preview cannot
-                // keep its MemoryStream and the original full-size PNG alive.
-                int stride = (bitmap.PixelWidth * bitmap.Format.BitsPerPixel + 7) / 8;
-                var pixels = new byte[stride * bitmap.PixelHeight];
-                try
-                {
-                    bitmap.CopyPixels(pixels, stride, 0);
-                    var preview = BitmapSource.Create(bitmap.PixelWidth, bitmap.PixelHeight, bitmap.DpiX, bitmap.DpiY,
-                        bitmap.Format, bitmap.Palette, pixels, stride);
-                    preview.Freeze();
-                    cancellation.ThrowIfCancellationRequested();
-                    return preview;
-                }
-                finally { if (card.Entry.IsPersonal) CryptographicOperations.ZeroMemory(pixels); }
-            }, cancellation);
+            var image = await controller.Store.GetImagePreviewAsync(card.Entry.Id, cancellation);
             if (IsCurrent()) card.Image = image;
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { /* Intentionally ignored. */ }
@@ -187,7 +152,6 @@ public sealed partial class ClipboardTray
             if (IsCurrent()) _completedContentLoads[element] = card;
             if (_thumbnailLoads.TryGetValue(element, out var current) && ReferenceEquals(current, load))
                 _thumbnailLoads.Remove(element);
-            if (bytes != null && card.Entry.IsPersonal) CryptographicOperations.ZeroMemory(bytes);
             if (acquired)
             {
                 try { _thumbnailSlots.Release(); }
@@ -196,6 +160,9 @@ public sealed partial class ClipboardTray
             load.Cancellation.Dispose();
         }
     }
+
+    internal static BitmapSource CreateBitmap(byte[] bytes) =>
+        ClipboardImagePreview.Decode(bytes, isPersonal: false, CancellationToken.None);
 
     private void CancelThumbnailLoad(FrameworkElement element)
     {

@@ -12,6 +12,8 @@ internal static class UiPalette
     public static readonly SolidColorBrush SecondaryBrush = CreateBrush(SecondaryColor);
     public static readonly SolidColorBrush TertiaryBrush = CreateBrush(TertiaryColor);
     public static readonly SolidColorBrush IconBrush = TertiaryBrush;
+    // The control center's existing lilac mood stop; shared by notification actions.
+    public static readonly SolidColorBrush NotificationIndigoBrush = CreateBrush(Color.FromRgb(0xA1, 0x9B, 0xD2));
 
     private static SolidColorBrush CreateBrush(Color color)
     {

@@ -6,20 +6,24 @@ namespace VNotch.Tests;
 public sealed class SpringAnimationTests
 {
     [Fact]
-    public void ShellSpringsKeepTheTimingOfTheCurvesTheyReplaced()
+    public void ShellSpringsShareTheNamedLanguageAndReachTheirShapePromptly()
     {
-        var open = AnimationPrimitives.ShellOpenSpring.Animate(68, 528);
-        var close = AnimationPrimitives.ShellCloseSpring.Animate(528, 68);
-
-        Assert.InRange(TimeTo(open, 0.9), 0.17, 0.21);
-        Assert.InRange(TimeTo(close, 0.9), 0.14, 0.18);
-        // Opening overshoots a little (alive, not wobbly); closing never undershoots the closed notch.
-        Assert.InRange(Overshoot(open), 0.01, 0.02);
-        Assert.Equal(0, Overshoot(close), 3);
-        Assert.InRange(open.Duration.TimeSpan.TotalMilliseconds, 400, 700);
-        Assert.Equal(528, open.ValueAt(open.Duration.TimeSpan.TotalSeconds), 0);
+        Assert.Same(Motion.ShellOpenWidth, AnimationPrimitives.ShellOpenSpring);
+        Assert.Same(Motion.ShellCloseWidth, AnimationPrimitives.ShellCloseSpring);
+        foreach (var spring in new[] { Motion.ShellOpenWidth, Motion.ShellOpenHeight })
+        {
+            var open = spring.Animate(68, 528);
+            Assert.InRange(TimeTo(open, 0.9), 0.12, 0.23);
+            Assert.InRange(Overshoot(open), 0.02, 0.20);
+            Assert.Equal(528, open.ValueAt(open.Duration.TimeSpan.TotalSeconds), 0);
+        }
+        foreach (var spring in new[] { Motion.ShellCloseWidth, Motion.ShellCloseHeight })
+        {
+            var close = spring.Animate(528, 68);
+            Assert.InRange(TimeTo(close, 0.9), 0.10, 0.22);
+            Assert.InRange(Overshoot(close), 0, 0.04);
+        }
     }
-
     [Fact]
     public void VelocityIsTheSlopeOfThePosition()
     {

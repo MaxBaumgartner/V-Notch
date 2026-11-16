@@ -289,8 +289,7 @@ public sealed class ClipboardCategoryReorderTests
             SaveDragSnapshot(tray, "clipboard-tags-01-lift.png");
             await Task.Delay(80);
             SaveDragSnapshot(tray, "clipboard-tags-02-shift.png");
-            await Task.Delay(150);
-            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            await TestWait.UntilStableAsync(() => Math.Abs(neighbor.RenderTransform.Value.OffsetX - source.ActualWidth - 6) < .05, "neighbor slide settles");
             Assert.InRange(neighbor.RenderTransform.Value.OffsetX, source.ActualWidth + 5, source.ActualWidth + 7);
             Invoke(tray, "UpdateCategoryReorder", point);
             Assert.Equal("Text", Field<string?>(tray, "_categoryReorderBeforeId"));
@@ -405,7 +404,7 @@ public sealed class ClipboardCategoryReorderTests
             Assert.Equal(slot.Y, (double)ghost.GetAnimationBaseValue(Canvas.TopProperty), 2);
             release.Set();
             await Task.WhenAll(blocker, pending);
-            await Task.Delay(220);
+            await WpfFrameWaiter.UntilAsync(() => ButtonFor(tray, label.Id).Opacity == 1, "landing spring settles");
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             Assert.Equal(1, ButtonFor(tray, label.Id).Opacity);
             Assert.Equal(Visibility.Collapsed, ((FrameworkElement)tray.FindName("CategoryReorderOverlay")).Visibility);

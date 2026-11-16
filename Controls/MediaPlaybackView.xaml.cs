@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -192,14 +192,11 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
     {
         if (sender is not Border button || button.RenderTransform is not ScaleTransform transform) return;
         if (hovered) button.CacheMode ??= new BitmapCache(1.5);
-        var animation = new DoubleAnimation(hovered ? 1.18 : 1.0, hovered ? _dur150 : _dur200)
-        {
-            EasingFunction = _easeQuadOut
-        };
-        Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);
-        if (!hovered) animation.Completed += (_, _) => { if (!button.IsMouseOver) button.CacheMode = null; };
-        transform.BeginAnimation(ScaleTransform.ScaleXProperty, animation);
-        transform.BeginAnimation(ScaleTransform.ScaleYProperty, animation);
+        // Leaving mid-growth turns around with the speed it has instead of starting over.
+        var spring = hovered ? Motion.Press : Motion.PopBack;
+        Motion.To(transform, ScaleTransform.ScaleXProperty, hovered ? 1.18 : 1.0, spring);
+        Motion.To(transform, ScaleTransform.ScaleYProperty, hovered ? 1.18 : 1.0, spring,
+            done: hovered ? null : () => { if (!button.IsMouseOver) button.CacheMode = null; });
     }
 
     private bool? _presentedPlaying;
@@ -372,19 +369,16 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
 
         ProgressBarContainer.BeginAnimation(MarginProperty, null);
         double barHeight = isHovered ? 10 : 4;
-        var heightAnim = new DoubleAnimation { To = barHeight, Duration = duration, EasingFunction = easing };
-        var scaleXAnim = new DoubleAnimation { To = scaleX, Duration = duration, EasingFunction = easing };
-        Timeline.SetDesiredFrameRate(heightAnim, fps);
-        Timeline.SetDesiredFrameRate(scaleXAnim, fps);
-        ProgressBarBg.BeginAnimation(HeightProperty, heightAnim);
-        ProgressBar.BeginAnimation(HeightProperty, heightAnim);
-        ProgressBarMainScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleXAnim);
+        // The bar swells with a little bounce and settles back calmer; a pointer that leaves and returns
+        // mid-way keeps the bar's speed.
+        var spring = isHovered ? Motion.Press : Motion.PopBack;
+        Motion.To(ProgressBarBg, HeightProperty, barHeight, spring, fps: fps);
+        Motion.To(ProgressBar, HeightProperty, barHeight, spring, fps: fps);
+        Motion.To(ProgressBarMainScale, ScaleTransform.ScaleXProperty, scaleX, spring, fps: fps);
 
         double barRadius = barHeight / 2.0;
-        var clipRadiusAnim = new DoubleAnimation { To = barRadius, Duration = duration, EasingFunction = easing };
-        Timeline.SetDesiredFrameRate(clipRadiusAnim, fps);
-        ProgressBarClip.BeginAnimation(RectangleGeometry.RadiusXProperty, clipRadiusAnim);
-        ProgressBarClip.BeginAnimation(RectangleGeometry.RadiusYProperty, clipRadiusAnim);
+        Motion.To(ProgressBarClip, RectangleGeometry.RadiusXProperty, barRadius, spring, fps: fps);
+        Motion.To(ProgressBarClip, RectangleGeometry.RadiusYProperty, barRadius, spring, fps: fps);
 
         if (_currentTimeHoverTransform == null)
         {
@@ -407,17 +401,12 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
             RemainingTimeText.RenderTransform = _remainingTimeHoverTransform;
         }
 
-        var timeScaleAnim = new DoubleAnimation { To = timeScale, Duration = duration, EasingFunction = easing };
-        var timeTranslateAnim = new DoubleAnimation { To = timeTranslateY, Duration = duration, EasingFunction = easing };
-        Timeline.SetDesiredFrameRate(timeScaleAnim, fps);
-        Timeline.SetDesiredFrameRate(timeTranslateAnim, fps);
-
-        _currentTimeHoverScale!.BeginAnimation(ScaleTransform.ScaleXProperty, timeScaleAnim);
-        _currentTimeHoverScale.BeginAnimation(ScaleTransform.ScaleYProperty, timeScaleAnim);
-        _currentTimeHoverTranslate!.BeginAnimation(TranslateTransform.YProperty, timeTranslateAnim);
-        _remainingTimeHoverScale!.BeginAnimation(ScaleTransform.ScaleXProperty, timeScaleAnim);
-        _remainingTimeHoverScale.BeginAnimation(ScaleTransform.ScaleYProperty, timeScaleAnim);
-        _remainingTimeHoverTranslate!.BeginAnimation(TranslateTransform.YProperty, timeTranslateAnim);
+        Motion.To(_currentTimeHoverScale!, ScaleTransform.ScaleXProperty, timeScale, spring, fps: fps);
+        Motion.To(_currentTimeHoverScale!, ScaleTransform.ScaleYProperty, timeScale, spring, fps: fps);
+        Motion.To(_currentTimeHoverTranslate!, TranslateTransform.YProperty, timeTranslateY, spring, fps: fps);
+        Motion.To(_remainingTimeHoverScale!, ScaleTransform.ScaleXProperty, timeScale, spring, fps: fps);
+        Motion.To(_remainingTimeHoverScale!, ScaleTransform.ScaleYProperty, timeScale, spring, fps: fps);
+        Motion.To(_remainingTimeHoverTranslate!, TranslateTransform.YProperty, timeTranslateY, spring, fps: fps);
 
         var blurAnim = new DoubleAnimation { To = blurRadius, Duration = duration, EasingFunction = easing };
         var dimAnim = new DoubleAnimation { To = surroundOpacity, Duration = duration, EasingFunction = easing };
@@ -531,13 +520,13 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
     }
 
     private bool _progressRenderingActive;
-    private TimeSpan _lastProgressRenderTime = TimeSpan.MinValue;
+    private AnimationFrameClock _progressFrameClock;
 
     private void SetProgressRenderingEnabled(bool enabled)
     {
         if (_progressRenderingActive == enabled) return;
         _progressRenderingActive = enabled;
-        _lastProgressRenderTime = TimeSpan.MinValue;
+        _progressFrameClock.Reset(System.Diagnostics.Stopwatch.GetTimestamp());
         if (enabled) CompositionTarget.Rendering += OnProgressRendering;
         else CompositionTarget.Rendering -= OnProgressRendering;
     }
@@ -546,8 +535,7 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
     {
         if (e is RenderingEventArgs frame)
         {
-            if (_lastProgressRenderTime == frame.RenderingTime) return;
-            _lastProgressRenderTime = frame.RenderingTime;
+            if (!_progressFrameClock.TryAdvance(frame.RenderingTime, AnimationConfig.TargetFps, out _)) return;
         }
         if (IsVisible && _currentMediaInfo != null)
         {

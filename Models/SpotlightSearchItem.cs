@@ -12,7 +12,8 @@ public enum SpotlightResultKind
     Folder,
     Calculation,
     Settings,
-    SystemAction
+    SystemAction,
+    AddTodo
 }
 
 public sealed record SpotlightSearchItem(
@@ -110,6 +111,7 @@ public sealed record SpotlightSearchItem(
         {
             SpotlightResultKind.Application => "spotlight.section.apps",
             SpotlightResultKind.Calculation => "spotlight.section.calculator",
+            SpotlightResultKind.AddTodo => "pi.todos",
             SpotlightResultKind.Settings => "spotlight.system.settings",
             SpotlightResultKind.SystemAction => "spotlight.system.actions",
             _ => "spotlight.section.files"
@@ -127,6 +129,7 @@ public sealed record SpotlightSearchItem(
         SpotlightResultKind.Application => "\uE71D",
         SpotlightResultKind.Folder => "\uE8B7",
         SpotlightResultKind.Calculation => "\uE8EF",
+        SpotlightResultKind.AddTodo => "\uE739",
         _ => "\uE8A5"
     });
 }

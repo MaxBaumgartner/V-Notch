@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Threading;
-using System.Windows.Automation;
 
 using static VNotch.Services.Win32Interop;
 
@@ -9,6 +8,14 @@ namespace VNotch.Services;
 public interface IWindowTitleScanner
 {
     List<string> GetAllWindowTitles(bool isThrottled);
+    bool HasYouTubeWindowMatch(string track, bool isThrottled) =>
+        PlatformDetector.HasReliableWindowMatch(GetAllWindowTitles(isThrottled), track, "YouTube");
+    MediaWindowTitle? FindMediaWindowTitle(bool recovery, bool isThrottled)
+    {
+        foreach (string title in GetAllWindowTitles(isThrottled))
+            if (WindowTitleScanner.ParseMediaWindowTitle(title, recovery) is { } match) return match;
+        return null;
+    }
     string? TryGetBrowserUrl();
     string? TryGetMediaUrlFromAnyBrowser();
 
@@ -50,11 +57,42 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
     private static partial int vn_wtscanner_is_media_url(
         ReadOnlySpan<ushort> url, int urlLen, out byte outIsMedia);
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private unsafe struct VnVisibleWindowEntry
+    {
+        public long Hwnd;
+        public uint ProcessId;
+        public int TitleLen;
+        public byte MatchesPlatformTitle;
+        public fixed char Title[256];
+    }
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_wtscanner_collect_visible_windows(
+        uint excludePid,
+        byte onlyPlatformTitles,
+        Span<VnVisibleWindowEntry> outEntries,
+        int entriesCap,
+        out int outCount);
+
     private readonly object _cacheLock = new();
     // All title enumerations are serialized by _cacheLock.
     private char[] _titleBuffer = new char[256];
     private List<string> _cachedWindowTitles = new();
     private DateTime _lastWindowEnumTime = DateTime.MinValue;
+    private bool _titleNotificationsActive;
+
+    internal Action<Func<IntPtr, bool>>? WindowEnumerator { get; set; }
+
+    internal void SetTitleNotificationsActive(bool active)
+    {
+        lock (_cacheLock) { _titleNotificationsActive = active; _lastWindowEnumTime = _lastMediaTitleScan = _lastRecoveryTitleScan = _lastYouTubeMatchScan = DateTime.MinValue; }
+    }
+
+    internal void InvalidateWindowTitles()
+    {
+        lock (_cacheLock) _lastWindowEnumTime = _lastMediaTitleScan = _lastRecoveryTitleScan = _lastYouTubeMatchScan = DateTime.MinValue;
+    }
 
     public List<string> GetAllWindowTitles(bool isThrottled)
     {
@@ -62,7 +100,7 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
         {
             // Throttled players need fallback detection, but full desktop scans
             // should back off instead of increasing their polling frequency.
-            int cacheDurationMs = isThrottled ? 2000 : 700;
+            int cacheDurationMs = _titleNotificationsActive ? 30_000 : isThrottled ? 2000 : 700;
             if ((DateTime.UtcNow - _lastWindowEnumTime).TotalMilliseconds < cacheDurationMs)
             {
                 return new List<string>(_cachedWindowTitles);
@@ -70,29 +108,104 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
 
             var titles = new List<string>();
 
-            EnumWindows((hWnd, _) =>
+            if (WindowEnumerator != null)
             {
-                if (!IsWindowVisible(hWnd))
+                WindowEnumerator(hWnd =>
                 {
+                    if (!IsWindowVisible(hWnd)) return true;
+                    GetWindowThreadProcessId(hWnd, out uint processId);
+                    if (processId == 0 || processId == (uint)Environment.ProcessId) return true;
+                    AddMatchingWindowTitle(hWnd, titles);
                     return true;
-                }
+                });
+            }
+            else if (!TryCollectPlatformWindowTitlesNative((uint)Environment.ProcessId, titles))
+            {
+                EnumWindows((hWnd, _) =>
+                {
+                    if (!IsWindowVisible(hWnd))
+                    {
+                        return true;
+                    }
 
-                // USER32 reads foreign-process captions without WM_GETTEXT.
-                // Our own windows can synchronously message a UI thread while
-                // this background scanner holds the cache lock.
-                GetWindowThreadProcessId(hWnd, out uint processId);
-                if (processId == 0 || processId == (uint)Environment.ProcessId)
+                    // USER32 reads foreign-process captions without WM_GETTEXT.
+                    // Our own windows can synchronously message a UI thread while
+                    // this background scanner holds the cache lock.
+                    GetWindowThreadProcessId(hWnd, out uint processId);
+                    if (processId == 0 || processId == (uint)Environment.ProcessId)
+                        return true;
+
+                    AddMatchingWindowTitle(hWnd, titles);
+
                     return true;
-
-                AddMatchingWindowTitle(hWnd, titles);
-
-                return true;
-            }, IntPtr.Zero);
+                }, IntPtr.Zero);
+            }
 
             _cachedWindowTitles = titles;
             _lastWindowEnumTime = DateTime.UtcNow;
             return new List<string>(titles);
         }
+    }
+
+    private static unsafe bool TryCollectPlatformWindowTitlesNative(uint excludePid, List<string> titles)
+    {
+        Span<VnVisibleWindowEntry> stackEntries = stackalloc VnVisibleWindowEntry[32];
+        int status = vn_wtscanner_collect_visible_windows(excludePid, 1, stackEntries, stackEntries.Length, out int count);
+        if (status == 0)
+        {
+            AppendWindowTitles(stackEntries[..Math.Min(count, stackEntries.Length)], titles);
+            return true;
+        }
+        if (status == -2 && count > stackEntries.Length)
+        {
+            var heapEntries = new VnVisibleWindowEntry[count];
+            status = vn_wtscanner_collect_visible_windows(excludePid, 1, heapEntries, heapEntries.Length, out count);
+            if (status == 0)
+            {
+                AppendWindowTitles(heapEntries.AsSpan(0, Math.Min(count, heapEntries.Length)), titles);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static unsafe void AppendWindowTitles(ReadOnlySpan<VnVisibleWindowEntry> entries, List<string> titles)
+    {
+        for (int i = 0; i < entries.Length; i++)
+        {
+            int len = Math.Clamp(entries[i].TitleLen, 0, 255);
+            if (len <= 0) continue;
+            fixed (char* ptr = entries[i].Title)
+            {
+                titles.Add(new string(ptr, 0, len));
+            }
+        }
+    }
+
+    private static bool TryCollectVisibleWindowsNative(uint excludePid, out VnVisibleWindowEntry[] entries, out int count)
+    {
+        entries = Array.Empty<VnVisibleWindowEntry>();
+        count = 0;
+        var buffer = new VnVisibleWindowEntry[64];
+        int status = vn_wtscanner_collect_visible_windows(excludePid, 0, buffer, buffer.Length, out int actual);
+        if (status == 0)
+        {
+            entries = buffer;
+            count = Math.Min(actual, buffer.Length);
+            return true;
+        }
+        if (status == -2 && actual > buffer.Length)
+        {
+            buffer = new VnVisibleWindowEntry[actual];
+            status = vn_wtscanner_collect_visible_windows(excludePid, 0, buffer, buffer.Length, out actual);
+            if (status == 0)
+            {
+                entries = buffer;
+                count = Math.Min(actual, buffer.Length);
+                return true;
+            }
+        }
+        return false;
     }
 
     private unsafe void AddMatchingWindowTitle(IntPtr hWnd, List<string> titles)
@@ -190,7 +303,10 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
 
     internal Func<string?> BrowserUrlExtractor { get; set; } = ExtractBrowserUrlCore;
     internal Func<string?> AnyBrowserMediaUrlExtractor { get; set; } = ExtractMediaUrlFromAllBrowserWindows;
+    internal delegate bool PipWindowFinderDelegate(out IntPtr pipHwnd, out string pipTitle, string? processName);
+
     internal Func<bool> SpotifyWebPlayerDetector { get; set; } = DetectSpotifyWebPlayer;
+    internal PipWindowFinderDelegate PipWindowFinder { get; set; } = static (out IntPtr hwnd, out string title, string? proc) => PipDetector.TryFindPipWindow(out hwnd, out title, proc);
 
     internal bool IsWorkerStarted => _workerThread != null;
     internal bool IsWorkerAlive => _workerThread?.IsAlive == true;
@@ -288,6 +404,12 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
     private string? _cachedPipWindowProcessName;
     private DateTime _lastPipCheckTime = DateTime.MinValue;
 
+    private string? _cachedProcessPipQueryName;
+    private bool _cachedProcessPipActive;
+    private IntPtr _cachedProcessPipHwnd;
+    private string _cachedProcessPipTitle = string.Empty;
+    private DateTime _lastProcessPipCheckTime = DateTime.MinValue;
+
     public void InvalidateUrlCaches()
     {
         lock (_cacheLock)
@@ -304,6 +426,11 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
             _cachedPipTitle = string.Empty;
             _cachedPipWindowProcessName = null;
             _lastPipCheckTime = DateTime.MinValue;
+            _cachedProcessPipQueryName = null;
+            _cachedProcessPipActive = false;
+            _cachedProcessPipHwnd = IntPtr.Zero;
+            _cachedProcessPipTitle = string.Empty;
+            _lastProcessPipCheckTime = DateTime.MinValue;
         }
     }
 
@@ -328,7 +455,8 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
         int ttlMs = _cachedPipActive ? 400 : 700;
         if ((DateTime.UtcNow - _lastPipCheckTime).TotalMilliseconds >= ttlMs)
         {
-            _cachedPipActive = PipDetector.TryFindPipWindow(out _cachedPipHwnd, out _cachedPipTitle, null);
+            _cachedPipActive = PipWindowFinder(out _cachedPipHwnd, out _cachedPipTitle, null);
+            _cachedPipTitle ??= string.Empty;
             _cachedPipWindowProcessName = null;
             if (_cachedPipActive && _cachedPipHwnd != IntPtr.Zero)
             {
@@ -360,7 +488,19 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
             return true;
         }
 
-        return PipDetector.TryFindPipWindow(out pipHwnd, out pipTitle, processName);
+        int processTtlMs = _cachedProcessPipActive ? 400 : 700;
+        if (!string.Equals(_cachedProcessPipQueryName, processName, StringComparison.OrdinalIgnoreCase) ||
+            (DateTime.UtcNow - _lastProcessPipCheckTime).TotalMilliseconds >= processTtlMs)
+        {
+            _cachedProcessPipQueryName = processName;
+            _cachedProcessPipActive = PipWindowFinder(out _cachedProcessPipHwnd, out _cachedProcessPipTitle, processName);
+            _cachedProcessPipTitle ??= string.Empty;
+            _lastProcessPipCheckTime = DateTime.UtcNow;
+        }
+
+        pipHwnd = _cachedProcessPipHwnd;
+        pipTitle = _cachedProcessPipTitle;
+        return _cachedProcessPipActive;
     }
 
     public bool IsSpotifyWebPlayerOpen()
@@ -551,6 +691,22 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
         if (!string.IsNullOrEmpty(foregroundUrl) && IsMediaUrl(foregroundUrl))
             return foregroundUrl;
 
+        if (TryCollectVisibleWindowsNative((uint)Environment.ProcessId, out var entries, out int count))
+        {
+            for (int i = 0; i < count; i++)
+            {
+                uint pid = entries[i].ProcessId;
+                if (pid == 0) continue;
+                string? processName = TryGetProcessName((int)pid);
+                if (processName == null || !IsBrowserProcess(processName)) continue;
+
+                var url = ExtractUrlFromWindowHandle((IntPtr)entries[i].Hwnd, processName);
+                if (!string.IsNullOrEmpty(url) && IsMediaUrl(url))
+                    return url;
+            }
+            return null;
+        }
+
         string? foundUrl = null;
 
         EnumWindows((hWnd, _) =>
@@ -593,230 +749,130 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
         return vn_wtscanner_is_browser_process(MemoryMarshal.Cast<char, ushort>(sp), sp.Length, out byte isBrowser) == 0 && isBrowser != 0;
     }
 
-    private static string? ExtractUrlFromWindowHandle(IntPtr hwnd, string processName)
+    private const int DefaultUiaTimeoutMs = 450;
+    private static readonly object UiaStaLock = new();
+    private static readonly SemaphoreSlim UiaSlot = new(1, 1);
+    private static readonly AutoResetEvent UiaWorkAvailable = new(false);
+    private static Thread? _uiaStaThread;
+    private static Action? _uiaCurrentWork;
+    private static int _uiaInFlight;
+    private static int _activeUiaStaThreads;
+
+    internal static int ActiveUiaStaThreadCount => Volatile.Read(ref _activeUiaStaThreads);
+
+    internal static T? RunWithTimeout<T>(Func<T> func, int timeoutMs = DefaultUiaTimeoutMs)
     {
+        ArgumentNullException.ThrowIfNull(func);
+        if (timeoutMs < 0)
+            return default;
+
+        if (!UiaSlot.Wait(0) && !UiaSlot.Wait(Math.Min(timeoutMs, 15)))
+            return default;
+
+        if (Interlocked.CompareExchange(ref _uiaInFlight, 1, 0) != 0)
+        {
+            UiaSlot.Release();
+            return default;
+        }
+
+        object callSync = new();
+        T? result = default;
+        bool completed = false;
+
         try
         {
-            var element = AutomationElement.FromHandle(hwnd);
-            if (element == null) return null;
-
-            string? fallbackAddressBarUrl = null;
-            AutomationElement? addressBar = processName.Contains("firefox", StringComparison.OrdinalIgnoreCase)
-                ? FindBrowserChromeElements(element, ControlType.Edit).FirstOrDefault(edit => edit.Current.AutomationId == "urlbar-input")
-                : FindChromiumAddressBar(element);
-
-            if (addressBar != null &&
-                addressBar.TryGetCurrentPattern(ValuePattern.Pattern, out object? urlPattern))
+            lock (UiaStaLock)
             {
-                var vp = (ValuePattern)urlPattern;
-                string url = vp.Current.Value ?? "";
-
-                if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && url.Contains('.'))
-                    url = HttpsPrefix + url;
-
-                if (!string.IsNullOrWhiteSpace(url))
+                _uiaCurrentWork = () =>
                 {
-                    if (IsMediaUrl(url))
-                        return url;
-
-                    fallbackAddressBarUrl = url;
-                }
-            }
-
-            var tabUrl = TryFindMediaUrlInTabs(element);
-            if (!string.IsNullOrEmpty(tabUrl))
-                return tabUrl;
-
-            if (!string.IsNullOrWhiteSpace(fallbackAddressBarUrl))
-                return fallbackAddressBarUrl;
-        }
-        catch (Exception)
-        {
-            // UI Automation can throw COM/ElementNotAvailable exceptions during window enumeration
-        }
-
-        return null;
-    }
-
-    internal static AutomationElement? FindChromiumAddressBar(AutomationElement element)
-    {
-        foreach (var toolbar in FindBrowserChromeElements(element, ControlType.ToolBar))
-            foreach (var edit in FindBrowserChromeElements(toolbar, ControlType.Edit))
-            {
-                try
-                {
-                    if (edit.TryGetCurrentPattern(ValuePattern.Pattern, out object? pattern))
+                    T? value = default;
+                    try
                     {
-                        var valuePattern = (ValuePattern)pattern;
-                        string val = valuePattern.Current.Value ?? "";
-
-                        if (IsAddressBarValue(val))
+                        value = func();
+                    }
+                    catch (Exception ex)
+                    {
+                        RuntimeLog.Debug("UIA-SCANNER", () => $"UIA STA work failed: {ex.Message}");
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _uiaInFlight, 0);
+                        UiaSlot.Release();
+                        lock (callSync)
                         {
-                            return edit;
+                            result = value;
+                            completed = true;
+                            Monitor.Pulse(callSync);
                         }
                     }
-                }
-                catch (Exception)
-                {
-                    // ValuePattern may throw if element state changed during UI automation traversal
-                }
+                };
+
+                EnsureUiaStaThreadLocked();
+                UiaWorkAvailable.Set();
             }
 
-        return null;
-    }
-
-    private static bool IsAddressBarValue(string val)
-    {
-        ReadOnlySpan<char> sp = val != null ? val.AsSpan() : ReadOnlySpan<char>.Empty;
-        return vn_wtscanner_is_address_bar_value(MemoryMarshal.Cast<char, ushort>(sp), sp.Length, out byte isAddr) == 0 && isAddr != 0;
-    }
-
-    private static string? TryFindMediaUrlInTabs(AutomationElement root)
-    {
-        try
-        {
-            var tabs = FindCachedTabs(root);
-            if (tabs == null || tabs.Count == 0) return null;
-
-            foreach (AutomationElement tab in tabs)
+            lock (callSync)
             {
-                string? candidate = TryReadTabUrl(tab);
-                if (!string.IsNullOrEmpty(candidate) && IsMediaUrl(candidate))
+                if (!completed)
                 {
-                    return candidate;
+                    Monitor.Wait(callSync, timeoutMs);
                 }
+
+                return completed ? result : default;
             }
         }
-        catch (Exception)
+        catch
         {
-            // UI Automation can throw when reading tabs from tearing-down browsers
+            Interlocked.Exchange(ref _uiaInFlight, 0);
+            UiaSlot.Release();
+            throw;
         }
-        return null;
     }
 
-    // Walk only browser chrome. Never descend into the page's accessibility tree,
-    // and bound work even if a provider exposes unusual or deeply nested controls.
-    internal static IReadOnlyList<AutomationElement> FindBrowserChromeElements(AutomationElement root, ControlType targetType)
+    private static void EnsureUiaStaThreadLocked()
     {
-        const int maxElements = 256;
-        const int maxDepth = 8;
-        var matches = new List<AutomationElement>();
-        var pending = new Queue<(AutomationElement Element, int Depth)>();
-        pending.Enqueue((root, 0));
-        int visited = 0;
-        var cache = new CacheRequest { TreeScope = TreeScope.Element, TreeFilter = Automation.RawViewCondition };
-        cache.Add(AutomationElement.ControlTypeProperty);
-        while (pending.Count > 0 && visited < maxElements)
-        {
-            var (parent, depth) = pending.Dequeue();
-            if (depth >= maxDepth) continue;
-            try
-            {
-                AutomationElementCollection children;
-                using (cache.Activate())
-                    children = parent.FindAll(TreeScope.Children, Condition.TrueCondition);
-                foreach (AutomationElement child in children)
-                {
-                    if (++visited > maxElements) break;
-                    var type = child.Cached.ControlType;
-                    if (type == ControlType.Document) continue;
-                    if (type == targetType) matches.Add(child);
-                    else pending.Enqueue((child, depth + 1));
-                }
-            }
-            catch (Exception)
-            {
-                // A disappearing provider must not discard other browser controls.
-            }
-        }
-        return matches;
-    }
+        if (_uiaStaThread is { IsAlive: true })
+            return;
 
-    internal static IReadOnlyList<AutomationElement> FindCachedTabs(AutomationElement root)
-    {
-        var cache = new CacheRequest
+        Interlocked.Increment(ref _activeUiaStaThreads);
+        var thread = new Thread(UiaStaWorkerLoop)
         {
-            AutomationElementMode = AutomationElementMode.None,
-            TreeScope = TreeScope.Element | TreeScope.Children,
-            // Match FindAll(Children, IsControlElement=true): direct raw children,
-            // filtered below, rather than walking through non-control ancestors.
-            TreeFilter = Automation.RawViewCondition
+            IsBackground = true,
+            Name = "VNotch-UIA-STA"
         };
-        cache.Add(AutomationElement.HelpTextProperty);
-        cache.Add(AutomationElement.NameProperty);
-        cache.Add(AutomationElement.IsControlElementProperty);
-        cache.Add(ValuePattern.Pattern);
-        cache.Add(ValuePattern.ValueProperty);
-        var tabs = new List<AutomationElement>();
-        foreach (var tab in FindBrowserChromeElements(root, ControlType.TabItem))
-        {
-            try { tabs.Add(tab.GetUpdatedCache(cache)); }
-            catch (Exception) { /* Tab closed while capturing its snapshot. */ }
-        }
-        return tabs;
+        thread.SetApartmentState(ApartmentState.STA);
+        _uiaStaThread = thread;
+        thread.Start();
     }
 
-    internal static string? TryReadTabUrl(AutomationElement tab)
+    private static void UiaStaWorkerLoop()
     {
         try
         {
-            string help = tab.Cached.HelpText ?? string.Empty;
-            if (LooksLikeUrl(help)) return NormalizeUrl(help);
-
-            string name = tab.Cached.Name ?? string.Empty;
-            if (LooksLikeUrl(name)) return NormalizeUrl(name);
-
-            var subtree = tab.CachedChildren;
-
-            foreach (AutomationElement child in subtree)
+            while (true)
             {
-                if (!child.Cached.IsControlElement) continue;
-                string childHelp = child.Cached.HelpText ?? string.Empty;
-                if (LooksLikeUrl(childHelp)) return NormalizeUrl(childHelp);
-
-                string childName = child.Cached.Name ?? string.Empty;
-                if (LooksLikeUrl(childName)) return NormalizeUrl(childName);
-
-                if (child.TryGetCachedPattern(ValuePattern.Pattern, out object? p))
+                UiaWorkAvailable.WaitOne();
+                Action? work;
+                lock (UiaStaLock)
                 {
-                    string v = ((ValuePattern)p).Cached.Value ?? string.Empty;
-                    if (LooksLikeUrl(v)) return NormalizeUrl(v);
+                    work = _uiaCurrentWork;
+                    _uiaCurrentWork = null;
                 }
+
+                work?.Invoke();
             }
         }
-        catch (Exception)
+        finally
         {
-            // UI Automation element properties may throw if child is destroyed
+            Interlocked.Decrement(ref _activeUiaStaThreads);
         }
-        return null;
     }
 
-    private static bool LooksLikeUrl(string s)
-    {
-        ReadOnlySpan<char> sp = s != null ? s.AsSpan() : ReadOnlySpan<char>.Empty;
-        return vn_wtscanner_looks_like_url(MemoryMarshal.Cast<char, ushort>(sp), sp.Length, out byte looksLike) == 0 && looksLike != 0;
-    }
+    private static string? ExtractUrlFromWindowHandle(IntPtr hwnd, string processName) =>
+        RunWithTimeout(() => ExtractUrlFromWindowHandleCore(hwnd, processName));
 
-    private static string NormalizeUrl(string s)
-    {
-        ReadOnlySpan<ushort> sp = MemoryMarshal.Cast<char, ushort>(s != null ? s.AsSpan() : ReadOnlySpan<char>.Empty);
-        Span<char> buf = stackalloc char[512];
-        int rc = vn_wtscanner_normalize_url(sp, sp.Length, MemoryMarshal.Cast<char, ushort>(buf), buf.Length, out int outLen);
-        if (rc == 0) return outLen > 0 ? new string(buf[..outLen]) : string.Empty;
-        if (rc == -2 && outLen > 0)
-        {
-            char[] arr = new char[outLen];
-            if (vn_wtscanner_normalize_url(sp, sp.Length, MemoryMarshal.Cast<char, ushort>(arr.AsSpan()), arr.Length, out int actual) == 0)
-                return new string(arr, 0, actual);
-        }
-        return s ?? string.Empty;
-    }
-
-    private static bool IsMediaUrl(string url)
-    {
-        ReadOnlySpan<char> sp = url != null ? url.AsSpan() : ReadOnlySpan<char>.Empty;
-        return vn_wtscanner_is_media_url(MemoryMarshal.Cast<char, ushort>(sp), sp.Length, out byte isMedia) == 0 && isMedia != 0;
-    }
+    private static string? ExtractUrlFromWindowHandleCore(IntPtr hwnd, string processName)
+        => ScanNativeBrowser(hwnd, processName).Url;
 
     private static bool DetectSpotifyWebPlayer()
     {
@@ -824,6 +880,20 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
 
         try
         {
+            if (TryCollectVisibleWindowsNative((uint)Environment.ProcessId, out var entries, out int count))
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    uint pid = entries[i].ProcessId;
+                    if (pid == 0) continue;
+                    string? processName = TryGetProcessName((int)pid);
+                    if (processName == null || !IsBrowserProcess(processName)) continue;
+                    if (WindowHasSpotifyWebPlayer((IntPtr)entries[i].Hwnd, processName))
+                        return true;
+                }
+                return false;
+            }
+
             EnumWindows((hWnd, _) =>
             {
                 if (!IsWindowVisible(hWnd) || GetWindowTextLength(hWnd) == 0) return true;
@@ -851,123 +921,11 @@ public sealed partial class WindowTitleScanner : IWindowTitleScanner, IDisposabl
         return found;
     }
 
-    private static bool WindowHasSpotifyWebPlayer(IntPtr hwnd, string processName)
-    {
-        try
-        {
-            var element = AutomationElement.FromHandle(hwnd);
-            if (element == null) return false;
+    private static bool WindowHasSpotifyWebPlayer(IntPtr hwnd, string processName) =>
+        RunWithTimeout(() => WindowHasSpotifyWebPlayerCore(hwnd, processName));
 
-            if (processName.Contains("firefox", StringComparison.OrdinalIgnoreCase))
-            {
-                if (FirefoxAddressBarHasSpotify(element)) return true;
-            }
-            else if (ChromiumAddressBarHasSpotify(element))
-            {
-                return true;
-            }
-
-            return TabsContainSpotify(element);
-        }
-        catch (Exception)
-        {
-            // UI Automation tree inspection may throw if window closes
-        }
-
-        return false;
-    }
-
-    private static bool FirefoxAddressBarHasSpotify(AutomationElement element)
-    {
-        foreach (var edit in FindBrowserChromeElements(element, ControlType.Edit))
-        {
-            try
-            {
-                if (edit.Current.AutomationId == "urlbar-input" &&
-                    edit.TryGetCurrentPattern(ValuePattern.Pattern, out object? fp))
-                {
-                    string val = ((ValuePattern)fp).Current.Value ?? "";
-                    return val.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase);
-                }
-            }
-            catch (Exception)
-            {
-                // UI automation read failure on individual element
-            }
-        }
-        return false;
-    }
-
-    private static bool ChromiumAddressBarHasSpotify(AutomationElement element)
-    {
-        foreach (var toolbar in FindBrowserChromeElements(element, ControlType.ToolBar))
-            foreach (var edit in FindBrowserChromeElements(toolbar, ControlType.Edit))
-            {
-                try
-                {
-                    if (edit.TryGetCurrentPattern(ValuePattern.Pattern, out object? pattern))
-                    {
-                        string val = ((ValuePattern)pattern).Current.Value ?? "";
-                        if (val.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                }
-                catch (Exception)
-                {
-                    // UI automation read failure on individual element
-                }
-            }
-        return false;
-    }
-
-    private static bool TabsContainSpotify(AutomationElement element)
-    {
-        var tabs = FindCachedTabs(element);
-        if (tabs != null)
-        {
-            foreach (AutomationElement tab in tabs)
-            {
-                if (TabReferencesSpotifyWebPlayer(tab))
-                    return true;
-            }
-        }
-        return false;
-    }
-
-    internal static bool TabReferencesSpotifyWebPlayer(AutomationElement tab)
-    {
-        try
-        {
-            string help = tab.Cached.HelpText ?? string.Empty;
-            if (help.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase)) return true;
-
-            string name = tab.Cached.Name ?? string.Empty;
-            if (name.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase)) return true;
-
-            var subtree = tab.CachedChildren;
-            foreach (AutomationElement child in subtree)
-            {
-                if (!child.Cached.IsControlElement) continue;
-                string childHelp = child.Cached.HelpText ?? string.Empty;
-                if (childHelp.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase)) return true;
-
-                string childName = child.Cached.Name ?? string.Empty;
-                if (childName.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase)) return true;
-
-                if (child.TryGetCachedPattern(ValuePattern.Pattern, out object? p))
-                {
-                    string v = ((ValuePattern)p).Cached.Value ?? string.Empty;
-                    if (v.Contains(SpotifyWebPlayerHost, StringComparison.OrdinalIgnoreCase)) return true;
-                }
-            }
-        }
-        catch (Exception)
-        {
-            // Tab element inspection may throw if tab closes during query
-        }
-
-        return false;
-    }
+    private static bool WindowHasSpotifyWebPlayerCore(IntPtr hwnd, string processName)
+        => ScanNativeBrowser(hwnd, processName).Spotify;
 
     private static string? ExtractBrowserUrlCore()
     {

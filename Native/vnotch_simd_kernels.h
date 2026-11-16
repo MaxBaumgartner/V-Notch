@@ -9,6 +9,15 @@
 // input return how much they consumed so the caller finishes the tail with the baseline code.
 namespace vnotch::kernels::avx2
 {
+    void OklabEight(const uint8_t* bgra, const float* linear_srgb, float* l, float* a, float* b) noexcept;
+    void PaletteMetricsEight(const uint8_t* bgra, const float* linear_srgb,
+        int32_t x, float center_x, float dy_squared,
+        float* l, float* chroma, float* weight, int32_t* buckets) noexcept;
+    float YoloxBestClass(const float* scores, int32_t* class_id) noexcept;
+    // Bilinear BGRA -> planar BGR. x0/x1 are pixel offsets, weights are in [0,1].
+    int32_t SmartCropResizeRow(const uint8_t* top, const uint8_t* bottom,
+        const int32_t* x0, const int32_t* x1, const float* weights,
+        float vertical_weight, int32_t width, float* b, float* g, float* r) noexcept;
     // FastBlurKernels.avx2.cpp
     // Darkens BGRA pixels in [0, length) 32 bytes at a time, requires 0 <= factor <= 1. Returns the first unprocessed byte index.
     int32_t DarkenPixelsBulk(uint8_t* pixels, int32_t length, float factor) noexcept;
@@ -27,7 +36,13 @@ namespace vnotch::kernels::avx2
     int32_t WebcamNv12RowBulk(const uint8_t* luma_row, const uint8_t* chroma_row, int32_t width, uint8_t* dst_row) noexcept;
     int32_t WebcamYuy2Bulk(const uint8_t* src, int32_t pixel_count, uint8_t* dst) noexcept;
 
+    void BezierSamples(double p1, double p2, double* values, int intervals) noexcept;
+    int KaraokeProgress(double position, const double* starts, const double* ends, double* progress, int count) noexcept;
+    void SmoothFourBars(double smoothing, double small_delta, double threshold, const double* current,
+        double* smoothed, double* sorted) noexcept;
+
     // VisualizerFftKernel.avx2.cpp
     // Runs the radix-2 butterflies for k in [0, l1 & ~3) of every block. Returns the number of k values handled.
     int32_t FftStageBulk(float* flat, const float* stage, int32_t n, int32_t l1) noexcept;
+    int32_t FftRadix4Bulk(float* flat, const float* first, const float* second, int32_t n, int32_t quarter) noexcept;
 }

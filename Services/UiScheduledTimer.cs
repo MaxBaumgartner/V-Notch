@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -128,6 +130,21 @@ public sealed partial class UiScheduledTimer : IDisposable
         }));
     }
 
+    /// <summary>For the render probe: running schedules on this dispatcher shorter than <paramref name="below"/>.</summary>
+    internal static List<string> DescribeFast(Dispatcher dispatcher, TimeSpan below)
+    {
+        var lines = new List<string>();
+        foreach (var timer in DispatcherScheduler.For(dispatcher).Snapshot())
+        {
+            if (!timer._enabled || timer._interval >= below) continue;
+            string target = timer.Tick is { } tick
+                ? string.Join(",", Array.ConvertAll(tick.GetInvocationList(), h => $"{h.Method.DeclaringType?.Name}.{h.Method.Name}"))
+                : "-";
+            lines.Add($"{timer._interval.TotalMilliseconds:0} ms @{timer._priority} -> {target}");
+        }
+        return lines;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -155,6 +172,8 @@ public sealed partial class UiScheduledTimer : IDisposable
 
         internal static DispatcherScheduler For(Dispatcher dispatcher) =>
             Schedulers.GetValue(dispatcher, static value => new DispatcherScheduler(value));
+
+        internal UiScheduledTimer[] Snapshot() => [.. _schedules];
 
         internal void Add(UiScheduledTimer timer)
         {

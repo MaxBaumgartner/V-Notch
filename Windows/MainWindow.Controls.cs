@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System;
 using System.Threading.Tasks;
 using System.Windows;
@@ -418,7 +418,8 @@ public partial class MainWindow
     {
         _volumeHudMediaColor = vibrantColor;
         _hasVolumeHudMediaTint = hasMediaTint;
-        Color glowColor = hasMediaTint ? vibrantColor : Colors.White;
+        var (tint, hasTint) = EffectiveHudTint();
+        Color glowColor = hasTint ? tint : Colors.White;
         if (VolumeIndicatorTicksGlow != null) VolumeIndicatorTicksGlow.Color = glowColor;
         if (VolumeIndicatorIconGlow != null) VolumeIndicatorIconGlow.Color = glowColor;
         if (_isVolumeIndicatorActive && VolumeIndicatorScale != null)
@@ -464,28 +465,15 @@ public partial class MainWindow
         bool hasWave1 = !isMuted && iconCodepoint >= 0xE993;
         bool hasWave2 = !isMuted && iconCodepoint >= 0xE995;
 
-        if (VolumeIndicatorMuteSlashGap != null)
-            VolumeIndicatorMuteSlashGap.Visibility = isMuted ? Visibility.Visible : Visibility.Collapsed;
+        AnimateSpeakerParts(isMuted, isMuted ? 0 : hasWave1 ? 1.0 : 0.22,
+            isMuted ? 0 : hasWave2 ? 1.0 : iconCodepoint == 0xE994 ? 0.32 : 0.15, animate);
         if (VolumeIndicatorMuteSlash != null)
         {
-            VolumeIndicatorMuteSlash.Visibility = isMuted ? Visibility.Visible : Visibility.Collapsed;
             if (VolumeIndicatorMuteSlash.Stroke is SolidColorBrush slashBrush && !slashBrush.IsFrozen)
                 slashBrush.Color = accentColor;
             else
                 VolumeIndicatorMuteSlash.Stroke = new SolidColorBrush(accentColor);
         }
-        if (VolumeIndicatorWave1 != null)
-        {
-            double wave1Opacity = hasWave1 ? 1.0 : 0.22;
-            VolumeIndicatorWave1.Opacity = isMuted ? 0.0 : wave1Opacity;
-        }
-        if (VolumeIndicatorWave2 != null)
-        {
-            double wave2Base = iconCodepoint == 0xE994 ? 0.32 : 0.15;
-            double wave2Opacity = hasWave2 ? 1.0 : wave2Base;
-            VolumeIndicatorWave2.Opacity = isMuted ? 0.0 : wave2Opacity;
-        }
-
         if (VolumeIndicatorSpeakerCone.Fill is SolidColorBrush coneBrush && !coneBrush.IsFrozen)
             coneBrush.Color = accentColor;
         else
@@ -506,6 +494,7 @@ public partial class MainWindow
         else if (VolumeIndicatorWave2 != null)
             VolumeIndicatorWave2.Stroke = new SolidColorBrush(accentColor);
 
+        // The whole speaker still gives its small hop on every step, as before the waves learned to fade.
         if (animate && !AnimationConfig.ReduceMotion && VolumeIndicatorIconScale != null)
         {
             var pop = new DoubleAnimationUsingKeyFrames();
@@ -517,8 +506,83 @@ public partial class MainWindow
         }
     }
 
+    private bool? _speakerPartsMuted;
+    private int _speakerSlashToken;
+
+    /// <summary>The speaker waves fade with volume and the mute slash draws across the icon.</summary>
+    private void AnimateSpeakerParts(bool muted, double wave1, double wave2, bool animate)
+    {
+        bool motion = animate && !AnimationConfig.ReduceMotion;
+        AnimateSpeakerWave(VolumeIndicatorWave1, wave1, motion);
+        AnimateSpeakerWave(VolumeIndicatorWave2, wave2, motion);
+        if (_speakerPartsMuted == muted && motion) return;
+        _speakerPartsMuted = muted;
+        int token = ++_speakerSlashToken;
+        var slash = VolumeIndicatorMuteSlash;
+        var gap = VolumeIndicatorMuteSlashGap;
+        if (slash == null || gap == null) return;
+        // Nothing to wipe away: a slash that is not there must not flash up just to leave again.
+        if (motion && !muted && slash.Visibility != Visibility.Visible) return;
+        if (!motion)
+        {
+            slash.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
+            gap.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
+            slash.StrokeDashOffset = gap.StrokeDashOffset = 0;
+            slash.Visibility = gap.Visibility = muted ? Visibility.Visible : Visibility.Collapsed;
+            return;
+        }
+        const double length = 30;
+        slash.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
+        gap.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
+        slash.StrokeDashOffset = gap.StrokeDashOffset = muted ? length : 0;
+        slash.Visibility = gap.Visibility = Visibility.Visible;
+        var duration = TimeSpan.FromMilliseconds(muted ? 180 : 160);
+        var stroke = MakeAnim(muted ? length : 0, muted ? 0 : -length, duration, _easeQuadOut);
+        stroke.Completed += (_, _) =>
+        {
+            if (token == _speakerSlashToken && !muted)
+                slash.Visibility = gap.Visibility = Visibility.Collapsed;
+        };
+        slash.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, stroke);
+        gap.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty,
+            MakeAnim(muted ? length : 0, muted ? 0 : -length, duration, _easeQuadOut));
+    }
+
+    private void AnimateSpeakerWave(System.Windows.Shapes.Path wave, double target, bool animate)
+    {
+        if (wave == null) return;
+        double current = wave.Opacity;
+        wave.BeginAnimation(OpacityProperty, null);
+        wave.Opacity = animate ? current : target;
+        if (!animate)
+        {
+            if (wave.RenderTransform is ScaleTransform existingScale)
+            {
+                existingScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                existingScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                existingScale.ScaleX = existingScale.ScaleY = 1;
+            }
+            return;
+        }
+        wave.BeginAnimation(OpacityProperty, MakeAnim(current, target, TimeSpan.FromMilliseconds(140), _easeQuadOut));
+        if (target <= current || target < 1) return;
+        if (wave.RenderTransform is not ScaleTransform scale)
+        {
+            scale = new ScaleTransform(1, 1);
+            wave.RenderTransformOrigin = new Point(0.5, 0.5);
+            wave.RenderTransform = scale;
+        }
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, MakeAnim(0.85, 1, TimeSpan.FromMilliseconds(140), _easeQuadOut));
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, MakeAnim(0.85, 1, TimeSpan.FromMilliseconds(140), _easeQuadOut));
+    }
+
     private unsafe void UpdateVolumeIndicatorHud(double volume, bool animate = false)
     {
+        if (_levelHudKind == LevelHudKind.MicMute)
+        {
+            ApplyMicMuteFace(_micMuteShown);
+            return;
+        }
         if (VolumeIndicatorTicksHost == null) return;
         EnsureVolumeIndicatorTicks();
         if (_volumeHudTickBorders == null || _volumeHudTickBrushes == null || _volumeHudTickScales == null) return;
@@ -530,7 +594,8 @@ public partial class MainWindow
         double trackWidth = VolumeIndicatorContainer.ActualWidth > 0
             ? VolumeIndicatorContainer.ActualWidth
             : Math.Max(120.0, (_collapsedWidth + VolumeHudExtraWidth) - 28.0);
-        bool isMuted = _viewModel?.AudioMixer?.IsMuted == true && volume <= 0.0001;
+        bool isMuted = IsLevelHudMuted(volume);
+        var (hudTint, hasHudTint) = EffectiveHudTint();
 
         double approxLabelWidth = VolumeIndicatorPercentText?.ActualWidth > 0
             ? VolumeIndicatorPercentText.ActualWidth
@@ -550,7 +615,7 @@ public partial class MainWindow
             return;
         }
 
-        if (VolumeIndicatorIcon != null)
+        if (VolumeIndicatorIcon != null && _levelHudKind != LevelHudKind.PowerMode)
         {
             string glyph = ((char)layout.IconCodepoint).ToString();
             if (!string.Equals(VolumeIndicatorIcon.Text, glyph, StringComparison.Ordinal))
@@ -559,7 +624,12 @@ public partial class MainWindow
 
         if (VolumeIndicatorPercentText != null)
         {
-            string pctText = $"{layout.Percentage}%";
+            string pctText = _levelHudKind switch
+            {
+                LevelHudKind.PowerMode => _powerModeLook.Name ?? "",
+                LevelHudKind.SystemVolume when _levelHudLabelOverride is { Length: > 0 } name => name,
+                _ => $"{layout.Percentage}%"
+            };
             if (!string.Equals(VolumeIndicatorPercentText.Text, pctText, StringComparison.Ordinal))
             {
                 VolumeIndicatorPercentText.Text = pctText;
@@ -609,10 +679,10 @@ public partial class MainWindow
                 VolumeHudTickCount,
                 layout.ActiveTicks,
                 layout.HighlightStartTick,
-                _volumeHudMediaColor.R,
-                _volumeHudMediaColor.G,
-                _volumeHudMediaColor.B,
-                _hasVolumeHudMediaTint ? (byte)1 : (byte)0,
+                hudTint.R,
+                hudTint.G,
+                hudTint.B,
+                hasHudTint ? (byte)1 : (byte)0,
                 tickArgb,
                 tickScaleY,
                 VolumeHudTickCount) == 0)
@@ -620,7 +690,7 @@ public partial class MainWindow
             bool activeChanged = _lastVolumeHudActiveTicks != layout.ActiveTicks;
             _lastVolumeHudActiveTicks = layout.ActiveTicks;
 
-            Color fallbackAccent = _hasVolumeHudMediaTint ? _volumeHudMediaColor : Color.FromArgb(0xE8, 0xFF, 0xFF, 0xFF);
+            Color fallbackAccent = hasHudTint ? hudTint : Color.FromArgb(0xE8, 0xFF, 0xFF, 0xFF);
             Color startAccent = layout.ActiveTicks > 0
                 ? Color.FromArgb(
                     (byte)(tickArgb[0] >> 24),
@@ -628,7 +698,12 @@ public partial class MainWindow
                     (byte)(tickArgb[0] >> 8),
                     (byte)tickArgb[0])
                 : fallbackAccent;
-            UpdateSolidSpeakerIconState(layout.IconCodepoint, startAccent, animate && activeChanged);
+            if (_levelHudKind == LevelHudKind.Brightness)
+                UpdateSunIconState(volume, startAccent, animate && activeChanged);
+            else if (_levelHudKind == LevelHudKind.PowerMode)
+                UpdatePowerModeIconState(animate);
+            else
+                UpdateSolidSpeakerIconState(layout.IconCodepoint, startAccent, animate && activeChanged);
 
             for (int i = 0; i < VolumeHudTickCount; i++)
             {
@@ -825,13 +900,22 @@ public partial class MainWindow
         });
     }
 
-    private void ShowVolumeIndicator(float volume)
+    private void ShowVolumeIndicator(float volume) => ShowLevelIndicator(volume, LevelHudKind.AppVolume);
+
+    /// <summary>The scroll HUD for the player's volume, the system volume or the brightness.</summary>
+    private void ShowLevelIndicator(float volume, LevelHudKind kind)
     {
         if (VolumeIndicatorContainer == null || VolumeIndicatorFill == null) return;
-        if (!_isMusicCompactMode) return;
+        // The player's own volume only exists with music; system volume and brightness show either way.
+        if (!_isMusicCompactMode && kind == LevelHudKind.AppVolume) return;
         if (_isExpanded || _isAnimating) return;
 
         bool animateFill = _isVolumeIndicatorActive;
+        if (!_hasVolumeHudMediaTint && _currentMediaInfo?.Thumbnail != null &&
+            (_currentMediaInfo.IsAnyMediaPlaying || !string.IsNullOrEmpty(_currentMediaInfo.CurrentTrack)))
+        {
+            UpdateMediaBackground(_currentMediaInfo, forceRefresh: true);
+        }
 
         if (!_isVolumeIndicatorActive)
         {
@@ -842,13 +926,27 @@ public partial class MainWindow
             _volumeIndicatorToken = token;
         }
 
+        if (!_isVolumeIndicatorActive || kind != _levelHudKind)
+        {
+            CancelMicDive();
+            if (kind == LevelHudKind.MicMute)
+            {
+                _isDraggingVolumeIndicator = false;
+                VolumeIndicatorContainer.ReleaseMouseCapture();
+                _levelHudLabelTimer?.Stop();
+                _levelHudLabelOverride = null;
+            }
+            _levelHudKind = kind;
+            ApplyLevelHudLook();
+        }
+
         if (!_isVolumeIndicatorActive)
         {
             _isVolumeIndicatorActive = true;
             ++_volumeIndicatorExitVersion;
             int transitionVersion = ++_volumeIndicatorTransitionVersion;
             _isVolumeIndicatorExiting = false;
-            VolumeIndicatorContainer.IsHitTestVisible = true;
+            VolumeIndicatorContainer.IsHitTestVisible = kind != LevelHudKind.MicMute;
             int presentationToken = _volumeIndicatorToken;
 
             _hoverThumbnailDelayTimer.Stop();
@@ -897,6 +995,7 @@ public partial class MainWindow
             }
 
             double targetHeight = trans.TargetHeight;
+            double targetWidth = LevelHudWidth(trans.TargetWidth);
             var morphDur = new Duration(TimeSpan.FromMilliseconds(trans.MorphDurationMs));
             var fadeDur = new Duration(TimeSpan.FromMilliseconds(trans.FadeDurationMs));
 
@@ -906,10 +1005,9 @@ public partial class MainWindow
             {
                 _isCompactThumbnailHovered = false;
 
-                NotchBorder.BeginAnimation(HeightProperty, null);
-                AnimateCompactWidth(trans.TargetWidth, _dur400, _easeExpOut6, _volumeIndicatorToken);
-                var heightAnim = MakeAnim(fromHeight, targetHeight, _dur400, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-                NotchBorder.BeginAnimation(HeightProperty, heightAnim);
+                AnimateCompactWidth(targetWidth, _dur400, _easeExpOut6, _volumeIndicatorToken);
+                Motion.To(NotchBorder, HeightProperty, targetHeight, Motion.Pop,
+                    from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : fromHeight);
 
                 CompactHoverInfo.BeginAnimation(OpacityProperty, null);
                 var hoverFadeOut = MakeAnim(0.0, _dur200, _easeQuadOut);
@@ -920,48 +1018,54 @@ public partial class MainWindow
             }
             else
             {
-                AnimateCompactWidth(trans.TargetWidth, morphDur, _easeExpOut6, _volumeIndicatorToken);
-                NotchBorder.BeginAnimation(HeightProperty, null);
-                var heightAnim = MakeAnim(fromHeight, targetHeight, morphDur, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-                NotchBorder.BeginAnimation(HeightProperty, heightAnim);
+                AnimateCompactWidth(targetWidth, morphDur, _easeExpOut6, _volumeIndicatorToken);
+                Motion.To(NotchBorder, HeightProperty, targetHeight, Motion.Pop,
+                    from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : fromHeight);
                 AnimateCornerRadius(trans.TargetCornerRadius, morphDur.TimeSpan);
             }
 
-            MusicViz.BeginAnimation(OpacityProperty, null);
-            var vizOut = MakeAnim(1.0, 0.0, _dur200, _easeQuadOut);
-            vizOut.Completed += (s, e) =>
+            if (!_isMusicCompactMode)
             {
-                if (_isVolumeIndicatorActive && !IsCompactSlotStale(presentationToken))
-                    MusicViz.Visibility = Visibility.Collapsed;
-            };
-            MusicViz.BeginAnimation(OpacityProperty, vizOut);
-
-            CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
-            if (!AnimationConfig.ReduceMotion)
-            {
-                var thumbShrink = MakeAnim(trans.MediaToScale, _dur200, _easeQuadOut, VNotch.Services.AnimationConfig.TargetFps);
-                CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, thumbShrink);
-                CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, thumbShrink);
-                if (enableBlur && MusicCompactContentBlur != null)
-                {
-                    var thumbBlurOut = MakeAnim(0.0, trans.MediaToBlur, _dur200, _easeQuadOut, VNotch.Services.AnimationConfig.TargetFps);
-                    MusicCompactContentBlur.BeginAnimation(BlurEffect.RadiusProperty, thumbBlurOut);
-                }
+                HideIdleUnderHud();
             }
-            var thumbOut = MakeAnim(1.0, 0.0, _dur200, _easeQuadOut);
-            thumbOut.Completed += (s, e) =>
+            else
             {
-                if (_isVolumeIndicatorActive && !IsCompactSlotStale(presentationToken))
+                MusicViz.BeginAnimation(OpacityProperty, null);
+                var vizOut = MakeAnim(1.0, 0.0, _dur200, _easeQuadOut);
+                vizOut.Completed += (s, e) =>
                 {
-                    CompactThumbnailBorder.Visibility = Visibility.Collapsed;
-                    if (MusicCompactContentBlur != null)
+                    if (_isVolumeIndicatorActive && !IsCompactSlotStale(presentationToken))
+                        MusicViz.Visibility = Visibility.Collapsed;
+                };
+                MusicViz.BeginAnimation(OpacityProperty, vizOut);
+
+                CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
+                if (!AnimationConfig.ReduceMotion)
+                {
+                    var thumbShrink = MakeAnim(trans.MediaToScale, _dur200, _easeQuadOut, VNotch.Services.AnimationConfig.TargetFps);
+                    CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, thumbShrink);
+                    CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, thumbShrink);
+                    if (enableBlur && MusicCompactContentBlur != null)
                     {
-                        MusicCompactContentBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-                        MusicCompactContentBlur.Radius = 0;
+                        var thumbBlurOut = MakeAnim(0.0, trans.MediaToBlur, _dur200, _easeQuadOut, VNotch.Services.AnimationConfig.TargetFps);
+                        MusicCompactContentBlur.BeginAnimation(BlurEffect.RadiusProperty, thumbBlurOut);
                     }
                 }
-            };
-            CompactThumbnailBorder.BeginAnimation(OpacityProperty, thumbOut);
+                var thumbOut = MakeAnim(1.0, 0.0, _dur200, _easeQuadOut);
+                thumbOut.Completed += (s, e) =>
+                {
+                    if (_isVolumeIndicatorActive && !IsCompactSlotStale(presentationToken))
+                    {
+                        CompactThumbnailBorder.Visibility = Visibility.Collapsed;
+                        if (MusicCompactContentBlur != null)
+                        {
+                            MusicCompactContentBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
+                            MusicCompactContentBlur.Radius = 0;
+                        }
+                    }
+                };
+                CompactThumbnailBorder.BeginAnimation(OpacityProperty, thumbOut);
+            }
 
             VolumeIndicatorContainer.Visibility = Visibility.Visible;
             VolumeIndicatorContainer.Opacity = 0;
@@ -1040,12 +1144,14 @@ public partial class MainWindow
             };
         }
         _volumeIndicatorHideTimer.Stop();
+        _volumeIndicatorHideTimer.Interval = TimeSpan.FromMilliseconds(kind == LevelHudKind.MicMute ? 1400 : 1200);
         _volumeIndicatorHideTimer.Start();
     }
     private void HideVolumeIndicator()
     {
         if (VolumeIndicatorContainer == null) return;
         if (!_isVolumeIndicatorActive || IsCompactSlotStale(_volumeIndicatorToken)) return;
+        CancelMicDive();
         ResetCompactVolumeWheelIntent();
         int token = _volumeIndicatorToken;
         int exitVersion = ++_volumeIndicatorExitVersion;
@@ -1061,6 +1167,7 @@ public partial class MainWindow
         if (_isExpanded || _isAnimating)
         {
             _isVolumeIndicatorExiting = false;
+            _levelHudOverIdle = false;
             ClearVolumeIndicatorTransitionEffects();
             VolumeIndicatorContainer.BeginAnimation(OpacityProperty, null);
             VolumeIndicatorContainer.Opacity = 0;
@@ -1107,11 +1214,10 @@ public partial class MainWindow
         AnimateCompactWidth(trans.TargetWidth, morphDur, _easeExpOut6, 0);
         double fallbackFromHeight = double.IsFinite(NotchBorder.Height) && NotchBorder.Height > 0 ? NotchBorder.Height : _collapsedHeight + VolumeHudExtraHeight;
         double fromHeight = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : fallbackFromHeight;
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        NotchBorder.Height = trans.TargetHeight;
-        var heightAnim = MakeAnim(fromHeight, trans.TargetHeight, morphDur, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-        heightAnim.FillBehavior = FillBehavior.Stop;
-        NotchBorder.BeginAnimation(HeightProperty, heightAnim);
+        double restHeight = trans.TargetHeight;
+        Motion.To(NotchBorder, HeightProperty, restHeight, Motion.PopBack,
+            from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : fromHeight,
+            done: () => Motion.Stop(NotchBorder, HeightProperty, restHeight));
         AnimateCornerRadius(trans.TargetCornerRadius, morphDur.TimeSpan);
 
         if (!AnimationConfig.ReduceMotion)
@@ -1169,6 +1275,13 @@ public partial class MainWindow
         };
         VolumeIndicatorContainer.BeginAnimation(OpacityProperty, fadeOut);
 
+        // Without music the resting content (time, weather, Claude) comes back instead of cover and bars.
+        if (_levelHudOverIdle || !_isMusicCompactMode)
+        {
+            RestoreIdleUnderHud();
+            return;
+        }
+
         if (!_isClipboardPeekActive)
         {
             CompactThumbnailBorder.Visibility = Visibility.Visible;
@@ -1211,6 +1324,7 @@ public partial class MainWindow
 
     private void DismissVolumeIndicatorImmediate(bool restoreMedia = false, bool animateExit = false)
     {
+        CancelMicDive();
         int exitVersion = ++_volumeIndicatorExitVersion;
         int transitionVersion = ++_volumeIndicatorTransitionVersion;
         _isVolumeIndicatorExiting = animateExit;
@@ -1292,6 +1406,7 @@ public partial class MainWindow
         }
 
         RestorePrivacyDotVisibility();
+        ReleaseIdleUnderHud();
         if (restoreMedia) RestoreCompactMediaPresentation();
     }
 
@@ -1301,6 +1416,7 @@ public partial class MainWindow
 
     private void VolumeIndicator_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (_levelHudKind == LevelHudKind.MicMute) return;
         e.Handled = true;
         _isDraggingVolumeIndicator = true;
         VolumeIndicatorContainer.CaptureMouse();
@@ -1311,7 +1427,7 @@ public partial class MainWindow
 
     private void VolumeIndicator_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!_isDraggingVolumeIndicator || e.LeftButton != MouseButtonState.Pressed) return;
+        if (_levelHudKind == LevelHudKind.MicMute || !_isDraggingVolumeIndicator || e.LeftButton != MouseButtonState.Pressed) return;
         e.Handled = true;
         SetVolumeFromIndicatorPosition(e);
     }
@@ -1329,6 +1445,7 @@ public partial class MainWindow
 
     private void SetVolumeFromIndicatorPosition(MouseEventArgs e)
     {
+        if (_levelHudKind == LevelHudKind.MicMute) return;
         _volumeInteractionVersion++;
         var pos = e.GetPosition(VolumeIndicatorContainer);
         double containerWidth = VolumeIndicatorContainer.ActualWidth;
@@ -1341,6 +1458,14 @@ public partial class MainWindow
             PlayVolumeOverscrollSpring(Math.Clamp(rawRatio, 0.0, 1.0), rawRatio > 1.0 ? (rawRatio - 1.0) : rawRatio);
         }
         float newVolume = (float)Math.Clamp(rawRatio, 0.0, 1.0);
+        // The power mode has four steps: the bar snaps to the one under the finger.
+        if (_levelHudKind == LevelHudKind.PowerMode) newVolume = PowerModeStep(newVolume) / (float)PowerModeSteps;
+        if (_levelHudKind != LevelHudKind.AppVolume)
+        {
+            SetVolumeFill(VolumeIndicatorScale, newVolume, animate: true);
+            WriteSystemLevel(newVolume);
+            return;
+        }
         float priorVolume = _currentVolume;
         _currentVolume = newVolume;
         SetVolumeFill(VolumeIndicatorScale, newVolume, animate: true);

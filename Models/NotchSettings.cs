@@ -2,27 +2,18 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
+using VNotch.Services;
 
 namespace VNotch.Models;
 
 public partial class NotchSettings
 {
-    private const string NativeDll = "VNotch.Native.dll";
-
-    [LibraryImport(NativeDll)]
-    internal static partial int vn_settings_clamp_int(int value, int minVal, int maxVal, out int outValue);
-
-    [LibraryImport(NativeDll)]
-    internal static partial int vn_settings_clamp_double(double value, double minVal, double maxVal, double fallbackIfNonFinite, out double outValue);
-
-    [LibraryImport(NativeDll)]
-    internal static partial int vn_settings_double_equals(double a, double b, byte allowNanEqual, out byte outEqual);
-
     private static int ClampInt(int value, int min, int max) =>
-        vn_settings_clamp_int(value, min, max, out int result) == 0 ? result : value;
+        min <= max ? Math.Clamp(value, min, max) : value;
 
     private static double ClampDouble(double value, double min, double max, double fallback) =>
-        vn_settings_clamp_double(value, min, max, fallback, out double result) == 0 ? result : fallback;
+        double.IsFinite(value) && double.IsFinite(min) && double.IsFinite(max) && min <= max
+            ? Math.Clamp(value, min, max) : fallback;
 
     public const string SystemBatteryDeviceId = "";
     public const string AutoBluetoothBatteryDeviceId = "__auto_bluetooth__";
@@ -38,6 +29,8 @@ public partial class NotchSettings
     }
 
     public string LastRunVersion { get; set; } = "";
+
+    public string AccentColor { get; set; } = "default";
 
     public int Width { get; set; } = 230;
     public int DynamicIslandWidth { get; set; } = 220;
@@ -111,14 +104,11 @@ public partial class NotchSettings
     public bool AutoStart { get; set; } = true;
     public bool StayBehindWindows { get; set; } = false;
     public bool EnableHoverExpand { get; set; } = false;
-    public bool EnableCursorBypass { get; set; } = false;
-    public bool EnableAnimations { get; set; } = true;
     public bool DisableMouseLeaveAutoClose { get; set; } = true;
     public bool KeepMediaPinnedOnTrackChange { get; set; } = true;
     public bool ReopenLastViewOnExpand { get; set; } = false;
 
     public double AnimationSpeed { get; set; } = 2.0;
-    public bool EnableBounceEffect { get; set; } = true;
 
     public int HoverExpandDelay { get; set; } = 0;
     public int HoverCollapseDelay { get; set; } = 500;
@@ -129,7 +119,6 @@ public partial class NotchSettings
     public double LargeExpandMultiplier { get; set; } = 2.5;
 
     public bool EnableShadow { get; set; } = true;
-    public bool EnableGlowOnHover { get; set; } = true;
     public string NotchStyle { get; set; } = "default";
 
     public LiquidGlassConfig LiquidGlass { get; set; } = new();
@@ -155,6 +144,7 @@ public partial class NotchSettings
 
     public bool ShowMusicNotifications { get; set; } = true;
     public bool ShowSystemNotifications { get; set; } = true;
+    public bool AutoDismissNotifications { get; set; } = true;
 
     public bool ShowBatteryIndicator { get; set; } = true;
     public int NotificationDuration { get; set; } = 5000;
@@ -186,6 +176,7 @@ public partial class NotchSettings
 
 
     public bool EnableSpotifyLyrics { get; set; } = true;
+    public string LyricsProviderPriority { get; set; } = VNotch.Services.LyricsProviderOrder.Default;
 
     public bool EnableSpotifyCanvas { get; set; } = false;
     public int SpotifyCanvasConsentVersion { get; set; } = 0;
@@ -219,11 +210,22 @@ public partial class NotchSettings
     // Windows notifications mirrored as a pill in the closed notch; apps listed here ("|"-separated app ids) stay out.
     public bool ShowAppNotifications { get; set; } = true;
     public string MutedNotificationApps { get; set; } = "";
+    public bool HideWindowsBanners { get; set; }
+    private Dictionary<string, int?> _bannerRestore = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, int?> BannerRestore
+    {
+        get => _bannerRestore;
+        set => _bannerRestore = value == null ? new(StringComparer.OrdinalIgnoreCase) : new(value, StringComparer.OrdinalIgnoreCase);
+    }
     // The user's Raspberry Pi dashboard (e.g. http://100.x.y.z:4000 over Tailscale); empty hides its data.
     public string PiDashboardUrl { get; set; } = "";
     // Where the Pi tab's school rows lead: an assignment to its Moodle page, lessons and exams to Untis.
     public string SchoolMoodleUrl { get; set; } = "https://edufs.edu.htl-leonding.ac.at/moodle";
     public string SchoolUntisUrl { get; set; } = "https://htl-leonding.webuntis.com/today";
+    // While the default mic is muted, a small rose mic sits beside the idle clock.
+    public bool ShowMutedMicGlyph { get; set; } = true;
+    // Keeps the PC from sleeping: off, while Claude Code works / a download runs / a timer counts (automatic), always.
+    public KeepAwakeMode KeepAwake { get; set; } = KeepAwakeMode.Automatic;
     // Discord mute/deafen for the muted-mic warning: the id of the user's own Discord application ("Public
     // Client" on, redirect http://127.0.0.1/callback). Empty leaves Discord out.
     public string DiscordClientId { get; set; } = "";
@@ -271,7 +273,7 @@ public partial class NotchSettings
     private static readonly Func<NotchSettings, NotchSettings, bool> _scalarValueEquals = BuildScalarValueEquals();
 
     private static bool DoubleEquals(double d1, double d2) =>
-        vn_settings_double_equals(d1, d2, 0, out byte equal) == 0 && equal != 0;
+        d1 == d2 || (double.IsFinite(d1) && double.IsFinite(d2) && Math.Abs(d1 - d2) <= 0.0001);
 
     private static bool NullableDoubleEquals(double? d1, double? d2)
     {
@@ -297,7 +299,7 @@ public partial class NotchSettings
         for (int i = 0; i < _cloneableProperties.Length; i++)
         {
             var prop = _cloneableProperties[i];
-            if (prop.PropertyType == typeof(LiquidGlassConfig))
+            if (prop.PropertyType == typeof(LiquidGlassConfig) || prop.Name == nameof(BannerRestore))
                 continue;
 
             var p1 = Expression.Property(left, prop);
@@ -342,6 +344,7 @@ public partial class NotchSettings
         clone.IsDirty = false;
         clone.LiquidGlass = LiquidGlass?.Clone() ?? new LiquidGlassConfig();
         clone.LiquidGlassCustom = LiquidGlassCustom?.Clone();
+        clone.BannerRestore = new(BannerRestore ?? new(), StringComparer.OrdinalIgnoreCase);
         return clone;
     }
 
@@ -351,6 +354,10 @@ public partial class NotchSettings
         if (other is null) return false;
 
         if (!_scalarValueEquals(this, other))
+            return false;
+
+        if (BannerRestore.Count != other.BannerRestore.Count ||
+            BannerRestore.Any(entry => !other.BannerRestore.TryGetValue(entry.Key, out var value) || value != entry.Value))
             return false;
 
         if ((LiquidGlass == null) != (other.LiquidGlass == null))
@@ -449,15 +456,17 @@ public partial class LiquidGlassConfig
     public double GlowEdge0 { get; set; } = 0.441;
     public double GlowEdge1 { get; set; } = -0.474;
 
-    // Legacy compatibility only. The magnifier filter now excludes the notch from
-    // its private backdrop source without hiding the visible overlay in screenshots.
+    // Legacy CPU capture preference. GPU desktop capture always excludes the
+    // glass window to prevent recursive feedback.
+    // Legacy value retained for settings compatibility. Ghost mode owns capture visibility.
     public bool HideFromScreenCapture { get; set; } = false;
 
     // New installations use the native-resolution GPU lens. Existing settings keep
     // their serialized value, including an explicit false from the old opt-in UI.
     public bool UseGpuRefraction { get; set; } = true;
 
-    // Dedicated high-performance GPU (GPU 0 / dGPU) mode for Liquid Glass, paced strictly to TargetFps.
+    // Uncapped-by-display pacing to TargetFps. Shared capture/render textures use
+    // the adapter driving the window's monitor, including in this mode.
     public bool UseUltimateGpu { get; set; } = false;
 
     public LiquidGlassConfig Clone() => (LiquidGlassConfig)MemberwiseClone();

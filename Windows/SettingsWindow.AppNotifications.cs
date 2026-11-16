@@ -18,6 +18,8 @@ public partial class SettingsWindow
     private TextBlock? _appNotifyHint;
     private Button? _appNotifyAccessButton;
     private StackPanel? _appNotifyApps;
+    private CheckBox? _hideWindowsBannersCheck;
+    private TextBlock? _hideWindowsBannersHint;
     // Keys the notch leaves out; the boxes edit this set and the snapshot reads it.
     private readonly HashSet<string> _appNotifyMuted = new(StringComparer.OrdinalIgnoreCase);
     private bool _appNotifyFilling;
@@ -29,6 +31,7 @@ public partial class SettingsWindow
         try
         {
             _appNotifyCheck!.IsChecked = settings.ShowAppNotifications;
+            _hideWindowsBannersCheck!.IsChecked = settings.HideWindowsBanners;
             _appNotifyMuted.Clear();
             foreach (string key in SplitMuted(settings.MutedNotificationApps)) _appNotifyMuted.Add(key);
         }
@@ -44,29 +47,25 @@ public partial class SettingsWindow
     {
         if (_appNotifyCheck == null) return;
         settings.ShowAppNotifications = _appNotifyCheck.IsChecked == true;
+        settings.HideWindowsBanners = _hideWindowsBannersCheck?.IsChecked == true;
+        SyncAppNotificationRestore(settings);
         settings.MutedNotificationApps = string.Join('|', _appNotifyMuted);
     }
 
-    private void ResetAppNotifications(NotchSettings defaults)
+    private void SyncAppNotificationRestore(NotchSettings settings)
     {
-        if (_appNotifyCheck == null) return;
-        _appNotifyFilling = true;
-        try
-        {
-            _appNotifyCheck.IsChecked = defaults.ShowAppNotifications;
-            _appNotifyMuted.Clear();
-        }
-        finally
-        {
-            _appNotifyFilling = false;
-        }
-        RefreshAppNotificationApps();
+        if (_appNotificationState?.Invoke().BannerRestore is { } restore)
+            settings.BannerRestore = new(restore, StringComparer.OrdinalIgnoreCase);
     }
 
     private void LocalizeAppNotifications()
     {
         if (_appNotifyCheck == null || _appNotifyHint == null || _appNotifyAccessButton == null) return;
         _appNotifyCheck.Content = Loc.Get("settings.appNotify");
+        if (_hideWindowsBannersCheck != null)
+            _hideWindowsBannersCheck.Content = Loc.Get("settings.notifications.hideBanners");
+        if (_hideWindowsBannersHint != null)
+            _hideWindowsBannersHint.Text = Loc.Get("settings.notifications.hideBannersHint");
         bool allowed = _appNotificationState?.Invoke().Allowed ?? true;
         _appNotifyHint.Text = Loc.Get(allowed ? "settings.appNotify.hint" : "settings.appNotify.denied");
         _appNotifyAccessButton.Content = Loc.Get("settings.appNotify.openSettings");
@@ -93,12 +92,23 @@ public partial class SettingsWindow
         };
         _appNotifyAccessButton.Click += (_, _) => OpenNotificationPrivacySettings();
         _appNotifyApps = new StackPanel { Margin = new Thickness(28, 6, 0, 0) };
+        _hideWindowsBannersCheck = new CheckBox { Margin = new Thickness(0, 12, 0, 0) };
+        _hideWindowsBannersHint = new TextBlock
+        {
+            Style = (Style)FindResource("SettingHintText"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        _hideWindowsBannersCheck.Checked += AppNotifyCheck_Changed;
+        _hideWindowsBannersCheck.Unchecked += AppNotifyCheck_Changed;
 
         var panel = new StackPanel();
         panel.Children.Add(_appNotifyCheck);
         panel.Children.Add(_appNotifyHint);
         panel.Children.Add(_appNotifyAccessButton);
         panel.Children.Add(_appNotifyApps);
+        panel.Children.Add(_hideWindowsBannersCheck);
+        panel.Children.Add(_hideWindowsBannersHint);
         var row = new Border { Style = (Style)FindResource("SettingRowBorder"), Margin = new Thickness(0, 0, 0, 4), Child = panel };
 
         _appNotifyCheck.Checked += AppNotifyCheck_Changed;

@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
-using System.Windows.Automation.Text;
 using System.Windows.Threading;
 
 namespace VNotch.Services.Translation;
@@ -32,8 +31,8 @@ internal sealed partial class TranslationSelectionService : IDisposable
     private long _manualRequestVersion;
     private UiScheduledTimer? _debounce;
     private readonly AutomationEventHandler _selectionChanged;
-    private AutomationElement? _root, _element, _eventElement;
-    private TextPatternRange? _range;
+    private AutomationElement? _root, _eventElement;
+    private NativeSelectionState? _nativeSelection;
     private TranslationSelection? _snapshot;
     private long _nextId;
     private IntPtr _watchedWindow;
@@ -44,6 +43,7 @@ internal sealed partial class TranslationSelectionService : IDisposable
     private Win32Interop.WinEventHook? _foregroundHook, _focusHook, _selectionHook;
     private IntPtr _lastExternalWindow;
     private readonly Func<IntPtr, bool>? _isBlocked;
+    private volatile bool _automaticWatching;
     internal event Action<TranslationSelection?>? SelectionChanged;
     internal event Action<TranslationSelection?>? ManualTranslationRequested;
     internal event Action<IntPtr, long>? ManualSelectionUnavailable;
@@ -107,9 +107,10 @@ internal sealed partial class TranslationSelectionService : IDisposable
         if (isCurrent()) unavailable?.Invoke();
     }
 
-    internal TranslationSelectionService(Func<IntPtr, bool>? isBlocked = null)
+    internal TranslationSelectionService(Func<IntPtr, bool>? isBlocked = null, bool automaticWatching = true)
     {
         _isBlocked = isBlocked;
+        _automaticWatching = automaticWatching;
         _selectionChanged = (sender, _) => { _eventElement = sender as AutomationElement; QueueCapture(); };
         _foregroundChanged = (_, hwnd) =>
         {
@@ -146,9 +147,7 @@ internal sealed partial class TranslationSelectionService : IDisposable
             _foregroundHook = new Win32Interop.WinEventHook(3, 3, _foregroundChanged);
             _focusHook = new Win32Interop.WinEventHook(0x8005, 0x8005, _objectEventChanged);
             _selectionHook = new Win32Interop.WinEventHook(0x8014, 0x8014, _objectEventChanged);
-            _foregroundHook.Install();
-            _focusHook.Install();
-            _selectionHook.Install();
+            UpdateAutomaticHooks();
             if (_disposed) return;
             _ready.TrySetResult(dispatcher);
             QueueCapture();
@@ -168,20 +167,49 @@ internal sealed partial class TranslationSelectionService : IDisposable
             _focusHook?.Dispose();
             _selectionHook?.Dispose();
             DetachSelection();
-            _element = null; _range = null; _snapshot = null;
+            _nativeSelection?.Dispose(); _nativeSelection = null; _snapshot = null;
         }
     }
 
     private void QueueCapture()
     {
+        if (!_automaticWatching) return;
         var dispatcher = Volatile.Read(ref _dispatcher);
         if (_disposed || dispatcher == null || dispatcher.HasShutdownStarted || Interlocked.Exchange(ref _queued, 1) != 0) return;
         dispatcher.BeginInvoke(() =>
         {
             Interlocked.Exchange(ref _queued, 0);
-            if (_disposed) return;
+            if (_disposed || !_automaticWatching) return;
             _debounce!.Stop(); _debounce.Start();
         }, DispatcherPriority.Background);
+    }
+
+    internal void SetAutomaticWatching(bool enabled)
+    {
+        if (_automaticWatching == enabled) return;
+        _automaticWatching = enabled;
+        var dispatcher = Volatile.Read(ref _dispatcher);
+        if (!_disposed && dispatcher != null && !dispatcher.HasShutdownStarted)
+            dispatcher.BeginInvoke(UpdateAutomaticHooks, DispatcherPriority.Background);
+    }
+
+    private void UpdateAutomaticHooks()
+    {
+        if (_disposed) return;
+        // Manual shortcuts retain their worker, but install no global UIA / WinEvent
+        // watchers and perform no background selection scans in manual mode.
+        _foregroundHook?.Dispose(); _focusHook?.Dispose(); _selectionHook?.Dispose();
+        if (_automaticWatching)
+        {
+            _foregroundHook?.Install(); _focusHook?.Install(); _selectionHook?.Install();
+            QueueCapture();
+        }
+        else
+        {
+            _debounce?.Stop();
+            DetachSelection();
+            _nativeSelection?.Dispose(); _nativeSelection = null; _snapshot = null;
+        }
     }
 
     private TranslationSelection? _lastValidSnapshot;
@@ -198,7 +226,8 @@ internal sealed partial class TranslationSelectionService : IDisposable
                 DetachSelection(); _lastValidSnapshot = null; Publish(null, !manual); return;
             }
             _lastExternalWindow = window;
-            if ((Win32Interop.GetAsyncKeyState(1) & 0x8000) != 0) { _debounce!.Start(); return; }
+            if (!manual && !_automaticWatching) return;
+            if ((Win32Interop.GetAsyncKeyState(1) & 0x8000) != 0) { if (_automaticWatching) _debounce!.Start(); return; }
             if (window != _watchedWindow)
             {
                 DetachSelection();
@@ -206,11 +235,11 @@ internal sealed partial class TranslationSelectionService : IDisposable
                 Publish(null, !manual);
                 _root = AutomationElement.FromHandle(window);
                 _watchedWindow = window;
-                try { Automation.AddAutomationEventHandler(TextPattern.TextSelectionChangedEvent, _root, TreeScope.Subtree, _selectionChanged); }
+                try { if (_automaticWatching) Automation.AddAutomationEventHandler(TextPattern.TextSelectionChangedEvent, _root, TreeScope.Subtree, _selectionChanged); }
                 catch (Exception ex) when (ex is InvalidOperationException or COMException or ElementNotAvailableException) { /* Selection worker shutting down or UIA provider unavailable. */ }
             }
-            var result = SelectionTextReader.Read(window, _eventElement, manual, out bool protectedInput, _element, _root);
-            if (Win32Interop.GetForegroundWindow() != window) return;
+            var result = SelectionTextReader.Read(window, _eventElement, manual, out bool protectedInput, rootElement: _root, previousSelection: _nativeSelection);
+            if (Win32Interop.GetForegroundWindow() != window) { result?.Dispose(); return; }
             if (result == null)
             {
                 var native = protectedInput ? null : NativeSelectionReader.Read(window);
@@ -233,19 +262,20 @@ internal sealed partial class TranslationSelectionService : IDisposable
                     _lastValidTick = Environment.TickCount64;
                 }
                 if (native != null && _snapshot?.Window == native.Window && _snapshot.Text == native.Text && !_snapshot.CanReplace) return;
-                _element = null; _range = null;
+                _nativeSelection?.Dispose(); _nativeSelection = null;
                 Publish(native, !manual);
                 return;
             }
-            _eventElement = result.Element;
-            if (_snapshot?.Text == result.Text && _snapshot.Window == window && _element != null &&
-                Automation.Compare(_element, result.Element) && _range != null && result.Range != null && SameRange(_range, result.Range))
+            if (_snapshot?.Text == result.Text && _snapshot.Window == window && _nativeSelection != null &&
+                _nativeSelection.SameSelection(result.Native))
             {
+                result.Dispose();
                 _lastValidSnapshot = _snapshot;
                 _lastValidTick = Environment.TickCount64;
                 return;
             }
-            _element = result.Element; _range = result.Range;
+            _nativeSelection?.Dispose();
+            _nativeSelection = result.Native;
             var published = new TranslationSelection(++_nextId, result.Text, result.Bounds, window, result.Editable) { InputTruncated = result.InputTruncated };
             _lastValidSnapshot = published;
             _lastValidTick = Environment.TickCount64;
@@ -259,13 +289,9 @@ internal sealed partial class TranslationSelectionService : IDisposable
     {
         if (_snapshot == null && snapshot == null) return;
         _snapshot = snapshot;
-        if (snapshot == null) { _range = null; _element = null; }
+        if (snapshot == null) { _nativeSelection?.Dispose(); _nativeSelection = null; }
         if (!_disposed && notify) SelectionChanged?.Invoke(snapshot);
     }
-
-    private static bool SameRange(TextPatternRange a, TextPatternRange b) =>
-        a.CompareEndpoints(TextPatternRangeEndpoint.Start, b, TextPatternRangeEndpoint.Start) == 0 &&
-        a.CompareEndpoints(TextPatternRangeEndpoint.End, b, TextPatternRangeEndpoint.End) == 0;
 
     internal async Task<bool> ReplaceAsync(TranslationSelection selection, string text, CancellationToken ct)
     {
@@ -280,45 +306,14 @@ internal sealed partial class TranslationSelectionService : IDisposable
         try
         {
             ct.ThrowIfCancellationRequested();
-            if (_disposed || _snapshot?.Id != selection.Id || _element == null || _range == null || !selection.CanReplace ||
-                _lastExternalWindow != selection.Window ||
-                _element.Current.IsPassword || _range.GetAttributeValue(TextPattern.IsReadOnlyAttribute) is not false ||
-                !_element.TryGetCurrentPattern(TextPattern.Pattern, out var found) || found is not TextPattern pattern) return false;
-            var current = pattern.GetSelection();
-            if (current.Length != 1 || !SameRange(_range, current[0]) || current[0].GetText(2001) != selection.Text) return false;
-            var foreground = Win32Interop.GetForegroundWindow();
-            if (foreground != selection.Window && !IsOwnWindow(foreground)) return false;
-            if (new[] { 0x10, 0x11, 0x12, 0x5B }.Any(key => (Win32Interop.GetAsyncKeyState(key) & 0x8000) != 0) ||
-                (Win32Interop.GetAsyncKeyState(0x5C) & 0x8000) != 0) return false;
-            if (!Win32Interop.SetForegroundWindow(selection.Window)) return false;
-            _element.SetFocus();
-            if (Win32Interop.GetForegroundWindow() != selection.Window) return false;
-            current = pattern.GetSelection();
-            if (current.Length != 1 || !SameRange(_range, current[0]) || current[0].GetText(2001) != selection.Text) return false;
-            ct.ThrowIfCancellationRequested();
-            if (_element.TryGetCurrentPattern(ValuePattern.Pattern, out var valueObject) && valueObject is ValuePattern value && !value.Current.IsReadOnly)
-            {
-                var document = pattern.DocumentRange;
-                string original = document.GetText(20001);
-                if (original.Length <= 20000 && value.Current.Value == original)
-                {
-                    var prefix = document.Clone();
-                    prefix.MoveEndpointByRange(TextPatternRangeEndpoint.End, current[0], TextPatternRangeEndpoint.Start);
-                    int offset = prefix.GetText(20001).Length;
-                    if (offset + selection.Text.Length <= original.Length && original.Substring(offset, selection.Text.Length) == selection.Text)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        if (Win32Interop.GetForegroundWindow() != selection.Window || value.Current.Value != original) return false;
-                        value.SetValue(original[..offset] + text + original[(offset + selection.Text.Length)..]);
-                        Publish(null);
-                        return true;
-                    }
-                }
-            }
+            if (_disposed || _snapshot?.Id != selection.Id || _nativeSelection == null || !selection.CanReplace ||
+                _lastExternalWindow != selection.Window) return false;
+            int outcome = _nativeSelection.PrepareReplace(selection.Text, text, ct);
+            if (outcome == 1) { Publish(null); return true; }
+            if (outcome != 2) { ct.ThrowIfCancellationRequested(); return false; }
             // Unicode insertion leaves the clipboard untouched. Newlines require a reliable ValuePattern;
             // sending Enter to an unknown chat control could submit the message.
             if (vn_translation_selection_can_send_unicode_input(text.AsSpan(), text.Length, out byte canSend) != 0 || canSend == 0) return false;
-            _range.Select();
             if (Win32Interop.GetForegroundWindow() != selection.Window) return false;
             ct.ThrowIfCancellationRequested();
             bool inserted = Win32Interop.SendUnicodeText(text);
@@ -333,6 +328,7 @@ internal sealed partial class TranslationSelectionService : IDisposable
         if (_root != null)
             try { Automation.RemoveAutomationEventHandler(TextPattern.TextSelectionChangedEvent, _root, _selectionChanged); } catch (Exception) { /* Window or UIA element may have closed before handler removal. */ }
         _root = null; _eventElement = null; _watchedWindow = IntPtr.Zero;
+        _nativeSelection?.Dispose(); _nativeSelection = null;
     }
 
     private static bool IsOwnWindow(IntPtr hwnd)

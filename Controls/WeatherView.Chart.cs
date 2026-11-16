@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -27,7 +27,6 @@ public sealed partial class WeatherView
     private const double BarsHeight = 16;
     private const double IconsTop = 102;
     private const double TimesTop = 122;
-    private const double RevealMs = 1050;
 
     private Grid? _chartHeader;
     private Grid? _chartHost;
@@ -62,7 +61,7 @@ public sealed partial class WeatherView
                 VerticalAlignment = VerticalAlignment.Center
             };
             var line = new StackPanel { Orientation = Orientation.Horizontal };
-            line.Children.Add(new TextBlock { Text = "", FontFamily = SymbolFont, FontSize = 9, Foreground = Soft, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 5, 0) });
+            line.Children.Add(new TextBlock { Text = "îœ«", FontFamily = SymbolFont, FontSize = 9, Foreground = Soft, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 5, 0) });
             line.Children.Add(Text("24 h", 10.5, Soft));
             back.Child = line;
             back.MouseLeftButtonUp += (_, e) =>
@@ -83,6 +82,7 @@ public sealed partial class WeatherView
         _chartHeader.Children.Add(side);
         if (delayMs >= 0) WeatherMotion.Rise(titleText, delayMs * 0.3, dy: 0, dx: 10, ms: 380);
 
+        _chartLoops.StopAll();
         _chartHost.Children.Clear();
         if (points.Count < 2) return;
         _chartHost.Children.Add(BuildChart(points, from, to, isNext24: _selectedDay == null, delayMs));
@@ -164,7 +164,7 @@ public sealed partial class WeatherView
             Canvas.SetLeft(bar, p.X - barWidth / 2);
             Canvas.SetTop(bar, BarsBottom - h);
             canvas.Children.Add(bar);
-            if (animate) WeatherMotion.Grow(bar, delayMs + RevealMs * 0.85 * (p.X / width) + 80, horizontal: false, new Point(0.5, 1), 480);
+            if (animate) WeatherMotion.Grow(bar, Motion.Stagger(points.IndexOf(p)).TotalMilliseconds, horizontal: false, new Point(0.5, 1));
         }
 
         // The curve with its fading fill, revealed left to right.
@@ -208,14 +208,11 @@ public sealed partial class WeatherView
         {
             var clip = new RectangleGeometry(new Rect(0, -20, 0, ChartHeight + 40));
             layer.Clip = clip;
-            var reveal = new RectAnimation(new Rect(0, -20, 0, ChartHeight + 40), new Rect(0, -20, width + 10, ChartHeight + 40), TimeSpan.FromMilliseconds(RevealMs))
+            var reveal = new WeatherTween
             {
-                BeginTime = TimeSpan.FromMilliseconds(delayMs),
-                EasingFunction = WeatherMotion.Out
+                Step = progress => clip.Rect = new Rect(0, -20, Math.Max(0, (width + 10) * progress), ChartHeight + 40)
             };
-            Timeline.SetDesiredFrameRate(reveal, AnimationConfig.TargetFps);
-            reveal.Completed += (_, _) => layer.Clip = null;
-            clip.BeginAnimation(RectangleGeometry.RectProperty, reveal);
+            reveal.To(1, from: 0, done: () => layer.Clip = null);
             AddRevealHead(canvas, samples, delayMs, width);
         }
 
@@ -227,7 +224,7 @@ public sealed partial class WeatherView
         foreach (int i in labelled)
         {
             var p = points[i];
-            double labelDelay = delayMs + RevealMs * 0.85 * (p.X / width);
+            double labelDelay = Motion.Stagger(labelled.IndexOf(i)).TotalMilliseconds;
             var temp = Text(Degrees(p.Temperature), 11, Brushes.White, FontWeights.SemiBold);
             var timeText = Text(i == 0 && isNext24 ? Loc.Get("weather.now") : p.Time.ToString(hourFormat, CultureInfo.CurrentCulture), 10, i == 0 && isNext24 ? Soft : Muted,
                 i == 0 && isNext24 ? FontWeights.SemiBold : FontWeights.Normal);
@@ -248,7 +245,7 @@ public sealed partial class WeatherView
             Canvas.SetLeft(dot, points[i].X - 2.5);
             Canvas.SetTop(dot, points[i].Y - 2.5);
             labels.Children.Add(dot);
-            if (animate) WeatherMotion.Pop(dot, delayMs + RevealMs * 0.85 * (points[i].X / width) + 20, 0.2, 360);
+            if (animate) WeatherMotion.Pop(dot, Motion.Stagger(labelled.IndexOf(i)).TotalMilliseconds);
         }
 
         if (isNext24) AddNowPulse(canvas, points[0], animate ? delayMs : 0);
@@ -290,7 +287,7 @@ public sealed partial class WeatherView
     }
 
     /// <summary>
-    /// A smooth curve through the points that never overshoots them (Fritsch–Carlson monotone cubic), so a flat
+    /// A smooth curve through the points that never overshoots them (Fritschâ€“Carlson monotone cubic), so a flat
     /// night stays flat and the highest point is the high.
     /// </summary>
     internal static PathGeometry MonotoneCurve(IReadOnlyList<Point> points)
@@ -403,17 +400,10 @@ public sealed partial class WeatherView
                 x = Math.Min(x, endX);
                 move.X = x;
                 move.Y = CurveYAt(samples, x);
+                head.Opacity = Math.Clamp(Math.Min(p / 0.08, (1 - p) / 0.2), 0, 1);
             }
         };
-        tween.Play(0, 1, RevealMs, WeatherMotion.Out, delayMs);
-        var frames = new DoubleAnimationUsingKeyFrames { BeginTime = TimeSpan.FromMilliseconds(delayMs), Duration = TimeSpan.FromMilliseconds(RevealMs + 260) };
-        frames.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(0)));
-        frames.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromPercent(0.08)));
-        frames.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromPercent(0.72)));
-        frames.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(1)));
-        Timeline.SetDesiredFrameRate(frames, AnimationConfig.TargetFps);
-        frames.Completed += (_, _) => canvas.Children.Remove(head);
-        head.BeginAnimation(OpacityProperty, frames);
+        tween.To(1, from: 0, done: () => canvas.Children.Remove(head));
     }
 
     /// <summary>"Now" on the curve: a dot with a ring that keeps opening.</summary>
@@ -432,9 +422,9 @@ public sealed partial class WeatherView
         canvas.Children.Add(dot);
         WeatherMotion.Pop(dot, delayMs + 60, 0.2, 480);
         double start = (delayMs + 400) / 1000.0;
-        _loops.Run(open, ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 3, TimeSpan.FromSeconds(1.8)) { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(start), EasingFunction = WeatherMotion.Out });
-        _loops.Run(open, ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 3, TimeSpan.FromSeconds(1.8)) { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(start), EasingFunction = WeatherMotion.Out });
-        _loops.Run(ring, OpacityProperty, new DoubleAnimation(0.9, 0, TimeSpan.FromSeconds(1.8)) { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(start), EasingFunction = WeatherMotion.Out });
+        _chartLoops.Run(open, ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 3, TimeSpan.FromSeconds(1.8)) { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(start), EasingFunction = WeatherMotion.Out });
+        _chartLoops.Run(open, ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 3, TimeSpan.FromSeconds(1.8)) { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(start), EasingFunction = WeatherMotion.Out });
+        _chartLoops.Run(ring, OpacityProperty, new DoubleAnimation(0.9, 0, TimeSpan.FromSeconds(1.8)) { RepeatBehavior = RepeatBehavior.Forever, BeginTime = TimeSpan.FromSeconds(start), EasingFunction = WeatherMotion.Out });
     }
 
     /// <summary>Under the pointer: a hairline and a dot glide to the nearest step, with its time, temperature and rain.</summary>
@@ -535,3 +525,4 @@ public sealed partial class WeatherView
     private static string Capitalize(string text) =>
         string.IsNullOrEmpty(text) ? text : char.ToUpper(text[0], CultureInfo.CurrentCulture) + text[1..];
 }
+

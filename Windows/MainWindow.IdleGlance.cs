@@ -2,12 +2,11 @@ using System;
 using System.Globalization;
 using System.Threading;
 using System.Windows;
-using System.Windows.Media.Animation;
+using System.Windows.Media;
 using System.Windows.Threading;
 using VNotch.Controls;
 using VNotch.Controllers;
 using VNotch.Services;
-using static VNotch.Services.AnimationPrimitives;
 
 namespace VNotch;
 
@@ -24,7 +23,13 @@ public partial class MainWindow
     private DispatcherTimer? _idleClockTimer;
     private DispatcherTimer? _idleSettleTimer;
     private bool _idleGlanceShown;
+    private int _idleGlanceToken;
     private bool _idleGlanceHooked;
+    private readonly TranslateTransform _idleClockShift = new();
+    private readonly ScaleTransform _idleWeatherScale = new();
+    private int _idleClockToken;
+    private int _idleWeatherToken;
+    private string? _idleWeatherKey;
 
     /// <summary>Nothing live in the closed notch: no music, no Claude Code, no countdown.</summary>
     private bool IsIdleShape =>
@@ -43,6 +48,7 @@ public partial class MainWindow
     private void SettleIdleWidth()
     {
         _idleSettleTimer?.Stop();
+        if (!AmbientAnimationsAllowed || !IdleGlance.IsVisible) return;
         // Opening, closing, pills and the volume HUD all end on the resting width themselves.
         if (_isExpanded || _isMusicExpanded) return;
         if (_isAnimating || _isGreetingActive || IsCountdownCompletionVisualActive ||
@@ -54,9 +60,7 @@ public partial class MainWindow
         }
         double current = NotchBorder.ActualWidth;
         if (current <= 0 || Math.Abs(current - _collapsedWidth) < 0.5) return;
-        bool widening = _collapsedWidth > current;
-        AnimateCompactWidth(_collapsedWidth, TimeSpan.FromMilliseconds(widening ? 480 : 560),
-            widening ? _easeSoftSpring : _easeExpOut6, 0);
+        Motion.To(NotchBorder, WidthProperty, _collapsedWidth, Motion.Glide);
         if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: true);
     }
 
@@ -71,33 +75,42 @@ public partial class MainWindow
         return timer;
     }
 
+    /// <summary>The idle clock slides away before live content takes its place.</summary>
     private void ShowIdleGlance(bool show)
     {
         if (show == _idleGlanceShown) return;
         _idleGlanceShown = show;
-        IdleGlance.BeginAnimation(OpacityProperty, null);
-        IdleGlanceShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, null);
+        int token = ++_idleGlanceToken;
         if (show)
         {
+            bool entering = IdleGlance.Visibility != Visibility.Visible;
             RefreshIdleClock(animate: false);
             UpdateIdleWeather();
             IdleGlance.Visibility = Visibility.Visible;
-            if (AnimationConfig.ReduceMotion)
+            if (!IdleGlance.IsVisible || !AmbientAnimationsAllowed)
             {
-                IdleGlance.Opacity = 1;
+                Motion.Stop(IdleGlance, OpacityProperty, 1);
+                Motion.Stop(IdleGlanceShift, TranslateTransform.YProperty, 0);
                 return;
             }
-            // In once the notch has slimmed down.
-            IdleGlance.Opacity = 0;
-            IdleGlance.BeginAnimation(OpacityProperty, MakeAnim(0d, 1d, TimeSpan.FromMilliseconds(320), _easeQuadOut, TimeSpan.FromMilliseconds(200)));
-            IdleGlanceShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
-                MakeAnim(5d, 0d, TimeSpan.FromMilliseconds(520), _easeSoftSpring, TimeSpan.FromMilliseconds(200)));
+            Motion.To(IdleGlance, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null);
+            Motion.To(IdleGlanceShift, TranslateTransform.YProperty, 0, Motion.Pop, from: entering ? 5 : null);
         }
         else
         {
-            // Out before the live content takes the space.
-            IdleGlance.Opacity = 0;
-            IdleGlance.Visibility = Visibility.Collapsed;
+            if (!IdleGlance.IsVisible || !AmbientAnimationsAllowed)
+            {
+                Motion.Stop(IdleGlance, OpacityProperty, 0);
+                Motion.Stop(IdleGlanceShift, TranslateTransform.YProperty, -4);
+                IdleGlance.Visibility = Visibility.Collapsed;
+                return;
+            }
+            Motion.To(IdleGlanceShift, TranslateTransform.YProperty, -4, Motion.Exit);
+            Motion.To(IdleGlance, OpacityProperty, 0, Motion.Exit, done: () =>
+            {
+                if (token == _idleGlanceToken && !_idleGlanceShown)
+                    IdleGlance.Visibility = Visibility.Collapsed;
+            });
         }
     }
 
@@ -105,25 +118,39 @@ public partial class MainWindow
     {
         if (_idleGlanceHooked) return;
         _idleGlanceHooked = true;
+        IdleClock.RenderTransform = _idleClockShift;
+        IdleWeather.RenderTransformOrigin = new Point(0.5, 0.5);
+        IdleWeather.RenderTransform = _idleWeatherScale;
         // The clock only ticks while it is on screen; hidden (expanded, fullscreen) nothing runs.
         IdleGlance.IsVisibleChanged += (_, _) =>
         {
             if (_cleanedUp) return;
-            if (IdleGlance.IsVisible)
+            if (IdleGlance.IsVisible && AmbientAnimationsAllowed)
             {
                 RefreshIdleClock(animate: false);
+                UpdateIdleWeather();
                 ScheduleIdleClock();
                 RefreshIdleWeatherIfStale();
+                SettleIdleWidth();
             }
             else
             {
                 _idleClockTimer?.Stop();
+                _idleSettleTimer?.Stop();
+                Motion.Stop(IdleGlance, OpacityProperty, _idleGlanceShown ? 1 : 0);
+                Motion.Stop(IdleGlanceShift, TranslateTransform.YProperty, _idleGlanceShown ? 0 : -4);
+                Motion.Stop(IdleClock, OpacityProperty, 1);
+                Motion.Stop(_idleClockShift, TranslateTransform.XProperty, 0);
+                Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleXProperty, 1);
+                Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleYProperty, 1);
+                Motion.Stop(IdleWeather, OpacityProperty, IdleWeather.Visibility == Visibility.Visible ? 1 : 0);
             }
         };
     }
 
     private void ScheduleIdleClock()
     {
+        if (_cleanedUp || !IdleGlance.IsVisible || !AmbientAnimationsAllowed) return;
         _idleClockTimer ??= CreateIdleClockTimer();
         var now = DateTime.Now;
         _idleClockTimer.Interval = TimeSpan.FromSeconds(60 - now.Second) - TimeSpan.FromMilliseconds(now.Millisecond) + TimeSpan.FromMilliseconds(50);
@@ -136,7 +163,7 @@ public partial class MainWindow
         timer.Tick += (_, _) =>
         {
             timer.Stop();
-            if (_cleanedUp || !IdleGlance.IsVisible) return;
+            if (_cleanedUp || !IdleGlance.IsVisible || !AmbientAnimationsAllowed) return;
             RefreshIdleClock(animate: true);
             RefreshIdleWeatherIfStale();
             ScheduleIdleClock();
@@ -148,9 +175,19 @@ public partial class MainWindow
     {
         string text = DateTime.Now.ToString("t", CultureInfo.CurrentCulture);
         if (IdleClock.Text == text) return;
-        IdleClock.Text = text;
-        if (!animate || AnimationConfig.ReduceMotion) return;
-        IdleClock.BeginAnimation(OpacityProperty, MakeAnim(0.25d, 1d, TimeSpan.FromMilliseconds(380), _easeQuadOut));
+        int token = ++_idleClockToken;
+        if (!animate || AnimationConfig.ReduceMotion || !IdleClock.IsVisible)
+        {
+            IdleClock.Text = text;
+            Motion.Stop(IdleClock, OpacityProperty, 1);
+            return;
+        }
+        Motion.To(IdleClock, OpacityProperty, 0, Motion.Exit, done: () =>
+        {
+            if (_cleanedUp || token != _idleClockToken) return;
+            IdleClock.Text = text;
+            Motion.To(IdleClock, OpacityProperty, 1, Motion.Tile);
+        });
     }
 
     private void RefreshIdleWeatherIfStale()
@@ -166,19 +203,68 @@ public partial class MainWindow
         if (IdleWeather == null) return;
         bool allowed = _settings != null && NetworkPrivacy.Allows(_settings, NetworkFeature.Weather);
         var forecast = allowed ? _weatherCache : null;
+        int token = ++_idleWeatherToken;
         if (forecast == null || DateTime.Now - forecast.FetchedAt > IdleWeatherTooOld)
         {
-            IdleWeather.Visibility = Visibility.Collapsed;
-            IdleClock.HorizontalAlignment = HorizontalAlignment.Center;
+            _idleWeatherKey = null;
+            PositionIdleClock(HorizontalAlignment.Center);
+            if (!IdleWeather.IsVisible || !AmbientAnimationsAllowed)
+            {
+                Motion.Stop(IdleWeather, OpacityProperty, 0);
+                IdleWeather.Visibility = Visibility.Collapsed;
+                return;
+            }
+            Motion.To(_idleWeatherScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
+            Motion.To(_idleWeatherScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
+            Motion.To(IdleWeather, OpacityProperty, 0, Motion.Exit, done: () =>
+            {
+                if (token == _idleWeatherToken) IdleWeather.Visibility = Visibility.Collapsed;
+            });
             return;
         }
         bool wasShown = IdleWeather.Visibility == Visibility.Visible;
-        IdleClock.HorizontalAlignment = HorizontalAlignment.Left;
-        IdleWeatherIcon.Content = WeatherIcons.Create(forecast.Now.Code, forecast.Now.IsDay, 15);
-        IdleWeatherTemp.Text = WeatherView.Degrees(forecast.Now.Temperature);
-        IdleWeather.Visibility = Visibility.Visible;
-        if (!wasShown && _idleGlanceShown && !AnimationConfig.ReduceMotion)
-            IdleWeather.BeginAnimation(OpacityProperty, MakeAnim(0d, 1d, TimeSpan.FromMilliseconds(360), _easeQuadOut));
+        string temperature = WeatherView.Degrees(forecast.Now.Temperature);
+        string key = $"{forecast.Now.Code}:{forecast.Now.IsDay}:{temperature}";
+        PositionIdleClock(HorizontalAlignment.Left);
+        void Reveal()
+        {
+            if (_cleanedUp || token != _idleWeatherToken) return;
+            if (_idleWeatherKey != key)
+            {
+                IdleWeatherIcon.Content = WeatherIcons.Create(forecast.Now.Code, forecast.Now.IsDay, 15);
+                IdleWeatherTemp.Text = temperature;
+                _idleWeatherKey = key;
+            }
+            IdleWeather.Visibility = Visibility.Visible;
+            if (!IdleWeather.IsVisible || !AmbientAnimationsAllowed)
+            {
+                Motion.Stop(IdleWeather, OpacityProperty, 1);
+                Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleXProperty, 1);
+                Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleYProperty, 1);
+                return;
+            }
+            Motion.To(IdleWeather, OpacityProperty, 1, Motion.Tile, from: wasShown ? null : 0);
+            Motion.To(_idleWeatherScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: wasShown ? null : Motion.TileFromScale);
+            Motion.To(_idleWeatherScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: wasShown ? null : Motion.TileFromScale);
+        }
+        if (wasShown && _idleWeatherKey != key && IdleWeather.IsVisible)
+            Motion.To(IdleWeather, OpacityProperty, 0, Motion.Exit, done: Reveal);
+        else Reveal();
+    }
+
+    private void PositionIdleClock(HorizontalAlignment alignment)
+    {
+        if (IdleClock.HorizontalAlignment == alignment) return;
+        bool animate = IdleClock.IsVisible && !AnimationConfig.ReduceMotion;
+        double before = animate ? IdleClock.TranslatePoint(new Point(), IdleGlance).X : 0;
+        IdleClock.HorizontalAlignment = alignment;
+        if (!animate) return;
+        IdleGlance.UpdateLayout();
+        double after = IdleClock.TranslatePoint(new Point(), IdleGlance).X;
+        double velocity = Motion.VelocityOf(_idleClockShift, TranslateTransform.XProperty);
+        Motion.Stop(_idleClockShift, TranslateTransform.XProperty, _idleClockShift.X + before - after);
+        Motion.To(_idleClockShift, TranslateTransform.XProperty, 0, Motion.Glide,
+            velocity: velocity);
     }
 
     #endregion

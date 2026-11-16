@@ -7,7 +7,7 @@
  xmlns:svc="clr-namespace:VNotch.Services"
  Focusable="False" Background="Transparent" Foreground="White" PreviewKeyDown="Tray_PreviewKeyDown"
  UseLayoutRounding="True" SnapsToDevicePixels="True" TextOptions.TextFormattingMode="Ideal"
- TextOptions.TextRenderingMode="ClearType" TextOptions.TextHintingMode="Fixed"
+ TextOptions.TextRenderingMode="Grayscale" TextOptions.TextHintingMode="Animated"
  RenderOptions.BitmapScalingMode="HighQuality" RenderOptions.ClearTypeHint="Enabled"
  FontFamily="{StaticResource SFProDisplay}" FontWeight="Bold">
  <UserControl.Resources>
@@ -16,14 +16,12 @@
   <SolidColorBrush x:Key="TraySurfaceBase" Color="{x:Static local:ClipboardTrayTokens.SurfaceBase}"/>
   <SolidColorBrush x:Key="TraySurfaceElevated" Color="{x:Static local:ClipboardTrayTokens.SurfaceElevated}"/>
   <SolidColorBrush x:Key="TraySurfaceOverlay" Color="{x:Static local:ClipboardTrayTokens.SurfaceOverlay}"/>
-  <SolidColorBrush x:Key="TrayAccent" Color="#30FFFFFF"/>
-  <SolidColorBrush x:Key="TrayOnAccent" Color="#FFFFFF"/>
   <SolidColorBrush x:Key="TrayDestructive" Color="#FF453A"/>
   <SolidColorBrush x:Key="TrayMutedForeground" Color="#8E8E93"/>
   <CornerRadius x:Key="TrayRadiusSmall">8</CornerRadius>
   <CornerRadius x:Key="TrayRadiusMedium">12</CornerRadius>
-  <CornerRadius x:Key="TrayRadiusLarge">16</CornerRadius>
-  <CornerRadius x:Key="TrayRadiusCardFooter">0,0,16,16</CornerRadius>
+  <CornerRadius x:Key="TrayRadiusLarge">12</CornerRadius>
+  <CornerRadius x:Key="TrayRadiusCardFooter">0,0,12,12</CornerRadius>
   <SolidColorBrush x:Key="TrayMenuSurfaceBrush" Color="#000000"/>
   <LinearGradientBrush x:Key="TrayMenuRim" StartPoint="0,0" EndPoint="0,1">
    <GradientStop Color="#38FFFFFF" Offset="0"/>
@@ -36,7 +34,7 @@
    <Setter Property="BorderThickness" Value="1"/>
    <Setter Property="CornerRadius" Value="{StaticResource TrayRadiusMedium}"/>
    <Setter Property="Padding" Value="5"/>
-   <Setter Property="SnapsToDevicePixels" Value="True"/>
+   <Setter Property="SnapsToDevicePixels" Value="False"/>
    <Setter Property="Effect"><Setter.Value>
     <DropShadowEffect BlurRadius="22" ShadowDepth="5" Direction="270" Color="Black" Opacity="0.48" RenderingBias="Performance"/>
    </Setter.Value></Setter>
@@ -48,14 +46,14 @@
    <Setter Property="FontWeight" Value="Bold"/>
    <Setter Property="Foreground" Value="#F5F5FA"/>
    <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
-   <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
-   <Setter Property="TextOptions.TextHintingMode" Value="Fixed"/>
+   <Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
+   <Setter Property="TextOptions.TextHintingMode" Value="Animated"/>
   </Style>
   <Style TargetType="TextBox">
    <Setter Property="FontFamily" Value="{StaticResource SFProDisplay}"/>
    <Setter Property="FontWeight" Value="Bold"/>
    <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
-   <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
+   <Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
   </Style>
   <Style x:Key="TrayDialogInput" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
    <Setter Property="FontSize" Value="12.5"/>
@@ -400,13 +398,13 @@
      <Setter Property="Foreground" Value="White"/>
     </Trigger>
     <!-- Amber and full opacity distinguish pinned files without rotating the icon. -->
-    <DataTrigger Binding="{Binding Entry.IsPinned}" Value="True">
+    <DataTrigger Binding="{Binding IsPinned}" Value="True">
      <Setter Property="Opacity" Value="1.0"/>
      <Setter Property="Foreground" Value="#FFD60A"/>
     </DataTrigger>
     <MultiDataTrigger>
      <MultiDataTrigger.Conditions>
-      <Condition Binding="{Binding Entry.IsPinned}" Value="True"/>
+      <Condition Binding="{Binding IsPinned}" Value="True"/>
       <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True"/>
      </MultiDataTrigger.Conditions>
      <Setter Property="Foreground" Value="#FFE040"/>
@@ -448,20 +446,24 @@
       <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
      </Grid>
     </Border>
-    <Border x:Name="CategoryHover" Background="#18FFFFFF" BorderThickness="0" CornerRadius="13" IsHitTestVisible="False" local:TrayMotion.Opacity="0"/>
+    <Border x:Name="CategoryHover" Background="{DynamicResource AccentSubtleBrush}" BorderThickness="0" CornerRadius="13" IsHitTestVisible="False" local:TrayMotion.Opacity="0"/>
     </Grid>
     <ControlTemplate.Triggers>
      <DataTrigger Binding="{Binding IsSelected}" Value="True">
       <Setter TargetName="Surface" Property="local:TrayMotion.Background" Value="Transparent"/>
+      <!-- Keep the overlay translucent even before the opacity clock ticks. -->
+      <Setter TargetName="CategoryHover" Property="Background" Value="#1AFFFFFF"/>
      </DataTrigger>
+     <Trigger Property="IsMouseOver" Value="True">
+      <Setter TargetName="CategoryHover" Property="local:TrayMotion.Opacity" Value="1"/>
+      <Setter TargetName="ContentHost" Property="local:TrayMotion.Scale" Value="1.03"/>
+     </Trigger>
      <MultiDataTrigger>
       <MultiDataTrigger.Conditions>
        <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True"/>
        <Condition Binding="{Binding IsSelected}" Value="False"/>
       </MultiDataTrigger.Conditions>
-      <Setter TargetName="CategoryHover" Property="local:TrayMotion.Opacity" Value="1"/>
-      <Setter TargetName="ContentHost" Property="local:TrayMotion.Scale" Value="1.03"/>
-      <Setter Property="Foreground" Value="#E6FFFFFF"/>
+      <Setter Property="Foreground" Value="{DynamicResource AccentBrushStrong}"/>
      </MultiDataTrigger>
      <Trigger Property="IsPressed" Value="True">
       <Setter TargetName="Surface" Property="local:TrayMotion.Opacity" Value="0.82"/>
@@ -471,8 +473,8 @@
    </ControlTemplate></Setter.Value></Setter>
    <Style.Triggers>
     <DataTrigger Binding="{Binding IsSelected}" Value="True">
-     <Setter Property="Background" Value="#30FFFFFF"/>
-     <Setter Property="Foreground" Value="{x:Static svc:UiPalette.PrimaryBrush}"/>
+     <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+     <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
     </DataTrigger>
    </Style.Triggers>
   </Style>
@@ -525,7 +527,9 @@
       <Grid Margin="10,8,10,12">
        <Border x:Name="SubmenuSurface" Style="{StaticResource TrayMenuSurface}" MinWidth="190">
         <ScrollViewer MaxHeight="420" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="True">
-         <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+         <local:FluidMenuSurface x:Name="SubmenuHighlightHost">
+          <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+         </local:FluidMenuSurface>
         </ScrollViewer>
        </Border>
       </Grid>
@@ -533,14 +537,12 @@
     </Grid>
     <ControlTemplate.Triggers>
      <Trigger Property="IsHighlighted" Value="True">
-      <Setter TargetName="MenuRow" Property="local:TrayMotion.Background" Value="#18FFFFFF"/>
-      <Setter TargetName="MenuRow" Property="local:TrayMotion.BorderBrush" Value="#0DFFFFFF"/>
+      <Setter TargetName="MenuRow" Property="local:FluidMenuSurface.IsRowActive" Value="True"/>
       <Setter Property="Foreground" Value="White"/>
       <Setter TargetName="MenuContent" Property="local:TrayMotion.Opacity" Value="1"/>
      </Trigger>
      <Trigger Property="IsSubmenuOpen" Value="True">
-      <Setter TargetName="MenuRow" Property="local:TrayMotion.Background" Value="#18FFFFFF"/>
-      <Setter TargetName="MenuRow" Property="local:TrayMotion.BorderBrush" Value="#0DFFFFFF"/>
+      <Setter TargetName="MenuRow" Property="local:FluidMenuSurface.KeepsRowActive" Value="True"/>
       <Setter Property="Foreground" Value="White"/>
       <Setter TargetName="MenuContent" Property="local:TrayMotion.Opacity" Value="1"/>
      </Trigger>
@@ -559,8 +561,6 @@
        <Condition Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="danger"/>
        <Condition Binding="{Binding IsHighlighted, RelativeSource={RelativeSource Self}}" Value="True"/>
       </MultiDataTrigger.Conditions>
-      <Setter TargetName="MenuRow" Property="local:TrayMotion.Background" Value="#18FF453A"/>
-      <Setter TargetName="MenuRow" Property="local:TrayMotion.BorderBrush" Value="#14FF453A"/>
       <Setter Property="Foreground" Value="#FF6961"/>
      </MultiDataTrigger>
      <Trigger Property="IsEnabled" Value="False">
@@ -579,11 +579,64 @@
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ContextMenu">
     <Grid Margin="10,8,10,12">
      <Border x:Name="MenuSurface" Style="{StaticResource TrayMenuSurface}" MinWidth="220">
-      <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+      <local:FluidMenuSurface x:Name="MenuHighlightHost">
+       <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+      </local:FluidMenuSurface>
      </Border>
     </Grid>
    </ControlTemplate></Setter.Value></Setter>
   </Style>
+  <!-- Only the active content kind instantiates its visual tree and bindings. -->
+  <ControlTemplate x:Key="TrayCardImageContent" TargetType="Control">
+   <Grid>
+    <Image Source="{Binding Image, NotifyOnTargetUpdated=True}" TargetUpdated="CardPreview_TargetUpdated" Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+    <Border CornerRadius="{StaticResource TrayRadiusLarge}" IsHitTestVisible="False">
+     <Border.Background>
+      <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+       <GradientStop Color="#55000000" Offset="0"/>
+       <GradientStop Color="#00000000" Offset="0.32"/>
+       <GradientStop Color="#00000000" Offset="0.58"/>
+       <GradientStop Color="#90000000" Offset="1"/>
+      </LinearGradientBrush>
+     </Border.Background>
+    </Border>
+   </Grid>
+  </ControlTemplate>
+  <ControlTemplate x:Key="TrayCardFileContent" TargetType="Control">
+   <Border x:Name="FileBadgePanel" Margin="14,30,14,40" Padding="6,0" IsHitTestVisible="False">
+    <Grid>
+     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+      <Grid x:Name="FileHeroIcon" Width="24" Height="24" VerticalAlignment="Center" Margin="0,0,7,0">
+       <Image Source="{Binding FilePreviewIcon}" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+      </Grid>
+      <Border CornerRadius="4" Background="{Binding FileBadgeBackgroundBrush}" Padding="6,1.5" VerticalAlignment="Center">
+       <TextBlock x:Name="FileTypeTagText" Text="{Binding FileTypeTag}" FontSize="11" FontWeight="Bold" FontFamily="{StaticResource SFProDisplay}" Foreground="{x:Static svc:UiPalette.PrimaryBrush}"/>
+      </Border>
+     </StackPanel>
+     <TextBlock x:Name="FileHeroName" Grid.Row="1" Text="{Binding Title}" ToolTip="{Binding Title}" FontFamily="{StaticResource SFProDisplay}" FontSize="11" LineHeight="14" Foreground="{x:Static svc:UiPalette.PrimaryBrush}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" TextAlignment="Center" VerticalAlignment="Center" MaxHeight="28" Margin="0,4,0,0"/>
+    </Grid>
+   </Border>
+  </ControlTemplate>
+  <ControlTemplate x:Key="TrayCardTextContent" TargetType="Control">
+   <Grid x:Name="CardPreviewViewport" Margin="14,13,14,48" VerticalAlignment="Top" MaxHeight="96" ClipToBounds="True">
+    <Grid HorizontalAlignment="Left" VerticalAlignment="Top" Width="{Binding MaskedPreviewWidth}" Height="{Binding MaskedPreviewHeight}">
+     <TextBlock x:Name="CardPreviewText" Text="{Binding DisplayPreview}" Opacity="{Binding MaskedTextOpacity}" FontFamily="{StaticResource SFProDisplay}" FontSize="14" FontWeight="SemiBold" LineHeight="19" LineStackingStrategy="BlockLineHeight" MaxHeight="95" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Foreground="{x:Static svc:UiPalette.PrimaryBrush}">
+      <TextBlock.Effect><BlurEffect Radius="{Binding BlurRadius}" RenderingBias="Performance"/></TextBlock.Effect>
+     </TextBlock>
+     <local:DustParticleOverlay x:Name="DustOverlay" IsActive="{Binding IsMasked}" IsDissolved="{Binding IsRevealed}" DissolveRequested="DustOverlay_DissolveRequested" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+    </Grid>
+   </Grid>
+   <ControlTemplate.Triggers>
+    <DataTrigger Binding="{Binding Kind}" Value="Color">
+     <Setter TargetName="CardPreviewText" Property="Background" Value="#D9000000"/>
+     <Setter TargetName="CardPreviewText" Property="Padding" Value="6,3"/>
+     <Setter TargetName="CardPreviewText" Property="HorizontalAlignment" Value="Left"/>
+    </DataTrigger>
+    <DataTrigger Binding="{Binding Kind}" Value="File"><Setter TargetName="CardPreviewText" Property="Visibility" Value="Collapsed"/></DataTrigger>
+    <DataTrigger Binding="{Binding Kind}" Value="Image"><Setter TargetName="CardPreviewText" Property="Visibility" Value="Collapsed"/></DataTrigger>
+   </ControlTemplate.Triggers>
+  </ControlTemplate>
  </UserControl.Resources>
 
  <Grid x:Name="SelectionSurface" Background="Transparent">
@@ -596,7 +649,7 @@
    </Grid.RowDefinitions>
 
    <!-- Row 0: Top Header (NavTabs Clearance + Flagship Search Capsule & Toolbar) -->
-   <Grid Grid.Row="0" Margin="12,0,12,0" Height="28" VerticalAlignment="Top">
+   <Grid Grid.Row="0" Margin="18,0,18,0" Height="28" VerticalAlignment="Top">
     <Grid.RenderTransform><TranslateTransform x:Name="HeaderTranslate"/></Grid.RenderTransform>
     <Grid.ColumnDefinitions>
      <ColumnDefinition Width="{Binding NavigationWidth, RelativeSource={RelativeSource AncestorType={x:Type local:ClipboardTray}}}"/>
@@ -604,8 +657,8 @@
      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     
-    <Border x:Name="SearchSurface" Grid.Column="1" Height="30" MaxWidth="360" HorizontalAlignment="Stretch" Margin="8,0,0,0"
-     CornerRadius="15" BorderThickness="1" Cursor="IBeam" MouseLeftButtonDown="SearchSurface_MouseLeftButtonDown">
+    <Border x:Name="SearchSurface" Grid.Column="1" Height="28" MaxWidth="360" HorizontalAlignment="Stretch" Margin="8,0,0,0"
+     CornerRadius="14" BorderThickness="1" Cursor="IBeam" MouseLeftButtonDown="SearchSurface_MouseLeftButtonDown">
      <Border.Style>
       <Style TargetType="Border">
        <Setter Property="Background" Value="#1EFFFFFF"/>
@@ -691,6 +744,7 @@
    <Border Background="Transparent" Padding="0,3" HorizontalAlignment="Left">
     <Grid>
      <Border x:Name="CategorySelection" Width="1" HorizontalAlignment="Left" CornerRadius="13"
+             Background="{DynamicResource AccentBrush}"
              BorderThickness="0" RenderTransformOrigin="0,0.5"
              IsHitTestVisible="False" Opacity="0">
       <Border.RenderTransform><TransformGroup><ScaleTransform x:Name="CategorySelectionScale"/><TranslateTransform x:Name="CategorySelectionOffset"/></TransformGroup></Border.RenderTransform>
@@ -770,13 +824,14 @@
 
   <!-- Import Progress Indicator -->
   <ProgressBar x:Name="ImportProgressBar" Grid.Row="1" Height="2.5" VerticalAlignment="Bottom" Margin="14,0,14,0"
-               Background="Transparent" BorderThickness="0" Foreground="{StaticResource TrayAccent}"
+               Background="Transparent" BorderThickness="0" Foreground="{DynamicResource AccentSubtleBrush}"
                Visibility="Collapsed" Opacity="0" Minimum="0" Maximum="100"/>
 
   <!-- Row 2: Cards Canvas & Overlays -->
   <Grid x:Name="CardsViewport" Grid.Row="2" Background="Transparent" Cursor="Cross">
    <!-- Permanent Tray Drop Zone Silhouette Border (Framing both empty and filled tray) -->
-   <Rectangle x:Name="TrayDropBorder" Margin="2,2,2,4" RadiusX="14" RadiusY="14"
+   <!-- The 10-DIP outer and inner insets keep the 24/18/12-DIP corners concentric. -->
+   <Rectangle x:Name="TrayDropBorder" Margin="2,2,2,2" RadiusX="18" RadiusY="18"
               Fill="Transparent" Stroke="#75FFFFFF" StrokeThickness="2.0" StrokeDashArray="5 4"
               IsHitTestVisible="False"/>
 
@@ -785,7 +840,7 @@
    <local:ClipboardCardListBox x:Name="Cards" Background="Transparent" BorderThickness="0" Padding="0" ScrollViewer.HorizontalScrollBarVisibility="Hidden" SnapsToDevicePixels="False" UseLayoutRounding="False" TextOptions.TextRenderingMode="Grayscale"
     ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
     VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel" VirtualizingPanel.CacheLength="0.5" VirtualizingPanel.CacheLengthUnit="Page" TextOptions.TextFormattingMode="Display" RenderOptions.ClearTypeHint="Auto" PreviewMouseWheel="Cards_Wheel"
-    ScrollViewer.ScrollChanged="TrayScroll_Changed" SizeChanged="TrayScroll_SizeChanged" PreviewKeyDown="Cards_KeyDown" SelectionChanged="Cards_SelectionChanged" SelectionMode="Extended" Margin="8,7,8,12">
+    ScrollViewer.ScrollChanged="TrayScroll_Changed" SizeChanged="TrayScroll_SizeChanged" PreviewKeyDown="Cards_KeyDown" SelectionChanged="Cards_SelectionChanged" SelectionMode="Extended" Margin="6,12,6,12">
     
     <ListBox.ItemsPanel><ItemsPanelTemplate><VirtualizingStackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ListBox.ItemsPanel>
     <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem">
@@ -798,7 +853,7 @@
     </Style></ListBox.ItemContainerStyle>
     <ListBox.ItemTemplate><DataTemplate DataType="{x:Type vm:ClipboardCardViewModel}">
      <!-- Flagship Card Container (Exact 210 Width Required by Interaction Tests) -->
-     <Border Width="210" CornerRadius="{StaticResource TrayRadiusLarge}" Background="Transparent" BorderThickness="0" ClipToBounds="True" Cursor="Hand" SnapsToDevicePixels="False" UseLayoutRounding="True"
+     <Border Width="210" CornerRadius="{StaticResource TrayRadiusLarge}" Background="Transparent" BorderThickness="0" Cursor="Hand" SnapsToDevicePixels="False" UseLayoutRounding="True"
       ContextMenuOpening="Card_ContextMenu" Loaded="Card_Loaded" Unloaded="Card_Unloaded" DataContextChanged="Card_DataContextChanged" SizeChanged="Card_SizeChanged" PreviewMouseLeftButtonDown="Card_Down" PreviewMouseLeftButtonUp="Card_Up" PreviewMouseMove="Card_Move" MouseLeave="Card_MouseLeave" IsVisibleChanged="Card_VisibilityChanged">
       <Border.ContextMenu><ContextMenu/></Border.ContextMenu>
       <local:ClipboardCardPresentation x:Name="CardPresentation">
@@ -806,36 +861,22 @@
        <Border CornerRadius="{StaticResource TrayRadiusLarge}" Background="{Binding CardBrush}" IsHitTestVisible="False"/>
        <!-- Card Visual Content (Blurred when copied) -->
        <Grid x:Name="CardContentGrid" local:TrayMotion.BlurRadius="{Binding IsCopied, Converter={StaticResource BoolBlur}}">
-        <!-- Layer 2: Image Thumbnail -->
-        <!-- Edge-to-edge artwork; the footer vignette keeps metadata readable. -->
-        <Image Source="{Binding Image, NotifyOnTargetUpdated=True}" TargetUpdated="CardPreview_TargetUpdated" Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-        
-        <!-- Layer 3: Protective Vignette for Image readability -->
-        <Border CornerRadius="{StaticResource TrayRadiusLarge}" IsHitTestVisible="False">
-         <Border.Style>
-          <Style TargetType="Border">
+        <Control Focusable="False" IsTabStop="False">
+         <Control.Style>
+          <Style TargetType="Control">
            <Setter Property="Visibility" Value="Collapsed"/>
            <Style.Triggers>
-            <DataTrigger Binding="{Binding Entry.Kind}" Value="Image">
+            <DataTrigger Binding="{Binding Kind}" Value="Image">
              <Setter Property="Visibility" Value="Visible"/>
-             <Setter Property="Background">
-              <Setter.Value>
-               <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                <GradientStop Color="#55000000" Offset="0"/>
-                <GradientStop Color="#00000000" Offset="0.32"/>
-                <GradientStop Color="#00000000" Offset="0.58"/>
-                <GradientStop Color="#90000000" Offset="1"/>
-               </LinearGradientBrush>
-              </Setter.Value>
-             </Setter>
+             <Setter Property="Template" Value="{StaticResource TrayCardImageContent}"/>
             </DataTrigger>
            </Style.Triggers>
           </Style>
-         </Border.Style>
-        </Border>
+         </Control.Style>
+        </Control>
 
         <!-- Inset rims avoid overlapping the rounded card clip and losing edge coverage. -->
-        <Rectangle x:Name="BaseRim" RadiusX="16" RadiusY="16" Margin="0" StrokeThickness="1.2" IsHitTestVisible="False" Panel.ZIndex="2">
+        <Rectangle x:Name="BaseRim" RadiusX="12" RadiusY="12" Margin="0" StrokeThickness="1.2" IsHitTestVisible="False" Panel.ZIndex="2">
          <Rectangle.Stroke>
           <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
            <GradientStop Color="#66FFFFFF" Offset="0"/>
@@ -846,7 +887,7 @@
         </Rectangle>
 
         <!-- Layer 4b: Hover Optical Rim (Smooth animated illumination on card hover) -->
-        <Rectangle x:Name="HoverRim" RadiusX="16" RadiusY="16" Margin="0" StrokeThickness="2" Opacity="0" IsHitTestVisible="False" Panel.ZIndex="3">
+        <Rectangle x:Name="HoverRim" RadiusX="12" RadiusY="12" Margin="0" StrokeThickness="2" Opacity="0" IsHitTestVisible="False" Panel.ZIndex="3">
          <Rectangle.Stroke>
           <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
            <GradientStop Color="#85FFFFFF" Offset="0"/>
@@ -857,7 +898,7 @@
         </Rectangle>
 
         <!-- Layer 4c: Selected Optical Rim (High-contrast animated rim on selection) -->
-        <Rectangle x:Name="SelectedRim" RadiusX="16" RadiusY="16" Margin="0" StrokeThickness="2" Opacity="0" IsHitTestVisible="False" Panel.ZIndex="4">
+        <Rectangle x:Name="SelectedRim" RadiusX="12" RadiusY="12" Margin="0" StrokeThickness="2" Opacity="0" IsHitTestVisible="False" Panel.ZIndex="4">
          <Rectangle.Stroke>
           <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
            <GradientStop Color="#FFFFFF" Offset="0"/>
@@ -867,55 +908,48 @@
          </Rectangle.Stroke>
         </Rectangle>
 
-        <!-- Layer 5b: File Card Hero Presentation (Kind == File) -->
-        <Border x:Name="FileBadgePanel" Margin="14,30,14,40" Padding="6,0" IsHitTestVisible="False">
-         <Border.Style>
-          <Style TargetType="Border">
+        <Control Focusable="False" IsTabStop="False" IsHitTestVisible="False">
+         <Control.Style>
+          <Style TargetType="Control">
            <Setter Property="Visibility" Value="Collapsed"/>
            <Style.Triggers>
-            <DataTrigger Binding="{Binding Entry.Kind}" Value="File">
+            <DataTrigger Binding="{Binding Kind}" Value="File">
              <Setter Property="Visibility" Value="Visible"/>
+             <Setter Property="Template" Value="{StaticResource TrayCardFileContent}"/>
             </DataTrigger>
            </Style.Triggers>
           </Style>
-         </Border.Style>
-         <Grid>
-          <Grid.RowDefinitions>
-           <RowDefinition Height="Auto"/>
-           <RowDefinition Height="*"/>
-          </Grid.RowDefinitions>
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-          <Grid x:Name="FileHeroIcon" Width="24" Height="24" VerticalAlignment="Center" Margin="0,0,7,0">
-           <Image Source="{Binding FilePreviewIcon}" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
-          </Grid>
-          <Border CornerRadius="4" Background="{Binding FileBadgeBackgroundBrush}" Padding="6,1.5" VerticalAlignment="Center">
-           <TextBlock x:Name="FileTypeTagText" Text="{Binding FileTypeTag}" FontSize="11" FontWeight="Bold" FontFamily="{StaticResource SFProDisplay}" Foreground="{x:Static svc:UiPalette.PrimaryBrush}"/>
-          </Border>
-          </StackPanel>
-          <TextBlock x:Name="FileHeroName" Grid.Row="1" Text="{Binding Title}" ToolTip="{Binding Title}" FontFamily="{StaticResource SFProDisplay}" FontSize="11" LineHeight="14" Foreground="{x:Static svc:UiPalette.PrimaryBrush}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" TextAlignment="Center" VerticalAlignment="Center" MaxHeight="28" Margin="0,4,0,0"/>
-         </Grid>
-        </Border>
-
-        <!-- Layer 6: Text Preview Container with Dust Particle Overlay for Passwords -->
-        <Grid x:Name="CardPreviewViewport" Margin="14,13,14,48" VerticalAlignment="Top" MaxHeight="96" ClipToBounds="True">
-         <Grid HorizontalAlignment="Left" VerticalAlignment="Top" Width="{Binding MaskedPreviewWidth}" Height="{Binding MaskedPreviewHeight}">
-         <TextBlock x:Name="CardPreviewText" Text="{Binding DisplayPreview}" Opacity="{Binding MaskedTextOpacity}" FontFamily="{StaticResource SFProDisplay}" FontSize="14" FontWeight="SemiBold" LineHeight="19" LineStackingStrategy="BlockLineHeight" MaxHeight="95" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" Foreground="{x:Static svc:UiPalette.PrimaryBrush}">
-          <TextBlock.Effect>
-           <BlurEffect Radius="{Binding BlurRadius}" RenderingBias="Performance"/>
-          </TextBlock.Effect>
-         </TextBlock>
-
-         <!-- Bụi bay mờ effect overlay: click to dissolve and show password -->
-         <local:DustParticleOverlay x:Name="DustOverlay"
-                                    IsActive="{Binding IsMasked}"
-                                    IsDissolved="{Binding IsRevealed}"
-                                    DissolveRequested="DustOverlay_DissolveRequested"
-                                    HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-         </Grid>
-        </Grid>
+         </Control.Style>
+        </Control>
+        <Control Focusable="False" IsTabStop="False">
+         <Control.Style>
+          <Style TargetType="Control">
+           <Setter Property="Template" Value="{StaticResource TrayCardTextContent}"/>
+           <Style.Triggers>
+            <!-- Sensitive files/images retain their dust overlay and reveal interaction. -->
+            <MultiDataTrigger>
+             <MultiDataTrigger.Conditions>
+              <Condition Binding="{Binding Kind}" Value="File"/>
+              <Condition Binding="{Binding IsMasked}" Value="False"/>
+             </MultiDataTrigger.Conditions>
+             <Setter Property="Template" Value="{x:Null}"/>
+             <Setter Property="Visibility" Value="Collapsed"/>
+            </MultiDataTrigger>
+            <MultiDataTrigger>
+             <MultiDataTrigger.Conditions>
+              <Condition Binding="{Binding Kind}" Value="Image"/>
+              <Condition Binding="{Binding IsMasked}" Value="False"/>
+             </MultiDataTrigger.Conditions>
+             <Setter Property="Template" Value="{x:Null}"/>
+             <Setter Property="Visibility" Value="Collapsed"/>
+            </MultiDataTrigger>
+           </Style.Triggers>
+          </Style>
+         </Control.Style>
+        </Control>
 
         <!-- Darken the glyph band early enough to protect metadata on bright previews. -->
-        <Border x:Name="CardFooter" VerticalAlignment="Bottom" Height="48" CornerRadius="0,0,16,16">
+        <Border x:Name="CardFooter" VerticalAlignment="Bottom" Height="48" CornerRadius="0,0,12,12">
          <Border.Background>
           <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
            <GradientStop Color="#00000000" Offset="0"/>
@@ -941,9 +975,18 @@
         <!-- Layer 5: Card Actions (Pin & More) in Top Right -->
         <Border x:Name="CardActions" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="7" Panel.ZIndex="4" Background="#E6181818" BorderBrush="#26FFFFFF" BorderThickness="1" CornerRadius="7" Padding="2" local:TrayMotion.Opacity="0" IsHitTestVisible="False">
         <Grid>
-         <Border CornerRadius="6" ClipToBounds="True" SizeChanged="CardActionGlass_SizeChanged" IsHitTestVisible="False">
+         <Border CornerRadius="6" SizeChanged="CardActionGlass_SizeChanged" IsHitTestVisible="False">
           <local:CardActionBackdrop Source="{Binding ElementName=CardContentGrid}">
-           <local:CardActionBackdrop.Effect><BlurEffect Radius="0" RenderingBias="Performance"/></local:CardActionBackdrop.Effect>
+           <local:CardActionBackdrop.Style>
+            <Style TargetType="local:CardActionBackdrop">
+             <Style.Triggers>
+              <DataTrigger Binding="{Binding Opacity, ElementName=CardActions}" Value="0">
+               <Setter Property="Visibility" Value="Collapsed"/>
+              </DataTrigger>
+             </Style.Triggers>
+            </Style>
+           </local:CardActionBackdrop.Style>
+
           </local:CardActionBackdrop>
          </Border>
          <Border Background="#A6181818" CornerRadius="6" IsHitTestVisible="False"/>
@@ -990,20 +1033,9 @@
        <Setter TargetName="CardActions" Property="local:TrayMotion.Opacity" Value="1"/>
        <Setter TargetName="CardActions" Property="IsHitTestVisible" Value="True"/>
       </DataTrigger>
-      <DataTrigger Binding="{Binding Entry.IsPinned}" Value="True">
+      <DataTrigger Binding="{Binding IsPinned}" Value="True">
        <Setter TargetName="CardActions" Property="local:TrayMotion.Opacity" Value="1"/>
        <Setter TargetName="CardActions" Property="IsHitTestVisible" Value="True"/>
-      </DataTrigger>
-      <DataTrigger Binding="{Binding Entry.Kind}" Value="Color">
-       <Setter TargetName="CardPreviewText" Property="Background" Value="#D9000000"/>
-       <Setter TargetName="CardPreviewText" Property="Padding" Value="6,3"/>
-       <Setter TargetName="CardPreviewText" Property="HorizontalAlignment" Value="Left"/>
-      </DataTrigger>
-      <DataTrigger Binding="{Binding Entry.Kind}" Value="File">
-       <Setter TargetName="CardPreviewText" Property="Visibility" Value="Collapsed"/>
-      </DataTrigger>
-      <DataTrigger Binding="{Binding Entry.Kind}" Value="Image">
-       <Setter TargetName="CardPreviewText" Property="Visibility" Value="Collapsed"/>
       </DataTrigger>
       <!-- Animated appearing & disappearing for Copied notification badge -->
       <DataTrigger Binding="{Binding IsCopied}" Value="True">
@@ -1097,7 +1129,7 @@
      </DataTemplate.Triggers>
     </DataTemplate></ListBox.ItemTemplate>
    </local:ClipboardCardListBox>
-   <Grid Margin="8,6,8,11" IsHitTestVisible="False">
+   <Grid Margin="6,11,6,11" IsHitTestVisible="False">
     <Border x:Name="CardsFadeLeft" Width="26" HorizontalAlignment="Left" Opacity="0">
      <Border.Background>
       <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
@@ -1196,7 +1228,7 @@
     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
      <TextBlock x:Name="ApprovalText" FontSize="13.5" FontFamily="{StaticResource SFProDisplay}" FontWeight="Bold" Foreground="White" TextWrapping="Wrap" TextAlignment="Center" MaxWidth="460"/>
      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
-      <Button x:Name="ApproveButton" Style="{StaticResource TrayButton}" Background="{StaticResource TrayAccent}" Foreground="{StaticResource TrayOnAccent}" Margin="0,0,10,0" Click="Approve_Click"/>
+      <Button x:Name="ApproveButton" Style="{StaticResource TrayButton}" Background="{DynamicResource AccentSubtleBrush}" Foreground="{DynamicResource AccentBrushStrong}" Margin="0,0,10,0" Click="Approve_Click"/>
       <Button x:Name="SkipButton" Style="{StaticResource TrayButton}" Click="Skip_Click"/>
      </StackPanel>
     </StackPanel>
@@ -1362,7 +1394,7 @@
     </TextBlock>
     <WrapPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
      <Button x:Name="CancelLabelButton" Style="{StaticResource TrayButton}" Click="CancelLabel_Click" Margin="0,0,8,0" Padding="14,7" Background="Transparent" Foreground="{x:Static svc:UiPalette.SecondaryBrush}"/>
-     <Button x:Name="SaveLabelButton" Style="{StaticResource TrayButton}" Click="SaveLabel_Click" Padding="14,7" Background="{StaticResource TrayAccent}" Foreground="{x:Static svc:UiPalette.PrimaryBrush}"/>
+     <Button x:Name="SaveLabelButton" Style="{StaticResource TrayButton}" Click="SaveLabel_Click" Padding="14,7" Background="{DynamicResource AccentSubtleBrush}" Foreground="{x:Static svc:UiPalette.PrimaryBrush}"/>
     </WrapPanel>
    </StackPanel>
   </Border>

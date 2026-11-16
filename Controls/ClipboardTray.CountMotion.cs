@@ -21,17 +21,14 @@ public sealed partial class ClipboardTray
         var scale = count.RenderTransform as ScaleTransform;
         double fromScale = scale != null && Math.Abs(scale.ScaleX - 1) > 0.001 ? scale.ScaleX : 0.95;
         count.BeginAnimation(OpacityProperty, null);
-        count.RenderTransform = scale = new ScaleTransform(1, 1);
+        if (scale == null) count.RenderTransform = scale = new ScaleTransform(fromScale, fromScale);
         var fade = new DoubleAnimation(fromOpacity, settledOpacity,
             TimeSpan.FromMilliseconds(AnimationConfig.ReduceMotion ? 80 : 180))
         { EasingFunction = TrayMotion.EaseOut, FillBehavior = FillBehavior.Stop };
         Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
         count.BeginAnimation(OpacityProperty, fade, HandoffBehavior.SnapshotAndReplace);
         if (AnimationConfig.ReduceMotion) return;
-        var grow = new DoubleAnimation(fromScale, 1, TimeSpan.FromMilliseconds(180))
-        { EasingFunction = TrayMotion.EaseOut, FillBehavior = FillBehavior.Stop };
-        Timeline.SetDesiredFrameRate(grow, AnimationConfig.TargetFps);
-        scale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-        scale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+        Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Press);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Press);
     }
 }

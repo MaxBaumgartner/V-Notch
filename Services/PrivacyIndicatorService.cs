@@ -46,6 +46,43 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         ref long inoutLastSignalUtcTicks,
         out byte outActive);
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private unsafe struct VnConsentStoreEntry
+    {
+        public long LastStartFileTime;
+        public int RawLen;
+        public int DisplayStart;
+        public int DisplayLen;
+        public fixed char RawName[260];
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnActiveAppSlice
+    {
+        public int NameOffset;
+        public int NameLen;
+        public long LastStartFileTime;
+    }
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_privacy_indicator_scan_consent_store(
+        ReadOnlySpan<char> capability,
+        int capabilityLen,
+        Span<VnConsentStoreEntry> outEntries,
+        int entriesCap,
+        out int outCount);
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_privacy_indicator_merge_active_apps(
+        ReadOnlySpan<VnActiveAppSlice> items,
+        int itemCount,
+        ReadOnlySpan<char> charPool,
+        int charPoolLen,
+        byte sortByName,
+        Span<int> outIndices,
+        int outCap,
+        out int outCount);
+
     private const string ConsentRoot =
         @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore";
 
@@ -88,7 +125,7 @@ public sealed partial class PrivacyIndicatorService : IDisposable
     private Task? _micFlowTask;
     private int _micFlowGeneration;
 
-    private IReadOnlyList<CapabilityUsage> _microphoneCandidates = Array.Empty<CapabilityUsage>();
+    private volatile IReadOnlyList<CapabilityUsage> _microphoneCandidates = Array.Empty<CapabilityUsage>();
     private IReadOnlyList<string> _microphoneCandidateNames = Array.Empty<string>();
     private IReadOnlyList<string> _cameraConsumers = Array.Empty<string>();
     private bool _cameraInUse;
@@ -101,7 +138,15 @@ public sealed partial class PrivacyIndicatorService : IDisposable
 
     public event EventHandler<PrivacyIndicatorState>? StateChanged;
 
-    public PrivacyIndicatorState CurrentState { get; private set; } = PrivacyIndicatorState.Empty;
+    private PrivacyIndicatorState _currentState = PrivacyIndicatorState.Empty;
+
+    public PrivacyIndicatorState CurrentState
+    {
+        get => Volatile.Read(ref _currentState);
+        private set => Volatile.Write(ref _currentState, value);
+    }
+
+    internal IReadOnlyList<CapabilityUsage> MicrophoneCandidates => _microphoneCandidates;
 
     public PrivacyIndicatorService(TimeSpan? pollInterval = null)
         : this(pollInterval, ScanCapability, null, new ScreenRecordingProbe())
@@ -212,11 +257,19 @@ public sealed partial class PrivacyIndicatorService : IDisposable
 
     private async Task WorkerLoopAsync(int generation, CancellationToken token)
     {
+        using var registryWake = new SemaphoreSlim(0, 1);
+        void Wake()
+        {
+            try { registryWake.Release(); }
+            catch (SemaphoreFullException) { /* Changes are coalesced. */ }
+            catch (ObjectDisposedException) { /* Retired worker. */ }
+        }
         using var userChanges = _registryChanged == null
-            ? new RegistryChangeMonitor(Registry.CurrentUser, ConsentRoot) : null;
+            ? new RegistryChangeMonitor(Registry.CurrentUser, ConsentRoot, onChanged: Wake) : null;
         using var machineChanges = _registryChanged == null
-            ? new RegistryChangeMonitor(Registry.LocalMachine, ConsentRoot) : null;
+            ? new RegistryChangeMonitor(Registry.LocalMachine, ConsentRoot, onChanged: Wake) : null;
         var capabilityCache = new CapabilityUsageCache(_scanCapability);
+        using var nativeCache = _scanCapability == (Func<string, IReadOnlyList<CapabilityUsage>>)ScanCapability ? NativeConsentCache.Create() : null;
         while (!token.IsCancellationRequested)
         {
             PrivacyScanResult? result = null;
@@ -240,9 +293,10 @@ public sealed partial class PrivacyIndicatorService : IDisposable
                         bool machineChanged = machineChanges!.ConsumeChange();
                         registryChanged = userChanged || machineChanged;
                     }
-                    var capabilities = capabilityCache.GetSnapshot(registryChanged, Environment.TickCount64);
-                    // Process exits and recording-duration thresholds still need reconciliation.
-                    result = ExecuteBackgroundScan(utcNow, capabilities);
+                    if (nativeCache != null)
+                        result = ExecuteNativeBackgroundScan(utcNow, nativeCache, registryChanged);
+                    else
+                        result = ExecuteBackgroundScan(utcNow, capabilityCache.GetSnapshot(registryChanged, Environment.TickCount64));
                 }
                 finally
                 {
@@ -269,7 +323,7 @@ public sealed partial class PrivacyIndicatorService : IDisposable
             TimeSpan delay = CurrentState.AnyInUse ? _activeInterval : IdlePollInterval;
             try
             {
-                await Task.Delay(delay, token).ConfigureAwait(false);
+                await registryWake.WaitAsync(delay, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -287,20 +341,27 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         var locationUsage = capabilities?[4] ?? _scanCapability("location");
 
         using var running = new ConsumerProcessProbe();
-        var microphoneCandidates = GetRelevantConsumerUsages(
+        return BuildBackgroundScan(utcNow, micUsage, camUsage, programmaticCapture, borderlessCapture, locationUsage, running);
+    }
+
+    private PrivacyScanResult BuildBackgroundScan(DateTime utcNow, IReadOnlyList<CapabilityUsage> micUsage,
+        IReadOnlyList<CapabilityUsage> camUsage, IReadOnlyList<CapabilityUsage> programmaticCapture,
+        IReadOnlyList<CapabilityUsage> borderlessCapture, IReadOnlyList<CapabilityUsage> locationUsage, ConsumerProcessProbe running, bool nativeConsumers = false)
+    {
+        var microphoneCandidates = nativeConsumers ? micUsage : GetRelevantConsumerUsages(
             micUsage,
             running.IsRunning,
             s_notIgnoredMicRule);
         var microphoneCandidateNames = GetConsumerNames(microphoneCandidates);
 
-        var cam = GetRelevantConsumerUsages(camUsage, running.IsRunning);
+        var cam = nativeConsumers ? camUsage : GetRelevantConsumerUsages(camUsage, running.IsRunning);
         var cameraConsumers = GetConsumerNames(cam);
         bool cameraInUse = cameraConsumers.Count > 0;
-        var locationConsumers = GetConsumerNames(GetRelevantConsumerUsages(locationUsage, running.IsRunning));
+        var locationConsumers = GetConsumerNames(nativeConsumers ? locationUsage : GetRelevantConsumerUsages(locationUsage, running.IsRunning));
         bool screenRecordingActive =
-            DetectScreenRecording(programmaticCapture, running, utcNow) ||
-            DetectScreenRecording(borderlessCapture, running, utcNow) ||
-            _screenRecordingProbe.IsRecording(running.GetProcessSnapshot);
+            DetectScreenRecording(programmaticCapture, running, utcNow, nativeConsumers) ||
+            DetectScreenRecording(borderlessCapture, running, utcNow, nativeConsumers) ||
+            _screenRecordingProbe.IsRecordingWithSnapshot(running.CapturedProcessSnapshot);
 
         return new PrivacyScanResult(
             MicrophoneCandidates: microphoneCandidates,
@@ -364,7 +425,7 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         }
     }
 
-    private void ApplyScanResult(PrivacyScanResult result)
+    internal void ApplyScanResult(PrivacyScanResult result)
     {
         _microphoneCandidates = result.MicrophoneCandidates;
         _microphoneCandidateNames = result.MicrophoneCandidateNames;
@@ -574,7 +635,7 @@ public sealed partial class PrivacyIndicatorService : IDisposable
 
 
 
-    private sealed record PrivacyScanResult(
+    internal sealed record PrivacyScanResult(
         IReadOnlyList<CapabilityUsage> MicrophoneCandidates,
         IReadOnlyList<string> MicrophoneCandidateNames,
         IReadOnlyList<string> CameraConsumers,
@@ -631,18 +692,34 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         if (usages is IReadOnlyCollection<CapabilityUsage> { Count: 0 })
             return Array.Empty<CapabilityUsage>();
 
-        Dictionary<string, CapabilityUsage>? latest = null;
+        List<CapabilityUsage>? filtered = null;
         foreach (var usage in usages)
         {
             if ((additionalRule != null && !additionalRule(usage)) || !isRunning(usage.RawName))
                 continue;
 
-            latest ??= new(StringComparer.OrdinalIgnoreCase);
+            filtered ??= new List<CapabilityUsage>();
+            filtered.Add(usage);
+        }
+        if (filtered == null) return Array.Empty<CapabilityUsage>();
+        if (filtered.Count == 1) return new[] { filtered[0] };
+
+        if (TryMergeActiveApps(filtered, useDisplayName: false, sortByName: false, out int[]? indices, out int mergedCount) && indices != null)
+        {
+            var merged = new CapabilityUsage[mergedCount];
+            for (int i = 0; i < mergedCount; i++)
+                merged[i] = filtered[indices[i]];
+            return merged;
+        }
+
+        var latest = new Dictionary<string, CapabilityUsage>(filtered.Count, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < filtered.Count; i++)
+        {
+            var usage = filtered[i];
             if (!latest.TryGetValue(usage.RawName, out var previous) ||
                 usage.LastStartFileTime > previous.LastStartFileTime)
                 latest[usage.RawName] = usage;
         }
-        if (latest == null) return Array.Empty<CapabilityUsage>();
 
         var result = new CapabilityUsage[latest.Count];
         latest.Values.CopyTo(result, 0);
@@ -655,6 +732,14 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         if (count == 0) return Array.Empty<string>();
         if (count == 1) return new[] { usages[0].DisplayName };
 
+        if (TryMergeActiveApps(usages, useDisplayName: true, sortByName: true, out int[]? indices, out int mergedCount) && indices != null)
+        {
+            var sorted = new string[mergedCount];
+            for (int i = 0; i < mergedCount; i++)
+                sorted[i] = usages[indices[i]].DisplayName;
+            return sorted;
+        }
+
         var seen = new HashSet<string>(count, StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < count; i++)
             seen.Add(usages[i].DisplayName);
@@ -663,6 +748,59 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         seen.CopyTo(result);
         Array.Sort(result, StringComparer.OrdinalIgnoreCase);
         return result;
+    }
+
+    private static bool TryMergeActiveApps(
+        IReadOnlyList<CapabilityUsage> usages,
+        bool useDisplayName,
+        bool sortByName,
+        out int[]? outIndices,
+        out int outCount)
+    {
+        outIndices = null;
+        outCount = 0;
+        int count = usages.Count;
+        if (count <= 0) return false;
+
+        int totalChars = 0;
+        for (int i = 0; i < count; i++)
+        {
+            string s = (useDisplayName ? usages[i].DisplayName : usages[i].RawName) ?? string.Empty;
+            totalChars += s.Length;
+        }
+
+        Span<VnActiveAppSlice> slices = count <= 64 ? stackalloc VnActiveAppSlice[count] : new VnActiveAppSlice[count];
+        Span<char> charPool = totalChars <= 2048 ? stackalloc char[Math.Max(1, totalChars)] : new char[Math.Max(1, totalChars)];
+        int offset = 0;
+        for (int i = 0; i < count; i++)
+        {
+            string s = (useDisplayName ? usages[i].DisplayName : usages[i].RawName) ?? string.Empty;
+            s.AsSpan().CopyTo(charPool.Slice(offset, s.Length));
+            slices[i] = new VnActiveAppSlice
+            {
+                NameOffset = offset,
+                NameLen = s.Length,
+                LastStartFileTime = useDisplayName ? 0 : usages[i].LastStartFileTime
+            };
+            offset += s.Length;
+        }
+
+        int[] indices = new int[count];
+        int status = vn_privacy_indicator_merge_active_apps(
+            slices,
+            count,
+            charPool[..offset],
+            offset,
+            sortByName ? (byte)1 : (byte)0,
+            indices,
+            indices.Length,
+            out int mergedCount);
+        if (status != 0 || mergedCount < 0 || mergedCount > count)
+            return false;
+
+        outIndices = indices;
+        outCount = mergedCount;
+        return true;
     }
 
     internal static bool UpdateMicrophoneCandidateNames(
@@ -683,12 +821,62 @@ public sealed partial class PrivacyIndicatorService : IDisposable
 
     private static IReadOnlyList<CapabilityUsage> ScanCapability(string capability)
     {
+        if (TryScanConsentStoreNative(capability, out var nativeUsages))
+            return nativeUsages;
+
         var consumers = new List<CapabilityUsage>();
 
         ScanCapabilityHive(Registry.CurrentUser, capability, consumers);
         ScanCapabilityHive(Registry.LocalMachine, capability, consumers);
 
         return consumers.Count == 0 ? Array.Empty<CapabilityUsage>() : consumers;
+    }
+
+    private static unsafe bool TryScanConsentStoreNative(string capability, out IReadOnlyList<CapabilityUsage> usages)
+    {
+        usages = Array.Empty<CapabilityUsage>();
+        if (string.IsNullOrWhiteSpace(capability)) return true;
+
+        Span<VnConsentStoreEntry> stackEntries = stackalloc VnConsentStoreEntry[32];
+        ReadOnlySpan<char> capSpan = capability.AsSpan();
+        int status = vn_privacy_indicator_scan_consent_store(capSpan, capSpan.Length, stackEntries, stackEntries.Length, out int count);
+        if (status == 0)
+        {
+            if (count <= 0) return true;
+            usages = BuildConsentUsages(stackEntries[..count]);
+            return true;
+        }
+        if (status == -2 && count > stackEntries.Length)
+        {
+            var heapEntries = new VnConsentStoreEntry[count];
+            status = vn_privacy_indicator_scan_consent_store(capSpan, capSpan.Length, heapEntries, heapEntries.Length, out count);
+            if (status == 0)
+            {
+                if (count <= 0) return true;
+                usages = BuildConsentUsages(heapEntries.AsSpan(0, Math.Min(count, heapEntries.Length)));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static unsafe CapabilityUsage[] BuildConsentUsages(ReadOnlySpan<VnConsentStoreEntry> entries)
+    {
+        var result = new CapabilityUsage[entries.Length];
+        for (int i = 0; i < entries.Length; i++)
+        {
+            int rawLen = Math.Clamp(entries[i].RawLen, 0, 259);
+            string raw;
+            fixed (char* ptr = entries[i].RawName)
+            {
+                raw = new string(ptr, 0, rawLen);
+            }
+            int dispStart = Math.Clamp(entries[i].DisplayStart, 0, rawLen);
+            int dispLen = Math.Clamp(entries[i].DisplayLen, 0, rawLen - dispStart);
+            string display = (dispStart == 0 && dispLen == rawLen) ? raw : raw.Substring(dispStart, dispLen);
+            result[i] = new CapabilityUsage(raw, display, entries[i].LastStartFileTime);
+        }
+        return result;
     }
 
     private static void ScanCapabilityHive(RegistryKey hive, string capability, List<CapabilityUsage> consumers)
@@ -750,12 +938,12 @@ public sealed partial class PrivacyIndicatorService : IDisposable
     private static bool DetectScreenRecording(
         IReadOnlyList<CapabilityUsage> usages,
         ConsumerProcessProbe running,
-        DateTime utcNow)
+        DateTime utcNow, bool consumersFiltered = false)
     {
         for (int i = 0; i < usages.Count; i++)
         {
             var usage = usages[i];
-            if (running.IsRunning(usage.RawName) &&
+            if ((consumersFiltered || running.IsRunning(usage.RawName)) &&
                 HasMinimumActiveDuration(usage.LastStartFileTime, utcNow, MinimumScreenRecordingDuration))
             {
                 return true;
@@ -878,129 +1066,6 @@ public sealed partial class PrivacyIndicatorService : IDisposable
         }
     }
 
-    internal sealed class ConsumerProcessProbe : IDisposable
-    {
-        private sealed class ProcessConsumerKeyComparer : IEqualityComparer<(uint ProcessId, string RawConsumer)>
-        {
-            public static readonly ProcessConsumerKeyComparer Instance = new();
-            public bool Equals((uint ProcessId, string RawConsumer) x, (uint ProcessId, string RawConsumer) y) =>
-                x.ProcessId == y.ProcessId &&
-                string.Equals(x.RawConsumer, y.RawConsumer, StringComparison.OrdinalIgnoreCase);
-
-            public int GetHashCode((uint ProcessId, string RawConsumer) obj) =>
-                HashCode.Combine(obj.ProcessId, StringComparer.OrdinalIgnoreCase.GetHashCode(obj.RawConsumer ?? string.Empty));
-        }
-
-        private readonly Dictionary<string, bool> _cache = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<(uint ProcessId, string RawConsumer), bool> _processMatchCache = new(ProcessConsumerKeyComparer.Instance);
-        private PrivacyProcessSnapshot? _processSnapshot;
-
-        internal PrivacyProcessSnapshot GetProcessSnapshot()
-            => _processSnapshot ??= PrivacyProcessSnapshot.Capture();
-
-        public bool IsRunning(string rawConsumer)
-        {
-            if (_cache.TryGetValue(rawConsumer, out bool running)) return running;
-            running = TryDecodeDesktopConsumerPath(rawConsumer) is { } path
-                ? IsDesktopExecutableRunning(path)
-                : IsPackageFamilyRunning(rawConsumer);
-            _cache[rawConsumer] = running;
-            return running;
-        }
-
-        public bool MatchesProcess(string rawConsumer, uint processId)
-        {
-            if (processId == 0) return false;
-
-            var key = (processId, rawConsumer);
-            if (_processMatchCache.TryGetValue(key, out bool matches)) return matches;
-
-            matches = TryDecodeDesktopConsumerPath(rawConsumer) is { } path
-                ? IsDesktopExecutableProcess(path, processId)
-                : IsPackageFamilyProcess(rawConsumer, processId);
-            _processMatchCache[key] = matches;
-            return matches;
-        }
-
-        private bool IsDesktopExecutableRunning(string executablePath)
-        {
-            string processName = Path.GetFileName(executablePath);
-            if (string.IsNullOrWhiteSpace(processName)) return false;
-
-            _processSnapshot ??= PrivacyProcessSnapshot.Capture();
-            for (int i = 0; i < _processSnapshot.Count; i++)
-                if (_processSnapshot.MatchesExecutableName(i, processName) &&
-                    IsDesktopExecutableProcess(executablePath, _processSnapshot.GetProcessId(i))) return true;
-            return false;
-        }
-
-        internal static bool IsDesktopExecutableProcess(string executablePath, uint processId) =>
-            Win32Interop.ProcessImagePathEquals(processId, executablePath);
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (string Family, long ExpireTicks)> _packageFamilyByPidCache = new();
-        private const int MaxPackageFamilyPidCacheEntries = 256;
-
-        private static void CachePackageFamilyForPid(uint processId, string family, long expireTicks, long now)
-        {
-            if (_packageFamilyByPidCache.Count >= MaxPackageFamilyPidCacheEntries &&
-                !_packageFamilyByPidCache.ContainsKey(processId))
-            {
-                foreach (var kvp in _packageFamilyByPidCache)
-                {
-                    if (now >= kvp.Value.ExpireTicks)
-                    {
-                        _packageFamilyByPidCache.TryRemove(kvp.Key, out _);
-                    }
-                }
-                if (_packageFamilyByPidCache.Count >= MaxPackageFamilyPidCacheEntries)
-                {
-                    _packageFamilyByPidCache.Clear();
-                }
-            }
-            _packageFamilyByPidCache[processId] = (family, expireTicks);
-        }
-
-        private bool IsPackageFamilyRunning(string packageFamily)
-        {
-            if (string.IsNullOrWhiteSpace(packageFamily)) return false;
-
-            _processSnapshot ??= PrivacyProcessSnapshot.Capture();
-            for (int i = 0; i < _processSnapshot.Count; i++)
-                if (IsPackageFamilyProcess(packageFamily, _processSnapshot.GetProcessId(i))) return true;
-            return false;
-        }
-
-        public void Dispose() => _processSnapshot?.Dispose();
-
-        private static bool IsPackageFamilyProcess(string packageFamily, uint processId)
-        {
-            if (string.IsNullOrWhiteSpace(packageFamily) || processId == 0) return false;
-
-            long now = Environment.TickCount64;
-            if (_packageFamilyByPidCache.TryGetValue(processId, out var cached) && now < cached.ExpireTicks)
-            {
-                return !string.IsNullOrEmpty(cached.Family) &&
-                       string.Equals(cached.Family, packageFamily, StringComparison.OrdinalIgnoreCase);
-            }
-
-            try
-            {
-                string? family = Win32Interop.GetProcessPackageFamilyName(processId, out int failure);
-                if (family != null)
-                {
-                    CachePackageFamilyForPid(processId, family, now + 60000, now);
-                    return string.Equals(family, packageFamily, StringComparison.OrdinalIgnoreCase);
-                }
-
-                bool openFailed = failure == Win32Interop.ProcessPackageFamilyOpenFailed;
-                CachePackageFamilyForPid(processId, string.Empty, now + (openFailed ? 15000 : 30000), now);
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-    }
     // Capture sessions, meters and endpoint notifications live in Native/Services/MicrophoneProbe.cpp. This class
     // keeps the topology-refresh schedule and decides which processes count as a consumer.
     private sealed unsafe partial class MicrophoneFlowProbe : IDisposable

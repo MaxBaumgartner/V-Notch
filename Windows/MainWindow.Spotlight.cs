@@ -6,6 +6,40 @@ namespace VNotch;
 
 public partial class MainWindow : ISpotlightMorphHost
 {
+    internal Func<string, Task<bool>>? TodoSender { get; set; }
+    private static readonly Brush TodoPillPink = (Brush)new SolidColorBrush(Color.FromRgb(0xFF, 0x37, 0x5F)).GetAsFrozen();
+
+    /// <summary>Adds the to-do and confirms the result in the notch.</summary>
+    async Task<bool> ISpotlightMorphHost.AddPiTodoAsync(string text)
+    {
+        bool added = false;
+        try
+        {
+            if (TodoSender != null) added = await TodoSender(text);
+            else if (!_settings.EnableLocalOnlyMode && _piClient?.IsConfigured == true)
+                added = await _piClient.AddTodoAsync(text);
+        }
+        catch (Exception ex)
+        {
+            Services.RuntimeLog.Error("PI-TODO", ex, "Could not add to-do");
+        }
+        if (!_cleanedUp)
+            ShowNotchPill(Services.Loc.Get(added ? "notch.todoAdded" : "notch.todoFailed"), "",
+                null, isClaude: false, tap: null, glyph: "\uE739", duration: CopiedPillDuration, accent: TodoPillPink);
+        return added;
+    }
+
+    internal async Task MarkSpotlightIntroSeenAsync()
+    {
+        _settings.HasSeenSpotlightIntro = true;
+        _activeSettingsWindow?.MarkSpotlightIntroSeen();
+        _preparedSettingsWindow?.MarkSpotlightIntroSeen();
+        // Persist the committed snapshot so an unrelated live preview is not saved.
+        var committed = _settingsService.Load().Clone();
+        committed.HasSeenSpotlightIntro = true;
+        await _settingsService.SaveAsync(committed);
+    }
+
     internal ImageSource? CaptureSpotlightMorphVisual()
     {
         double width = NotchBorder.ActualWidth;

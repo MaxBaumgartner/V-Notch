@@ -38,8 +38,11 @@ public sealed class ClipboardTrayPersonalTransitionTests
             double renderedX = offset.X;
             Invoke(tray, "SelectCategory", "Links");
             if (!reduced) Assert.Equal(renderedX, offset.X, 2);
-            await Task.Delay(350);
             var bounds = Field<Rect>(tray, "_categorySelectionBounds");
+            var indicator = (Border)tray.FindName("CategorySelection");
+            var indicatorScale = (System.Windows.Media.ScaleTransform)tray.FindName("CategorySelectionScale");
+            await WpfFrameWaiter.UntilAsync(() => Math.Abs(offset.X - bounds.X) < .004 && Math.Abs(indicator.ActualWidth - bounds.Width) < .004 &&
+                Math.Abs(indicatorScale.ScaleX - 1) < .004 && Math.Abs(indicatorScale.ScaleY - 1) < .004, "category indicator springs settle");
             Assert.Equal(bounds.X, offset.X, 2);
             Assert.Equal(bounds.Width, ((Border)tray.FindName("CategorySelection")).ActualWidth, 2);
             var scale = (System.Windows.Media.ScaleTransform)tray.FindName("CategorySelectionScale");

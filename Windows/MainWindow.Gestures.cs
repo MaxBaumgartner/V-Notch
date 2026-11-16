@@ -28,6 +28,9 @@ public partial class MainWindow
         }
     }
 
+    private DateTime _gestureSampleAt;
+    private double _gestureSampleX;
+    private double _gestureReleaseVelocity;
     private TranslateTransform? _gestureTranslate;
     private TranslateTransform? _gestureShadowTranslate;
 
@@ -155,6 +158,12 @@ public partial class MainWindow
             return;
         }
 
+        if (HandleAskGestureMove(e) || HandleCopiedGestureMove(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
         NotchBorder_GestureMouseMove(sender, e);
     }
 
@@ -171,6 +180,12 @@ public partial class MainWindow
                 ToggleNotchFromClick(e.ClickCount);
             }
 
+            e.Handled = true;
+            return;
+        }
+
+        if (HandleAskGestureUp(e) || HandleCopiedGestureUp(e))
+        {
             e.Handled = true;
             return;
         }
@@ -203,6 +218,9 @@ public partial class MainWindow
         }
 
         var pos = e.GetPosition(NotchBorder);
+        _gestureSampleAt = DateTime.UtcNow;
+        _gestureSampleX = pos.X;
+        _gestureReleaseVelocity = 0;
         _gestureController.BeginTracking(pos);
         _isGestureActive = true;
 
@@ -216,6 +234,11 @@ public partial class MainWindow
         if (!_isGestureActive || !_gestureController.IsTracking) return;
 
         var pos = e.GetPosition(NotchBorder);
+        var now = DateTime.UtcNow;
+        double seconds = (now - _gestureSampleAt).TotalSeconds;
+        if (seconds > 0) _gestureReleaseVelocity = Math.Clamp((pos.X - _gestureSampleX) * 0.3 / seconds, -1200, 1200);
+        _gestureSampleAt = now;
+        _gestureSampleX = pos.X;
         bool triggered = _gestureController.UpdateTracking(pos);
 
         if (!triggered && !_gestureController.GestureTriggered)
@@ -358,8 +381,8 @@ public partial class MainWindow
 
         EnsureGestureTransforms();
 
-        _gestureTranslate!.X = clamped;
-        _gestureShadowTranslate!.X = clamped;
+        Motion.Stop(_gestureTranslate!, TranslateTransform.XProperty, clamped);
+        Motion.Stop(_gestureShadowTranslate!, TranslateTransform.XProperty, clamped);
     }
 
     private void AnimateGestureSnapBack()
@@ -367,136 +390,43 @@ public partial class MainWindow
         EnsureGestureTransforms();
         if (_gestureTranslate == null) return;
 
-        var snapBack = new DoubleAnimation(0, new Duration(TimeSpan.FromMilliseconds(350)))
+        double velocity = (DateTime.UtcNow - _gestureSampleAt).TotalMilliseconds <= 100 ? _gestureReleaseVelocity : 0;
+        int generation = ++_glassGestureSnapBackGen;
+        _glassGestureSnapBackMotion = !AnimationConfig.ReduceMotion;
+        UpdateGlassMotionState();
+        Motion.To(_gestureShadowTranslate!, TranslateTransform.XProperty, 0, Motion.Glide, velocity: velocity,
+            done: () => Motion.Stop(_gestureShadowTranslate!, TranslateTransform.XProperty, 0));
+        Motion.To(_gestureTranslate, TranslateTransform.XProperty, 0, Motion.Glide, velocity: velocity, done: () =>
         {
-            EasingFunction = _easeSoftSpring
-        };
-        Timeline.SetDesiredFrameRate(snapBack, VNotch.Services.AnimationConfig.TargetFps);
-        BeginGlassGestureSnapBack(snapBack);
-        snapBack.Completed += (s, e) =>
-        {
-            _gestureTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-            _gestureTranslate.X = 0;
-            if (_gestureShadowTranslate != null)
-            {
-                _gestureShadowTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-                _gestureShadowTranslate.X = 0;
-            }
-        };
-
-        _gestureTranslate.BeginAnimation(TranslateTransform.XProperty, snapBack);
-        _gestureShadowTranslate?.BeginAnimation(TranslateTransform.XProperty, snapBack);
+            Motion.Stop(_gestureTranslate, TranslateTransform.XProperty, 0);
+            if (generation != _glassGestureSnapBackGen) return;
+            _glassGestureSnapBackMotion = false;
+            UpdateGlassMotionState();
+        });
     }
 
     private void PlayGestureSwipeFeedback(bool isLeft)
     {
         EnsureGestureTransforms();
-
-        double target = isLeft ? -12 : 12;
-
-        var flick = new DoubleAnimationUsingKeyFrames();
-        flick.KeyFrames.Add(new EasingDoubleKeyFrame(target,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(100)),
-            _easeQuadOut));
-        flick.KeyFrames.Add(new EasingDoubleKeyFrame(0,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(400)),
-            _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(flick, VNotch.Services.AnimationConfig.TargetFps);
-
-        flick.Completed += (s, e) =>
-        {
-            _gestureTranslate!.BeginAnimation(TranslateTransform.XProperty, null);
-            _gestureTranslate.X = 0;
-            _gestureShadowTranslate!.BeginAnimation(TranslateTransform.XProperty, null);
-            _gestureShadowTranslate.X = 0;
-        };
-
-        _gestureTranslate!.BeginAnimation(TranslateTransform.XProperty, flick);
-        _gestureShadowTranslate!.BeginAnimation(TranslateTransform.XProperty, flick);
-
-        var pulse = new DoubleAnimationUsingKeyFrames();
-        pulse.KeyFrames.Add(new EasingDoubleKeyFrame(0.96,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(80)),
-            _easeQuadOut));
-        pulse.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(350)),
-            _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(pulse, VNotch.Services.AnimationConfig.TargetFps);
-
-        NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, pulse);
-        NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, pulse);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, pulse);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, pulse);
+        double velocity = _gestureReleaseVelocity;
+        if (Math.Abs(velocity) < 1) velocity = isLeft ? -180 : 180;
+        Motion.To(_gestureTranslate!, TranslateTransform.XProperty, 0, Motion.Pop, velocity: velocity);
+        Motion.To(_gestureShadowTranslate!, TranslateTransform.XProperty, 0, Motion.Pop, velocity: velocity);
+        SpringGestureScale(-0.8, -0.8);
     }
 
-    private void PlayGestureSwipeDownFeedback()
+    private void PlayGestureSwipeDownFeedback() => SpringGestureScale(0, 1.8);
+
+    private void PlayGestureDoubleTapFeedback() => SpringGestureScale(-1.8, -1.8);
+
+    private void PlayGestureMiddleClickFeedback() => SpringGestureScale(0.6, -1.4);
+
+    private void SpringGestureScale(double velocityX, double velocityY)
     {
-        var pullDown = new DoubleAnimationUsingKeyFrames();
-        pullDown.KeyFrames.Add(new EasingDoubleKeyFrame(1.08,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(120)),
-            _easeQuadOut));
-        pullDown.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(400)),
-            _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(pullDown, VNotch.Services.AnimationConfig.TargetFps);
-
-        NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, pullDown);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, pullDown);
-    }
-
-    private void PlayGestureDoubleTapFeedback()
-    {
-        var bounce = new DoubleAnimationUsingKeyFrames();
-        bounce.KeyFrames.Add(new EasingDoubleKeyFrame(0.92,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(80)),
-            _easeQuadIn));
-        bounce.KeyFrames.Add(new EasingDoubleKeyFrame(1.06,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(200)),
-            _easeQuadOut));
-        bounce.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(450)),
-            _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(bounce, VNotch.Services.AnimationConfig.TargetFps);
-
-        NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounce);
-        NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounce);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounce);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounce);
-    }
-
-    private void PlayGestureMiddleClickFeedback()
-    {
-        // Physics-based Squash & Stretch:
-        // Height (ScaleY) compresses crisply, Width (ScaleX) expands organically (conservation of volume),
-        // followed by a lively spring rebound and smooth settling. Highly satisfying Dynamic Island feel.
-        var scaleY = new DoubleAnimationUsingKeyFrames();
-        scaleY.KeyFrames.Add(new EasingDoubleKeyFrame(0.94,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(75)),
-            _easeQuadOut));
-        scaleY.KeyFrames.Add(new EasingDoubleKeyFrame(1.028,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(190)),
-            _easeQuadOut));
-        scaleY.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(380)),
-            _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(scaleY, VNotch.Services.AnimationConfig.TargetFps);
-
-        var scaleX = new DoubleAnimationUsingKeyFrames();
-        scaleX.KeyFrames.Add(new EasingDoubleKeyFrame(1.022,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(75)),
-            _easeQuadOut));
-        scaleX.KeyFrames.Add(new EasingDoubleKeyFrame(0.988,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(190)),
-            _easeQuadOut));
-        scaleX.KeyFrames.Add(new EasingDoubleKeyFrame(1.0,
-            KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(380)),
-            _easeSoftSpring));
-        Timeline.SetDesiredFrameRate(scaleX, VNotch.Services.AnimationConfig.TargetFps);
-
-        NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
-        NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleY);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
-        NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleY);
+        Motion.To(NotchScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, velocity: velocityX);
+        Motion.To(NotchScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, velocity: velocityY);
+        Motion.To(NotchShadowScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, velocity: velocityX);
+        Motion.To(NotchShadowScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, velocity: velocityY);
     }
 
     private void DisposeGestureController()

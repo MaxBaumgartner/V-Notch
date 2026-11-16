@@ -11,30 +11,29 @@ public sealed class NotchShellViewRefs
 {
     public required Border NotchBorder { get; init; }
     public FrameworkElement? NotchContainer { get; init; }
-    public Action<double, TimeSpan>? AnimateCornerRadius { get; init; }
+    public Action<double, SpringMotion?>? AnimateCornerRadius { get; init; }
     public Func<double, CornerRadius>? CornerRadiusBuilder { get; init; }
     public Func<long, bool>? IsSessionCurrent { get; init; }
 }
 
-/// <summary>
-/// Quản lý hình học, kích thước và bo góc của Notch Shell.
-/// Độc quyền sở hữu Width, Height, CornerRadius của NotchBorder (Workstream D - implement.md).
-/// </summary>
 public sealed class NotchShellPresenter : IDisposable
 {
-    private const string LogTag = "NOTCH-SHELL-PRESENTER";
-
     private readonly NotchShellViewRefs _refs;
+    private readonly CornerValue _corner;
     private long _activeSessionId;
     private long _animationVersion;
     private bool _disposed;
-    // The springs last sent to width and height, so the next transition can take over their momentum.
-    private SpringDoubleAnimation? _widthSpring, _heightSpring;
-    private long _springStartedAt;
+    private double? _canceledWidthVelocity, _canceledHeightVelocity;
+    private Action? _heightArrived;
+    private double _heightTarget;
 
     public NotchShellPresenter(NotchShellViewRefs refs)
     {
         _refs = refs ?? throw new ArgumentNullException(nameof(refs));
+        _corner = new CornerValue();
+        _corner.SetValue(CornerValue.ValueProperty, refs.NotchBorder.CornerRadius.BottomLeft);
+        // MainWindow's settings are loaded after its presenters are constructed.
+        _corner.Apply = SetCornerRadius;
     }
 
     public void AnimateShell(TransitionPlan plan, Action<TransitionExecutionResult> onCompleted)
@@ -45,146 +44,117 @@ public sealed class NotchShellPresenter : IDisposable
             return;
         }
 
-        long sessionId = plan.SessionId;
-        _activeSessionId = sessionId;
+        long sessionId = _activeSessionId = plan.SessionId;
         long version = ++_animationVersion;
+        _heightArrived = null;
+        _heightTarget = plan.TargetHeight;
         if (!IsCurrent(sessionId, version)) return;
-
         var border = _refs.NotchBorder;
+        bool opening = plan.FromView == NotchView.Compact && plan.TargetView != NotchView.Compact;
+        bool closing = plan.TargetView == NotchView.Compact;
+        var widthSpring = opening ? Motion.ShellOpenWidth : closing ? Motion.ShellCloseWidth : Motion.Glide;
+        var heightSpring = opening ? Motion.ShellOpenHeight : closing ? Motion.ShellCloseHeight : Motion.Glide;
+        int fps = plan.Motion.TargetFps > 0 ? plan.Motion.TargetFps : AnimationConfig.TargetFps;
+        double? widthVelocity = _canceledWidthVelocity, heightVelocity = _canceledHeightVelocity;
+        _canceledWidthVelocity = _canceledHeightVelocity = null;
 
-        // Quy tắc ngắt animation D3 (implement.md):
-        // 1. Ghi nhận giá trị hình ảnh hiện tại
-        double currentWidth = ReadExtent(border.Width, border.ActualWidth, plan.TargetWidth);
-        double currentHeight = ReadExtent(border.Height, border.ActualHeight, plan.TargetHeight);
-
-        // A spring still under way hands its speed to the next one (the caller may already have stopped it).
-        double springSeconds = System.Diagnostics.Stopwatch.GetElapsedTime(_springStartedAt).TotalSeconds;
-        double widthVelocity = _widthSpring?.VelocityAt(springSeconds) ?? 0;
-        double heightVelocity = _heightSpring?.VelocityAt(springSeconds) ?? 0;
-        _widthSpring = _heightSpring = null;
-
-        // 2 & 3. Dừng animation clock mà phiên cũ sở hữu
-        border.BeginAnimation(FrameworkElement.WidthProperty, null);
-        border.BeginAnimation(FrameworkElement.HeightProperty, null);
-
-        // 4. Đặt base value cần thiết để không bật về giá trị cũ
-        border.Width = currentWidth;
-        border.Height = currentHeight;
-
-        // Xử lý bo góc thông qua delegate hoặc builder
-        if (_refs.AnimateCornerRadius != null)
-        {
-            _refs.AnimateCornerRadius(plan.TargetCornerRadius, plan.Motion.Duration.TimeSpan);
-        }
-        else if (_refs.CornerRadiusBuilder != null)
-        {
-            border.CornerRadius = _refs.CornerRadiusBuilder(plan.TargetCornerRadius);
-        }
-        else
-        {
-            border.CornerRadius = new CornerRadius(plan.TargetCornerRadius);
-        }
-
-        // ReduceMotion hoặc duration = 0: hoàn tất tức thì
         if (plan.Motion.ReduceMotion || plan.Motion.Duration.TimeSpan <= TimeSpan.Zero)
         {
-            border.Width = plan.TargetWidth;
-            border.Height = plan.TargetHeight;
-            if (_refs.CornerRadiusBuilder != null)
-                border.CornerRadius = _refs.CornerRadiusBuilder(plan.TargetCornerRadius);
-            else
-                border.CornerRadius = new CornerRadius(plan.TargetCornerRadius);
+            Motion.Stop(border, FrameworkElement.WidthProperty, plan.TargetWidth);
+            Motion.Stop(border, FrameworkElement.HeightProperty, plan.TargetHeight);
+            Motion.Stop(_corner, CornerValue.ValueProperty, plan.TargetCornerRadius);
+            if (_refs.AnimateCornerRadius is { } snapCorner) snapCorner(plan.TargetCornerRadius, null);
+            else SetCornerRadius(plan.TargetCornerRadius);
             onCompleted(new TransitionExecutionResult(sessionId, TransitionExecutionStatus.Completed));
             return;
         }
 
-        // 5. Bắt đầu animation mới từ hình ảnh hiện tại
-        int fps = plan.Motion.TargetFps > 0 ? plan.Motion.TargetFps : AnimationConfig.TargetFps;
-
-        AnimationTimeline widthAnim, heightAnim;
-        if (plan.Motion.Spring is { } spring)
-        {
-            widthAnim = _widthSpring = spring.Animate(currentWidth, plan.TargetWidth, widthVelocity);
-            heightAnim = _heightSpring = spring.Animate(currentHeight, plan.TargetHeight, heightVelocity);
-            _springStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-        }
+        // Width leads and height follows its own spring; the corner shares the height's momentum model.
+        if (_refs.AnimateCornerRadius is { } animateCorner)
+            animateCorner(plan.TargetCornerRadius, heightSpring);
         else
+            Motion.To(_corner, CornerValue.ValueProperty, plan.TargetCornerRadius, heightSpring, fps: fps);
+
+        // Hover and media-width springs may take the size over mid-session; the session still ends when it rests.
+        bool widthArrived = false, heightArrived = false, reported = false;
+        void Arrived()
         {
-            widthAnim = new DoubleAnimation(currentWidth, plan.TargetWidth, plan.Motion.Duration)
-            {
-                EasingFunction = plan.Motion.Easing,
-                FillBehavior = FillBehavior.HoldEnd
-            };
-            heightAnim = new DoubleAnimation(currentHeight, plan.TargetHeight, plan.Motion.Duration)
-            {
-                EasingFunction = plan.Motion.Easing,
-                FillBehavior = FillBehavior.HoldEnd
-            };
-        }
-        Timeline.SetDesiredFrameRate(widthAnim, fps);
-        Timeline.SetDesiredFrameRate(heightAnim, fps);
-
-        int completedCount = 0;
-        void OnAnimCompleted()
-        {
-            completedCount++;
-            if (completedCount < 2) return;
-
-            // 6. Chỉ phiên mới nhất được xác nhận hoàn tất
-            if (!IsCurrent(sessionId, version))
-            {
-                RuntimeLog.Debug(LogTag, () => $"Shell animation #{sessionId} completed but was superseded by #{_activeSessionId}");
-                return;
-            }
-
-            border.BeginAnimation(FrameworkElement.WidthProperty, null);
-            border.BeginAnimation(FrameworkElement.HeightProperty, null);
-            border.Width = plan.TargetWidth;
-            border.Height = plan.TargetHeight;
-            if (_refs.CornerRadiusBuilder != null)
-                border.CornerRadius = _refs.CornerRadiusBuilder(plan.TargetCornerRadius);
-            else
-                border.CornerRadius = new CornerRadius(plan.TargetCornerRadius);
-
+            if (!widthArrived || !heightArrived || reported || !IsCurrent(sessionId, version)) return;
+            reported = true;
             onCompleted(new TransitionExecutionResult(sessionId, TransitionExecutionStatus.Completed));
         }
+        if (!double.IsFinite(border.Width)) border.Width = ReadExtent(border.Width, border.ActualWidth, plan.TargetWidth);
+        if (!double.IsFinite(border.Height)) border.Height = ReadExtent(border.Height, border.ActualHeight, plan.TargetHeight);
+        Motion.To(border, FrameworkElement.WidthProperty, plan.TargetWidth, widthSpring, fps: fps, done: () =>
+        {
+            if (!IsCurrent(sessionId, version)) return;
+            // Rest exactly on the target, unless something else took the width somewhere of its own meanwhile.
+            if (Math.Abs(border.Width - plan.TargetWidth) < 1) Motion.Stop(border, FrameworkElement.WidthProperty, plan.TargetWidth);
+            widthArrived = true;
+            Arrived();
+        }, velocity: widthVelocity, keep: true);
+        _heightArrived = () =>
+        {
+            if (!IsCurrent(sessionId, version)) return;
+            if (Math.Abs(border.Height - _heightTarget) < 1) Motion.Stop(border, FrameworkElement.HeightProperty, _heightTarget);
+            _heightArrived = null;
+            heightArrived = true;
+            Arrived();
+        };
+        Motion.To(border, FrameworkElement.HeightProperty, plan.TargetHeight, heightSpring, fps: fps, done: _heightArrived, velocity: heightVelocity, keep: true);
 
-        widthAnim.Completed += (_, _) => OnAnimCompleted();
-        heightAnim.Completed += (_, _) => OnAnimCompleted();
+        // Pills, banners and the timer still move the notch with plain animations. One of those cuts a spring off
+        // without telling it, and the session would wait for an ending that never comes.
+        var watch = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background)
+        { Interval = TimeSpan.FromMilliseconds(100) };
+        watch.Tick += (_, _) =>
+        {
+            if (_disposed || reported || !IsCurrent(sessionId, version)) { watch.Stop(); return; }
+            if (Motion.IsRunning(border, FrameworkElement.WidthProperty) ||
+                Motion.IsRunning(border, FrameworkElement.HeightProperty)) return;
+            watch.Stop();
+            // Whoever took the size over owns it now; only the session ends.
+            widthArrived = heightArrived = true;
+            _heightArrived = null;
+            Arrived();
+        };
+        watch.Start();
+    }
 
-        border.BeginAnimation(FrameworkElement.WidthProperty, widthAnim);
-        border.BeginAnimation(FrameworkElement.HeightProperty, heightAnim);
+    internal bool RetargetHeight(double height, Action done)
+    {
+        if (_disposed || _heightArrived == null) return false;
+        _heightTarget = height;
+        // A content measurement replaces the height spring; the session's kept ending rides along.
+        Motion.To(_refs.NotchBorder, FrameworkElement.HeightProperty, height, Motion.Glide, done: done);
+        return true;
     }
 
     public void SnapTo(double width, double height, double cornerRadius)
     {
         if (_disposed) return;
-        _widthSpring = _heightSpring = null;
         ++_animationVersion;
-        _activeSessionId++;
-        var border = _refs.NotchBorder;
-        border.BeginAnimation(FrameworkElement.WidthProperty, null);
-        border.BeginAnimation(FrameworkElement.HeightProperty, null);
-        border.Width = width;
-        border.Height = height;
-        if (_refs.CornerRadiusBuilder != null)
-            border.CornerRadius = _refs.CornerRadiusBuilder(cornerRadius);
-        else
-            border.CornerRadius = new CornerRadius(cornerRadius);
+        ++_activeSessionId;
+        _heightArrived = null;
+        _canceledWidthVelocity = _canceledHeightVelocity = null;
+        Motion.Stop(_refs.NotchBorder, FrameworkElement.WidthProperty, width);
+        Motion.Stop(_refs.NotchBorder, FrameworkElement.HeightProperty, height);
+        Motion.Stop(_corner, CornerValue.ValueProperty, cornerRadius);
+        if (_refs.AnimateCornerRadius is { } snapCorner) snapCorner(cornerRadius, null);
+        else SetCornerRadius(cornerRadius);
     }
 
     public void CancelCurrentAnimation()
     {
         ++_animationVersion;
-        _activeSessionId++;
+        ++_activeSessionId;
+        _heightArrived = null;
         var border = _refs.NotchBorder;
-        double currentWidth = ReadExtent(border.Width, border.ActualWidth, 0);
-        double currentHeight = ReadExtent(border.Height, border.ActualHeight, 0);
-
-        border.BeginAnimation(FrameworkElement.WidthProperty, null);
-        border.BeginAnimation(FrameworkElement.HeightProperty, null);
-        border.Width = currentWidth;
-        border.Height = currentHeight;
+        // Coordinators cancel before retargeting. Hold the rendered frame without losing its release speed.
+        _canceledWidthVelocity = Motion.VelocityOf(border, FrameworkElement.WidthProperty);
+        _canceledHeightVelocity = Motion.VelocityOf(border, FrameworkElement.HeightProperty);
+        Motion.Stop(border, FrameworkElement.WidthProperty);
+        Motion.Stop(border, FrameworkElement.HeightProperty);
     }
 
     public void Dispose()
@@ -192,16 +162,25 @@ public sealed class NotchShellPresenter : IDisposable
         if (_disposed) return;
         _disposed = true;
         CancelCurrentAnimation();
+        Motion.Stop(_corner, CornerValue.ValueProperty);
     }
+
+    private void SetCornerRadius(double radius) =>
+        _refs.NotchBorder.CornerRadius = _refs.CornerRadiusBuilder?.Invoke(radius) ?? new CornerRadius(radius);
 
     private bool IsCurrent(long sessionId, long version) =>
         !_disposed && version == _animationVersion && sessionId == _activeSessionId &&
         (_refs.IsSessionCurrent?.Invoke(sessionId) ?? true);
 
-    private static double ReadExtent(double effective, double actual, double fallback)
-    {
-        if (double.IsFinite(effective) && effective >= 0) return effective;
-        return double.IsFinite(actual) && actual > 0 ? actual : fallback;
-    }
+    private static double ReadExtent(double effective, double actual, double fallback) =>
+        double.IsFinite(effective) && effective >= 0 ? effective : double.IsFinite(actual) && actual > 0 ? actual : fallback;
 
+    private sealed class CornerValue : Animatable
+    {
+        public Action<double>? Apply { get; set; }
+        public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(
+            "Value", typeof(double), typeof(CornerValue), new PropertyMetadata(0d,
+                (target, args) => ((CornerValue)target).Apply?.Invoke((double)args.NewValue)));
+        protected override Freezable CreateInstanceCore() => new CornerValue();
+    }
 }

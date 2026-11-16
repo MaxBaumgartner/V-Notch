@@ -29,7 +29,9 @@ public sealed class MainWindowMediaVolumeTests
     [Fact]
     public void MusicTabReadsTheAppVolumeAndTheWheelStepsFromIt() => SharedStaTestRunner.RunAsync(async ct =>
     {
-        var media = new FakeMediaDetectionService { ReadSessionVolume = () => (true, .40f, false) };
+        var media = new FakeMediaDetectionService();
+        // A poll during the longer shell spring must read back the acknowledged wheel write.
+        media.ReadSessionVolume = () => (true, media.LastSessionVolume ?? .40f, false);
         await using var fixture = Create(media);
         var window = fixture.Window;
         window.SetDebugViewLock(true);
@@ -46,6 +48,8 @@ public sealed class MainWindowMediaVolumeTests
         Assert.True(wheel.Handled);
         await WpfFrameWaiter.UntilAsync(() => media.LastSessionVolume.HasValue, "wheel write", ct);
         Assert.Equal(.45f, media.LastSessionVolume!.Value, 4);
+        await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.MediaVolumeFillScale,
+            System.Windows.Media.ScaleTransform.ScaleYProperty), "wheel fill settles", ct);
         Assert.Equal(.45, window.MediaVolumeBar.Value, 4);
         Assert.False(Get<bool>(window, "_volumeSynced"));
 

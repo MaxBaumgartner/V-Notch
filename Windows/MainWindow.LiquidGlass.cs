@@ -113,8 +113,7 @@ public partial class MainWindow
                 maxRegionWidth: (int)Math.Ceiling(1600 * GetGlassDpiScale()),
                 maxRegionHeight: (int)Math.Ceiling(600 * GetGlassDpiScale()));
 
-            // Magnifier capture excludes the notch internally while the user-facing
-            _liquidGlass.HideFromScreenCapture = false;
+            _liquidGlass.HideFromScreenCapture = _settings.LiquidGlass?.HideFromScreenCapture ?? false;
             _liquidGlass.CropGpuPresentationToCapture = true;
 
             // Match the controller to the notch's current motion state so it starts
@@ -186,6 +185,8 @@ public partial class MainWindow
     private void ApplyLiquidGlassConfig()
     {
         if (GlassBackdropHost == null) return;
+        _lastGpuGeometry = null;
+        _lastAppliedGpuOptics = null;
         if (_liquidGlass?.HasPresentedFrame != true)
         {
             _lastGpuGeometry = null;
@@ -199,9 +200,8 @@ public partial class MainWindow
         _glassMaterialPresenter.PowerFactor = cfg.PowerFactor;
         UpdateNotchClip();
 
-        double dipRadius = Math.Clamp(cfg.BlurAmount, 0, 1) * 28.0;
         double dpiScale = GetGlassDpiScale();
-        int gaussianSigma = (int)Math.Round(dipRadius * dpiScale);
+        double gaussianSigma = LiquidGlassController.BlurAmountToSigma(cfg.BlurAmount, dpiScale);
         if (_liquidGlass != null)
         {
             _liquidGlass.SetBlur(gaussianSigma);
@@ -218,10 +218,16 @@ public partial class MainWindow
             }
         }
 
-        // GPU mode blurs on the host element instead of the CPU box blur.
+        // Native GPU mode blurs the captured texture before refraction.
         ApplyGpuBlur(cfg.BlurAmount);
 
         _glassConfiguredOpacity = Math.Clamp(cfg.Opacity, 0, 1);
+        if (GlassTintOverlay != null)
+        {
+            GlassTintOverlay.Opacity = cfg.Variant == 1
+                ? 0.16
+                : Math.Clamp(0.42 + cfg.BlurAmount * 0.42 - cfg.Brightness * 0.85, 0.14, 0.96);
+        }
         if (!_glassInitialFramePending)
             GlassBackdropHost.Opacity = _glassConfiguredOpacity;
 
@@ -277,6 +283,10 @@ public partial class MainWindow
             Saturation = cfg.Saturation,
             Brightness = cfg.Brightness,
             BevelMode = cfg.BevelMode,
+            EdgeHighlight = cfg.EdgeHighlight,
+            Specular = cfg.Specular,
+            Fresnel = cfg.Fresnel,
+            Variant = cfg.Variant,
             TopCornerRadius = _lastDynamicTopCornerR,
             BottomCornerRadius = _lastDynamicBottomCornerR
         });
@@ -302,13 +312,13 @@ public partial class MainWindow
         bool useUltimateGpu = _settings.LiquidGlass?.UseUltimateGpu ?? false;
         if (_gpuRefractionConfigured &&
             _gpuUltimateConfigured == useUltimateGpu &&
-            ReferenceEquals(GlassBackdropImage.Effect, _glassRefractionEffect))
+            _liquidGlass.UsesNativeRefraction)
             return;
 
         try
         {
             _glassRefractionEffect ??= new LiquidGlassRefractionEffect();
-            GlassBackdropImage.Effect = _glassRefractionEffect;
+            GlassBackdropImage.Effect = null;
 
             _glassInteractionController ??= new LiquidGlassInteractionController(NotchContainer, NotchBorder, _glassRefractionEffect);
 
@@ -318,6 +328,7 @@ public partial class MainWindow
                 return;
             }
 
+            _liquidGlass.EnableNativeRefraction();
             VNotch.Services.RuntimeLog.Log("LIQUIDGLASS",
                 $"GPU refraction enabled; target={Math.Clamp(_settings.LiquidGlass?.TargetFps ?? 60, 30, LiquidGlassController.MaxTargetFps)} FPS; ultimateGpu={useUltimateGpu}");
             _gpuRefractionConfigured = true;
@@ -609,6 +620,7 @@ public partial class MainWindow
             _lastAppliedTouchLight = cfg.TouchLight;
             fx.HighlightStrength = cfg.TouchLight;
         }
+        lg.UpdateGpuLens(fx, screenLeft, screenTop);
     }
 
     private void ApplyGpuBlur(double blurAmount)
@@ -674,7 +686,7 @@ public partial class MainWindow
 
         if (CompactThumbnailBorder != null)
         {
-            CompactThumbnailBorder.Background = glass ? _glassPanelBg : _defaultPanelBg;
+            CompactThumbnailBorder.Background = System.Windows.Media.Brushes.Transparent;
             CompactThumbnailBorder.BorderBrush = System.Windows.Media.Brushes.Transparent;
             CompactThumbnailBorder.BorderThickness = new Thickness(0);
         }
@@ -697,6 +709,7 @@ public partial class MainWindow
         {
             AnimationThumbnailRim.BorderBrush = glass ? _glassPanelBorder : System.Windows.Media.Brushes.Transparent;
             AnimationThumbnailRim.BorderThickness = glass ? new Thickness(0.5) : new Thickness(0);
+            if (ThumbnailRim != null) { ThumbnailRim.BorderBrush = AnimationThumbnailRim.BorderBrush; ThumbnailRim.BorderThickness = AnimationThumbnailRim.BorderThickness; }
         }
 
         if (glass)
@@ -847,10 +860,10 @@ public partial class MainWindow
     {
         // Hover applies a ScaleTransform (NotchScale) that renders the notch — and
         bool motion = _isAnimating || _isModeTransitioning || _isGestureActive ||
-                      _glassGestureSnapBackMotion || _glassHoverMotion;
+                      _glassGestureSnapBackMotion || _glassHoverMotion || _isMediaWidthAnimating;
 
         _liquidGlass?.SetAnimating(motion);
-        _liquidGlass?.SetIdle(!_isExpanded);
+        _liquidGlass?.SetIdle(!motion);
         if (_liquidGlass != null) _liquidGlass.CaptureFullSurface = motion;
         // We no longer pause presentation during hover, DXGI handles it smoothly.
         SetGlassRegionPush(motion && _liquidGlass != null && IsLiquidGlassEnabled);
@@ -894,7 +907,7 @@ public partial class MainWindow
                 Opacity = 0.5,
                 RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance
             };
-            _glassContentShadow.Freeze();
+
         }
         return _glassContentShadow;
     }
@@ -906,10 +919,10 @@ public partial class MainWindow
             _glassAnimThumbnailShadow = new System.Windows.Media.Effects.DropShadowEffect
             {
                 Color = Colors.Black,
-                BlurRadius = 4,
-                ShadowDepth = 0.8,
+                BlurRadius = 8,
+                ShadowDepth = 1.2,
                 Direction = 270,
-                Opacity = 0.35,
+                Opacity = 0.5,
                 RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance
             };
         }
@@ -922,13 +935,25 @@ public partial class MainWindow
         {
             // The tray already supplies card contrast. A shadow on the entire
             // scrolling subtree forces a large intermediate render surface.
-            NotchContent.Effect = enable && _clipboardTrayView?.IsVisible != true
-                ? GetOrCreateGlassContentShadow() : null;
+            bool shouldAttach = enable && _settings.EnableShadow && _clipboardTrayView?.IsVisible != true;
+            bool fadeRestoredShadow = shouldAttach && NotchContent.Effect == null && _glassContentShadow != null && _isMusicCompactMode && !_isExpanded && !VNotch.Services.AnimationConfig.ReduceMotion;
+            var contentShadow = shouldAttach ? GetOrCreateGlassContentShadow() : null;
+            if (contentShadow != null)
+            {
+                contentShadow.BeginAnimation(System.Windows.Media.Effects.DropShadowEffect.OpacityProperty, null);
+                contentShadow.Opacity = fadeRestoredShadow ? 0.0 : 0.5;
+            }
+            NotchContent.Effect = contentShadow;
+            if (fadeRestoredShadow && contentShadow != null)
+            {
+                contentShadow.BeginAnimation(System.Windows.Media.Effects.DropShadowEffect.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 0.5, new Duration(TimeSpan.FromMilliseconds(250))) { EasingFunction = new System.Windows.Media.Animation.QuadraticEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } });
+            }
+
         }
 
         if (AnimationThumbnailBorder != null)
         {
-            AnimationThumbnailBorder.Effect = enable ? GetOrCreateGlassAnimThumbnailShadow() : null;
+            AnimationThumbnailBorder.Effect = (enable && _settings.EnableShadow) ? GetOrCreateGlassAnimThumbnailShadow() : null;
         }
     }
 
@@ -958,7 +983,7 @@ public partial class MainWindow
         else
         {
             CountdownWidget.TimerControlBar.Background = _timerBarDefaultBg;
-            if (CountdownWidget.TimerControlBarShadow != null) CountdownWidget.TimerControlBarShadow.Opacity = 0.45;
+            if (CountdownWidget.TimerControlBarShadow != null) CountdownWidget.TimerControlBarShadow.Opacity = _settings.EnableShadow ? 0.45 : 0;
         }
     }
 
@@ -1167,7 +1192,8 @@ public partial class MainWindow
             }
         }
 
-        if (_liquidGlass.ShouldThrottleFrameUpdate(ref _lastGlassFrameUpdateTick, force: initialFrameJustArrived))
+        if (_liquidGlass.ShouldThrottleFrameUpdate(ref _lastGlassFrameUpdateTick, force: initialFrameJustArrived,
+            renderingTime: (e as RenderingEventArgs)?.RenderingTime))
         {
             return;
         }
@@ -1263,6 +1289,10 @@ public partial class MainWindow
                 Saturation = cfg.Saturation,
                 Brightness = cfg.Brightness,
                 BevelMode = cfg.BevelMode,
+                EdgeHighlight = cfg.EdgeHighlight,
+                Specular = cfg.Specular,
+                Fresnel = cfg.Fresnel,
+                Variant = cfg.Variant,
                 TopCornerRadius = topR,
                 BottomCornerRadius = bottomR
             });

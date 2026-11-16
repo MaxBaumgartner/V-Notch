@@ -48,7 +48,14 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         TrayIconKind.Email, TrayIconKind.Shopping, TrayIconKind.Receipts, TrayIconKind.Personal,
         TrayIconKind.Important, TrayIconKind.Archive
     ];
-    private ClipboardCategoryViewModel[] _categoryItems = CategoryKinds.Select(kind => new ClipboardCategoryViewModel(kind)).ToArray();
+    private static ClipboardCategoryViewModel[] CreateDefaultCategoryItems()
+    {
+        var items = new ClipboardCategoryViewModel[CategoryKinds.Length];
+        for (int i = 0; i < CategoryKinds.Length; i++)
+            items[i] = new ClipboardCategoryViewModel(CategoryKinds[i]);
+        return items;
+    }
+    private ClipboardCategoryViewModel[] _categoryItems = CreateDefaultCategoryItems();
     private readonly ClipboardCardCollection _cards = [];
     private readonly UiScheduledTimer _searchTimer;
     private readonly UiScheduledTimer _ageTimer;
@@ -71,6 +78,18 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
     private bool _deleteConfirmationOpen;
     public bool IsContextMenuOpen => _deleteConfirmationOpen || _labelEditorOpen || _openMenus.Count != 0 || Environment.TickCount64 < _menuInteractionUntil;
 
+    private void CloseAllOpenMenus(ContextMenu? except = null)
+    {
+        if (_openMenus.Count == 0) return;
+        var copy = new ContextMenu[_openMenus.Count];
+        _openMenus.CopyTo(copy);
+        for (int i = 0; i < copy.Length; i++)
+        {
+            if (!ReferenceEquals(copy[i], except))
+                copy[i].IsOpen = false;
+        }
+    }
+
     public bool ContainsMenuPoint(Point screenPoint)
     {
         foreach (var menu in _openMenus)
@@ -83,8 +102,9 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
 
     private static bool ContainsSubmenuPoint(ItemsControl parent, Point screenPoint)
     {
-        foreach (var item in parent.Items.OfType<MenuItem>())
+        foreach (var obj in parent.Items)
         {
+            if (obj is not MenuItem item) continue;
             if (ContainsVisualPoint(item, screenPoint)) return true;
             if (item.IsSubmenuOpen && ContainsSubmenuPoint(item, screenPoint)) return true;
         }
@@ -136,6 +156,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         InitializeSearchEdgeFade();
         PasscodeBox.PasswordChanged += PasscodeBox_PasswordChanged;
         _statusTimer.Tick += StatusTimer_Tick;
+        Cards.ClearingContainer = OnClearingCardContainer;
         Cards.ItemsSource = _cards;
         CategoryPanel.ItemsSource = _categoryItems;
         _searchTimer = new UiScheduledTimer { Interval = TimeSpan.FromMilliseconds(120) };
@@ -175,9 +196,11 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
             }
             else
             {
+                _entranceWasHidden = true;
                 CloseLabelEditor(immediately: true);
                 StopEntranceWork();
                 StopCategoryScrolling();
+                StopViewportMotions();
                 CancelCardPositionAnimation();
                 CancelPendingPersonalDrop();
                 HidePrivateContent();
@@ -469,6 +492,11 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
 
                 var scroll = FindScrollViewer(Cards);
                 double offset = scroll?.HorizontalOffset ?? 0;
+                for (int i = 0; i < existingCount; i++)
+                {
+                    if (existingSurvivorMask[i] == 0)
+                        ReleaseRemovedCard(_cards[i]);
+                }
                 var replacement = new ClipboardCardViewModel[desiredCount];
                 for (int i = 0; i < desiredCount; i++)
                 {
@@ -494,7 +522,10 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
             for (int i = existingCount - 1; i >= 0; i--)
             {
                 if (existingSurvivorMask[i] == 0)
+                {
+                    ReleaseRemovedCard(_cards[i]);
                     _cards.RemoveAt(i);
+                }
             }
 
             for (int index = 0; index < desiredCount; index++)
@@ -541,7 +572,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
     { if (sender is Button { DataContext: ClipboardCategoryViewModel category }) SelectCategory(category.Name); }
     private string CategoryLabel(string name)
     {
-        if (ClipboardLabel.IsCustomId(name)) return _controller?.Store.GetLabels().FirstOrDefault(label => label.Id == name)?.Name ?? name;
+        if (ClipboardLabel.IsCustomId(name)) return _controller != null ? FindCustomLabelName(_controller.Store.GetLabels(), name) : name;
         string key = "clipboard.category." + name.ToLowerInvariant();
         return Loc.Get(key);
     }
@@ -563,13 +594,17 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
             CancelPendingPersonalDrop();
             _moveToPersonal = null;
         }
-        if (_category != category) ResolveDeleteConfirmation(false);
+        if (_category != category)
+        {
+            ResolveDeleteConfirmation(false);
+            CloseLabelEditor();
+        }
         if (_category == category) return;
         bool leavingPersonal = _category == "Personal";
         bool personalTransition = leavingPersonal || category == "Personal";
         CancelCardPositionAnimation();
         EndSelection();
-        foreach (var menu in _openMenus.ToArray()) menu.IsOpen = false;
+        CloseAllOpenMenus();
         Cards.SelectedItems.Clear();
         _selection.Reset();
 
@@ -585,8 +620,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
             EmptyText.Visibility = Visibility.Collapsed;
             EmptyDropSilhouette.Visibility = Visibility.Collapsed;
             CancelThumbnailLoads();
-            ReleaseCardPreviews();
-            _cards.Clear();
+            ReleaseAllCards();
             _arrivingCards.Clear();
         }
         CloseDetails();
@@ -598,6 +632,49 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         UpdateCategoryLockState();
         RebuildCategories();
         QueueRefresh();
+    }
+
+    private void ReleaseRemovedCard(ClipboardCardViewModel card, bool removeSelection = true)
+    {
+        foreach (var pair in _thumbnailLoads.ToArray())
+            if (ReferenceEquals(pair.Value.Card, card)) CancelThumbnailLoad(pair.Key);
+        foreach (var pair in _completedContentLoads.ToArray())
+            if (ReferenceEquals(pair.Value, card)) _completedContentLoads.Remove(pair.Key);
+        foreach (var pair in _cardViewportStates.ToArray())
+            if (ReferenceEquals(pair.Value.Card, card)) ForgetCardViewport(pair.Key);
+        card.IsMenuOpen = false;
+        ReleaseCardPreview(card);
+        if (!removeSelection) return;
+        _selection.Remove(card);
+        if (ReferenceEquals(_pressedCard, card))
+        {
+            _pressedCard = null;
+            _dragStart = null;
+            _copyOnRelease = false;
+        }
+        if (ReferenceEquals(_lastOpenedMenuCard, card))
+        {
+            _lastOpenedMenuCard = null;
+            _lastOpenedMenuTarget = null;
+            _lastOpenedMenu = null;
+        }
+        if (ReferenceEquals(_lastClosedMenuCard, card))
+        {
+            _lastClosedMenuCard = null;
+            _lastClosedMenuTarget = null;
+            _lastClosedMenu = null;
+            _lastClosedMenuTime = 0;
+        }
+        if (ReferenceEquals(_detailCard, card) || _groupEntryId == card.Entry.Id)
+            CloseDetails();
+    }
+
+    private void ReleaseAllCards()
+    {
+        ReleaseCardPreviews();
+        for (int i = 0; i < _cards.Count; i++)
+            ReleaseRemovedCard(_cards[i]);
+        _cards.Clear();
     }
 
     private bool UpdateCategoryLockState()
@@ -618,7 +695,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         SetTrayDropBorderVisible(false);
         EmptyText.Visibility = Visibility.Collapsed;
         EmptyDropSilhouette.Visibility = Visibility.Collapsed;
-        _cards.Clear();
+        ReleaseAllCards();
         LockTitle.Text = Loc.Get(_controller?.Store.HasPersonalPasscode == true ? "clipboard.locked" : "clipboard.setPin");
         UpdatePinStep();
         ForgotPinButton.Visibility = _controller?.Store.HasPersonalPasscode == true ? Visibility.Visible : Visibility.Collapsed;
@@ -639,9 +716,10 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         _approvals.Clear();
         ApprovalPanel.Visibility = Visibility.Collapsed;
         ResolveDeleteConfirmation(false, immediately: true);
+        CloseLabelEditor(immediately: true);
         ClearStatus(immediately: true);
         _selection.Reset();
-        foreach (var menu in _openMenus.ToArray()) menu.IsOpen = false;
+        CloseAllOpenMenus();
         foreach (var card in _cards) card.IsMenuOpen = false;
         ++_refreshVersion;
         CancelSearch();
@@ -663,18 +741,21 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         ResetConfirmationBox.Clear();
         DetailText.Clear();
         DetailPanel.Visibility = Visibility.Collapsed;
-        foreach (var card in _cards.Where(card => card.Entry.IsPersonal)) card.Image = null;
+        for (int i = 0; i < _cards.Count; i++) { if (_cards[i].Entry.IsPersonal) _cards[i].Image = null; }
         if (_category == "Personal")
         {
             _queryDirty = true;
-            _cards.Clear();
+            ReleaseAllCards();
             Cards.Visibility = Visibility.Collapsed;
             ShowTransientLayer(LockPanel);
         }
         else
         {
-            foreach (var card in _cards.Where(card => card.Entry.IsPersonal).ToArray())
-                _cards.Remove(card);
+            for (int i = _cards.Count - 1; i >= 0; i--) if (_cards[i].Entry.IsPersonal)
+                {
+                    ReleaseRemovedCard(_cards[i]);
+                    _cards.RemoveAt(i);
+                }
         }
     }
 
@@ -907,7 +988,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         if (sender is not Border border || e.NewSize.Width <= 0 || e.NewSize.Height <= 0) return;
         var bounds = new Rect(e.NewSize);
         if (border.Clip is RectangleGeometry existing && existing.Rect == bounds) return;
-        var clip = new RectangleGeometry(bounds, 16, 16);
+        var clip = new RectangleGeometry(bounds, 12, 12);
         clip.Freeze();
         border.Clip = clip;
     }
@@ -950,7 +1031,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         _pressedCard = null;
         _copyOnRelease = false;
         AnimateCardPress(element, false);
-        await SafeAsync(() => _controller.DragManyAsync(element, SelectedCards().Select(item => item.Entry).ToArray()));
+        await SafeAsync(() => _controller.DragManyAsync(element, ExtractEntries(SelectedCards())));
     }
     private async Task CopyAsync(ClipboardCardViewModel card)
     {
@@ -998,8 +1079,9 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
 
     private void OpenCardMenu(FrameworkElement card, ContextMenu menu, Button trigger)
     {
-        foreach (var other in _openMenus.ToArray())
-            if (!ReferenceEquals(other, menu)) other.IsOpen = false;
+        if (_labelEditorOpen) CloseLabelEditor(immediately: true);
+        CloseAllOpenMenus(except: menu);
+        // Keep trigger menu open.
         _menuAnimationTargets[menu] = trigger;
         // Hold the actions before the popup transfers focus/mouse capture.
         if (card.DataContext is ClipboardCardViewModel cardVm) cardVm.IsMenuOpen = true;
@@ -1102,9 +1184,9 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         if (selection.Length > 1)
         {
             AddMenu(menu, "clipboard.copy", CopySelectionAsync);
-            AddMenu(menu, "clipboard.pin", () => _controller.Store.UpdateManyAsync(selection.Select(i => i.Entry.Id).ToArray(), pinned: true));
+            AddMenu(menu, "clipboard.pin", () => _controller.Store.UpdateManyAsync(ExtractEntryIds(selection), pinned: true));
             menu.Items.Add(new Separator());
-            AddMenu(menu, "clipboard.archive", () => _controller.Store.UpdateManyAsync(selection.Select(i => i.Entry.Id).ToArray(), archived: true));
+            AddMenu(menu, "clipboard.archive", () => _controller.Store.UpdateManyAsync(ExtractEntryIds(selection), archived: true));
             AddMenu(menu, "clipboard.delete", () => ConfirmDeleteAsync(selection));
             return;
         }
@@ -1138,11 +1220,11 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
                 Header = CategoryLabel(group),
                 Tag = group,
                 IsCheckable = true,
-                IsChecked = card.Entry.Groups.Contains(group),
+                IsChecked = ContainsGroup(card.Entry.Groups, group),
                 Icon = new TrayIcon { Kind = groupKind, Width = 13, Height = 13 }
             };
             item.Click += async (_, _) => await SafeAsync(() => _controller.Store.UpdateAsync(card.Entry.Id,
-                groups: groups.Items.OfType<MenuItem>().Where(choice => choice.IsChecked).Select(choice => (string)choice.Tag).ToArray()));
+                groups: GetCheckedGroupTags(groups.Items)));
             groups.Items.Add(item);
         }
         menu.Items.Add(groups);
@@ -1246,7 +1328,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         else if (content == null)
             text = "";
         else
-            text = content.Text.Length != 0 ? content.Text : string.Join(Environment.NewLine, content.Files.Select(file => file.Name));
+            text = content.Text.Length != 0 ? content.Text : FormatContentFileNames(content.Files);
         const int detailPreviewLimit = 16_000;
         DetailText.Text = text.Length > detailPreviewLimit ? text[..detailPreviewLimit] + "\n…" : text;
         if (card.Entry.Kind == ClipboardKind.Image)
@@ -1347,8 +1429,8 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
             {
                 0 => "Item",
                 1 => Path.GetFileName(files[0]),
-                <= 3 => string.Join(", ", files.Select(Path.GetFileName)),
-                _ => $"{string.Join(", ", files.Take(2).Select(Path.GetFileName))} +{files.Length - 2}"
+                <= 3 => JoinFileNames(files, files.Length),
+                _ => $"{JoinFileNames(files, 2)} +{files.Length - 2}"
             };
             ApprovalText.Text = string.Format(Loc.GetCulture(), Loc.Get("clipboard.largeFile"), pending.Size / (1024d * 1024), names);
         }
@@ -1497,7 +1579,8 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         _controller.IsPaused = !_controller.IsPaused;
         PauseGlyph.Kind = _controller.IsPaused ? TrayIconKind.Resume : TrayIconKind.Pause;
         AnimateLayer(PauseGlyph, true, 0, true);
-        PauseGlyph.Foreground = _controller.IsPaused ? (Brush)FindResource("TrayAccent") : Brush("#BFFFFFFF");
+        if (_controller.IsPaused) PauseGlyph.SetResourceReference(TrayIcon.ForegroundProperty, "AccentBrushStrong");
+        else PauseGlyph.Foreground = Brush("#BFFFFFFF");
         UpdatePauseLabel();
     }
     private void UpdatePauseLabel()
@@ -1559,6 +1642,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         _ageTimer.Dispose();
         ClearSelectionContainers();
         StopCategoryScrolling();
+        StopViewportMotions();
         CancelPendingPersonalDrop();
         _categoryDropTimer.Dispose();
         CancelThumbnailLoads();
@@ -1578,9 +1662,9 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
             _controller.ImportProgress -= OnImportProgress;
         }
         HidePrivateContent();
-        _cards.Clear();
+        ReleaseAllCards();
         _approvals.Clear();
-        foreach (var menu in _openMenus.ToArray()) menu.IsOpen = false;
+        CloseAllOpenMenus();
         _openMenus.Clear();
         TrayDropBorder?.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
         TrayDropBorder?.BeginAnimation(OpacityProperty, null);
@@ -1594,6 +1678,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         TrayDropBorder?.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
         TrayDropBorder?.BeginAnimation(OpacityProperty, null);
         StopCategoryScrolling();
+        StopViewportMotions();
         CancelCardPositionAnimation();
         CancelThumbnailLoads();
         _menuAnimationTargets.Clear();
@@ -1605,5 +1690,58 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
         _queryDirty = true;
         HidePrivateContent();
         if (_controller?.Store.IsPersonalUnlocked == true) _ = SafeAsync(_controller.LockPersonalAsync);
+    }
+
+    private static Guid[] ExtractEntryIds(ClipboardCardViewModel[] cards)
+    {
+        if (cards.Length == 0) return [];
+        var result = new Guid[cards.Length];
+        for (int i = 0; i < cards.Length; i++) result[i] = cards[i].Entry.Id;
+        return result;
+    }
+
+    private static bool ContainsGroup(string[] groups, string group)
+    {
+        for (int i = 0; i < groups.Length; i++)
+        {
+            if (string.Equals(groups[i], group, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static string[] GetCheckedGroupTags(ItemCollection items)
+    {
+        int count = 0;
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (items[i] is MenuItem { IsChecked: true, Tag: string }) count++;
+        }
+        if (count == 0) return [];
+        var result = new string[count];
+        int write = 0;
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (items[i] is MenuItem { IsChecked: true, Tag: string tag }) result[write++] = tag;
+        }
+        return result;
+    }
+
+    private static string FormatContentFileNames(ClipboardFile[] files)
+    {
+        if (files.Length == 0) return "";
+        if (files.Length == 1) return files[0].Name;
+        var names = new string[files.Length];
+        for (int i = 0; i < files.Length; i++) names[i] = files[i].Name;
+        return string.Join(Environment.NewLine, names);
+    }
+
+    private static string JoinFileNames(string[] files, int takeCount)
+    {
+        int count = Math.Min(files.Length, takeCount);
+        if (count <= 0) return "";
+        if (count == 1) return Path.GetFileName(files[0]);
+        var names = new string[count];
+        for (int i = 0; i < count; i++) names[i] = Path.GetFileName(files[i]);
+        return string.Join(", ", names);
     }
 }

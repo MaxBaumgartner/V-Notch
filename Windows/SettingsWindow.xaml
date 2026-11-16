@@ -47,13 +47,46 @@
         <SolidColorBrush x:Key="SettingsTextBrush" Color="#C8C8C8"/>
         <SolidColorBrush x:Key="MutedText" Color="#8C959E"/>
         <SolidColorBrush x:Key="SoftText" Color="#D8DEE5"/>
-        <SolidColorBrush x:Key="AccentBrush" Color="#F2F2F2"/>
-        <SolidColorBrush x:Key="AccentBrushStrong" Color="#FFFFFF"/>
         <SolidColorBrush x:Key="TrackBg" Color="#262626"/>
         <SolidColorBrush x:Key="SurfaceBrush" Color="#141414"/>
         <SolidColorBrush x:Key="SurfaceBrushHover" Color="#1B1B1B"/>
         <SolidColorBrush x:Key="NavItemBg" Color="Transparent"/>
-        <SolidColorBrush x:Key="NavItemActiveBg" Color="#24FFFFFF"/>
+        <SolidColorBrush x:Key="NavItemActiveBg" Color="#1EFFFFFF"/>
+        <Style x:Key="AccentSwatchStyle" TargetType="RadioButton">
+            <Setter Property="Width" Value="40"/>
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Grid Background="Transparent">
+                            <Border x:Name="Ring" CornerRadius="20" BorderThickness="2" BorderBrush="Transparent"/>
+                            <Ellipse Margin="7" Fill="{TemplateBinding Background}"/>
+                            <Path x:Name="Check" Data="M 0,4 L 3,7 L 9,0" Stroke="{DynamicResource AccentForegroundBrush}" StrokeThickness="2"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Ring" Property="BorderBrush" Value="#60FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Ring" Property="BorderBrush" Value="{Binding Background, RelativeSource={RelativeSource TemplatedParent}}"/>
+                                <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Ring" Property="BorderBrush" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Opacity" Value="0.75"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <CubicEase x:Key="InteractiveEaseOut" EasingMode="EaseOut"/>
 
         <LinearGradientBrush x:Key="WindowGlow" StartPoint="0,0" EndPoint="1,1">
@@ -70,10 +103,12 @@
             <Setter Property="TextOptions.TextFormattingMode" Value="Ideal"/>
             <Setter Property="TextOptions.TextRenderingMode" Value="Grayscale"/>
             <Setter Property="TextOptions.TextHintingMode" Value="Animated"/>
+            <Setter Property="UseLayoutRounding" Value="False"/>
+            <Setter Property="SnapsToDevicePixels" Value="False"/>
         </Style>
 
         <Style x:Key="SectionHeader" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-            <Setter Property="Foreground" Value="#8E96A0"/>
+            <Setter Property="Foreground" Value="#7C7C7C"/>
             <Setter Property="FontSize" Value="10"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="Margin" Value="0,0,0,14"/>
@@ -82,7 +117,7 @@
 
         <Style x:Key="CardBorderStyle" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource CardBg}"/>
-            <Setter Property="BorderBrush" Value="#14FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#10FFFFFF"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="18"/>
             <Setter Property="Padding" Value="18,4,18,14"/>
@@ -96,11 +131,6 @@
                     </TransformGroup>
                 </Setter.Value>
             </Setter>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="BorderBrush" Value="#24FFFFFF"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
 
         <Style x:Key="SettingTitleText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
@@ -133,33 +163,20 @@
 
         <Style x:Key="SettingRowBorder" TargetType="Border">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="10"/>
-            <Setter Property="Padding" Value="8,8"/>
-            <Setter Property="Margin" Value="-8,0,-8,4"/>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#0CFFFFFF"/>
-                    <Setter Property="BorderBrush" Value="#16FFFFFF"/>
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="Padding" Value="0,8"/>
+            <Setter Property="Margin" Value="0,0,0,4"/>
         </Style>
 
         <Style x:Key="NavButton" TargetType="Border">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="MinHeight" Value="30"/>
             <Setter Property="Padding" Value="12,3"/>
             <Setter Property="Margin" Value="0,1"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#14FFFFFF"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
 
         <Style TargetType="CheckBox">
@@ -203,13 +220,14 @@
                                 </ContentPresenter.Resources>
                             </ContentPresenter>
 
-                            <Grid x:Name="SwitchVisual" Grid.Column="1" Width="54" Height="28"
+                            <Grid x:Name="SwitchVisual" Grid.Column="1" Width="52" Height="26"
                                   VerticalAlignment="Center" HorizontalAlignment="Right"
                                   IsHitTestVisible="False">
-                                <Border x:Name="SwitchTrack" CornerRadius="14" Background="#28FFFFFF" BorderBrush="#36FFFFFF" BorderThickness="1"/>
-                                <Border x:Name="SwitchOnTrack" CornerRadius="14" Background="#34C759" BorderBrush="#5CFFFFFF" BorderThickness="1" Opacity="0"/>
+                                <Border x:Name="SwitchTrack" CornerRadius="13" Background="#2E2E32"/>
+                                <Border x:Name="SwitchHoverOverlay" CornerRadius="13" Background="#14FFFFFF" Opacity="0"/>
+                                <Border x:Name="SwitchOnTrack" CornerRadius="13" Background="{DynamicResource AccentBrush}" Opacity="0"/>
                                 <Border x:Name="SwitchThumb" Width="22" Height="22" CornerRadius="11"
-                                        Background="Transparent" Margin="3,0"
+                                        Background="Transparent" Margin="2,0"
                                         HorizontalAlignment="Left" VerticalAlignment="Center">
                                     <Border.RenderTransform>
                                         <TranslateTransform X="0"/>
@@ -220,8 +238,8 @@
                                             <ScaleTransform ScaleX="1" ScaleY="1"/>
                                         </Border.RenderTransform>
                                         <Border.Effect>
-                                            <DropShadowEffect BlurRadius="5" ShadowDepth="1"
-                                                              Opacity="0.28" Color="Black" Direction="270"/>
+                                            <DropShadowEffect BlurRadius="4" ShadowDepth="1"
+                                                              Opacity="0.24" Color="Black" Direction="270"/>
                                         </Border.Effect>
                                     </Border>
                                 </Border>
@@ -229,12 +247,26 @@
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="SwitchTrack" Property="Background" Value="#36FFFFFF"/>
-                                <Setter TargetName="SwitchTrack" Property="BorderBrush" Value="#58FFFFFF"/>
-                                <Setter Property="Foreground" Value="#FFFFFF"/>
-                            </Trigger>
-                            <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="SwitchTrack" Property="BorderBrush" Value="#88FFFFFF"/>
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="SwitchHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.16"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="SwitchHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.20"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.4"/>
@@ -251,81 +283,91 @@
             <Setter Property="MinHeight" Value="62"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Focusable" Value="True"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="controls:ElasticSlider">
                         <StackPanel>
-                            <TextBlock x:Name="PART_Label"
-                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding Label, RelativeSource={RelativeSource TemplatedParent}}"
-                                       Margin="2,0,0,0"
-                                       LineHeight="24" LineStackingStrategy="BlockLineHeight"
-                                       FontSize="{StaticResource SettingsLabelFontSize}"
-                                       FontWeight="SemiBold"
-                                       Foreground="{StaticResource SettingsTextBrush}"
-                                       FontFamily="{StaticResource SettingsFont}"
-                                       IsHitTestVisible="False"/>
+                            <Grid Margin="2,0,2,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="PART_Label"
+                                           Grid.Column="0"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Label, RelativeSource={RelativeSource TemplatedParent}}"
+                                           VerticalAlignment="Center"
+                                           LineHeight="22" LineStackingStrategy="BlockLineHeight"
+                                           FontSize="{StaticResource SettingsLabelFontSize}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource SettingsTextBrush}"
+                                           FontFamily="{StaticResource SettingsFont}"
+                                           IsHitTestVisible="False"/>
+                                <TextBlock x:Name="PART_Value"
+                                           Grid.Column="1"
+                                           Margin="12,0,0,0"
+                                           VerticalAlignment="Center"
+                                           HorizontalAlignment="Right"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource SoftText}"
+                                           FontFamily="{StaticResource SFProDisplay}"
+                                           IsHitTestVisible="False"/>
+                            </Grid>
                             <TextBlock x:Name="PART_Description"
-                                       Margin="2,4,0,7"
+                                       Margin="2,0,0,7"
                                        Style="{StaticResource SettingHintText}"
                                        Foreground="{StaticResource MutedText}"
                                        TextWrapping="Wrap"
                                        FontFamily="{StaticResource SettingsFont}"
                                        IsHitTestVisible="False"/>
                             <Border x:Name="PART_Root"
-                                    Height="40"
-                                    CornerRadius="11"
-                                    Background="#1AFFFFFF"
-                                    BorderBrush="#2AFFFFFF"
+                                    Height="36"
+                                    CornerRadius="10"
+                                    Background="#14FFFFFF"
+                                    BorderBrush="#1EFFFFFF"
                                     BorderThickness="1"
                                     SnapsToDevicePixels="False"
                                     ClipToBounds="True">
                                 <Grid>
                                     <Border x:Name="PART_Fill"
                                             HorizontalAlignment="Left"
-                                            CornerRadius="10"
-                                            Background="#30FFFFFF"
+                                            CornerRadius="9"
+                                            Background="{DynamicResource AccentSubtleBrush}"
                                             Width="0"/>
+                                    <Border x:Name="PART_HoverOverlay"
+                                            CornerRadius="9"
+                                            Background="#0AFFFFFF"
+                                            BorderBrush="#2CFFFFFF"
+                                            BorderThickness="1"
+                                            Opacity="0"
+                                            IsHitTestVisible="False"/>
                                     <Canvas x:Name="PART_Ticks"
                                             IsHitTestVisible="False"/>
                                     <Canvas IsHitTestVisible="False">
                                         <Rectangle x:Name="PART_Indicator"
-                                                   Width="3.5"
-                                                   Height="20"
-                                                   RadiusX="1.75"
-                                                   RadiusY="1.75"
-                                                   Fill="#FFFFFF"
-                                                   Canvas.Top="9"
-                                                   Canvas.Left="0">
+                                                   Width="3"
+                                                   Height="18"
+                                                   RadiusX="1.5"
+                                                   RadiusY="1.5"
+                                                   Fill="{DynamicResource AccentBrushStrong}"
+                                                   Canvas.Top="8"
+                                                   Canvas.Left="0"
+                                                   RenderTransformOrigin="0.5,0.5">
+                                            <Rectangle.RenderTransform>
+                                                <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                            </Rectangle.RenderTransform>
                                             <Rectangle.Effect>
-                                                <DropShadowEffect BlurRadius="6" ShadowDepth="0"
-                                                                  Opacity="0.55" Color="White"/>
+                                                <DropShadowEffect BlurRadius="5" ShadowDepth="0"
+                                                                  Opacity="0.45" Color="White"/>
                                             </Rectangle.Effect>
                                         </Rectangle>
                                     </Canvas>
-                                    <TextBlock x:Name="PART_Value"
-                                               VerticalAlignment="Center"
-                                               HorizontalAlignment="Right"
-                                               Margin="0,0,12,0"
-                                               FontSize="13"
-                                               FontWeight="Bold"
-                                               Foreground="#F2F6FA"
-                                               FontFamily="{StaticResource SFProDisplay}"
-                                               IsHitTestVisible="False"/>
                                     <Track x:Name="PART_Track" Visibility="Hidden"/>
                                 </Grid>
                             </Border>
                         </StackPanel>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="PART_Root" Property="Background" Value="#22FFFFFF"/>
-                                <Setter TargetName="PART_Root" Property="BorderBrush" Value="#4CFFFFFF"/>
-                                <Setter TargetName="PART_Fill" Property="Background" Value="#3EFFFFFF"/>
-                                <Setter TargetName="PART_Label" Property="Foreground" Value="#FFFFFF"/>
-                            </Trigger>
-                            <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="PART_Root" Property="BorderBrush" Value="#7CFFFFFF"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -336,7 +378,7 @@
             <Setter Property="MinWidth" Value="84"/>
             <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
             <Setter Property="Foreground" Value="{StaticResource SettingsTextBrush}"/>
-            <Setter Property="BorderBrush" Value="#34FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#2B2B2B"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="18,0"/>
             <Setter Property="FontSize" Value="13"/>
@@ -346,36 +388,32 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="ButtonBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="13"
-                                Padding="{TemplateBinding Padding}"
-                                RenderTransformOrigin="0.5,0.5">
-                            <Border.RenderTransform>
-                                <TransformGroup>
-                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
-                                    <TranslateTransform Y="0"/>
-                                </TransformGroup>
-                            </Border.RenderTransform>
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                        <Grid RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <ScaleTransform x:Name="ButtonScale" ScaleX="1" ScaleY="1"/>
+                            </Grid.RenderTransform>
+                            <Border x:Name="ButtonBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="13"/>
+                            <Border x:Name="ButtonHoverOverlay"
+                                    Background="#0EFFFFFF"
+                                    BorderBrush="#36FFFFFF"
+                                    BorderThickness="1"
+                                    CornerRadius="13"
+                                    Opacity="0"
+                                    IsHitTestVisible="False"/>
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#24FFFFFF"/>
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#5CFFFFFF"/>
-                                <Setter Property="Foreground" Value="#FFFFFF"/>
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
-                                                             To="1.016" Duration="0:0:0.14"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
-                                                             To="1.016" Duration="0:0:0.14"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.16"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
@@ -383,31 +421,25 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
-                                                             To="1" Duration="0:0:0.16"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
-                                                             To="1" Duration="0:0:0.16"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.20"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#18FFFFFF"/>
-                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="#78FFFFFF"/>
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
-                                                             To="0.974" Duration="0:0:0.08"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleX"
+                                                             To="0.986" Duration="0:0:0.08"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
-                                                             To="0.974" Duration="0:0:0.08"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleY"
+                                                             To="0.986" Duration="0:0:0.08"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
@@ -415,12 +447,12 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleX"
                                                              To="1" Duration="0:0:0.15"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleY"
                                                              To="1" Duration="0:0:0.15"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
@@ -434,42 +466,39 @@
         </Style>
 
         <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Background" Value="#F3F6FA"/>
-            <Setter Property="Foreground" Value="#11161D"/>
-            <Setter Property="BorderBrush" Value="#FFFFFF"/>
+            <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="ButtonBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="13"
-                                Padding="{TemplateBinding Padding}"
-                                RenderTransformOrigin="0.5,0.5">
-                            <Border.RenderTransform>
-                                <TransformGroup>
-                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
-                                    <TranslateTransform Y="0"/>
-                                </TransformGroup>
-                            </Border.RenderTransform>
-                            <ContentPresenter HorizontalAlignment="Center"
+                        <Grid RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <ScaleTransform x:Name="ButtonScale" ScaleX="1" ScaleY="1"/>
+                            </Grid.RenderTransform>
+                            <Border x:Name="ButtonBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="13"/>
+                            <Border x:Name="ButtonHoverOverlay"
+                                    Background="{DynamicResource AccentHoverBrush}"
+                                    CornerRadius="13"
+                                    Opacity="0"
+                                    IsHitTestVisible="False"/>
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               TextElement.Foreground="{TemplateBinding Foreground}"/>
-                        </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#FFFFFF"/>
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
-                                                             To="1.018" Duration="0:0:0.14"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
-                                                             To="1.018" Duration="0:0:0.14"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.16"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
@@ -477,30 +506,26 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
-                                                             To="1" Duration="0:0:0.16"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
-                                                             To="1" Duration="0:0:0.16"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.20"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Background" Value="#DCE4EE"/>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource AccentHoverBrush}"/>
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
-                                                             To="0.974" Duration="0:0:0.08"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleX"
+                                                             To="0.986" Duration="0:0:0.08"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
-                                                             To="0.974" Duration="0:0:0.08"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleY"
+                                                             To="0.986" Duration="0:0:0.08"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
@@ -508,17 +533,233 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleX)"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleX"
                                                              To="1" Duration="0:0:0.15"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonBorder"
-                                                             Storyboard.TargetProperty="(UIElement.RenderTransform).(TransformGroup.Children)[0].(ScaleTransform.ScaleY)"
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleY"
                                                              To="1" Duration="0:0:0.15"
                                                              EasingFunction="{StaticResource InteractiveEaseOut}"/>
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="CompactIconButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Width" Value="30"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Background" Value="#161616"/>
+            <Setter Property="Foreground" Value="{StaticResource SoftText}"/>
+            <Setter Property="BorderBrush" Value="#2A2A2A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <ScaleTransform x:Name="ButtonScale" ScaleX="1" ScaleY="1"/>
+                            </Grid.RenderTransform>
+                            <Border x:Name="ButtonBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8"/>
+                            <Border x:Name="ButtonHoverOverlay"
+                                    Background="#12FFFFFF"
+                                    BorderBrush="#3AFFFFFF"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Opacity="0"
+                                    IsHitTestVisible="False"/>
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="ButtonHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="1" Duration="0:0:0.14"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="ButtonHoverOverlay"
+                                                             Storyboard.TargetProperty="Opacity"
+                                                             To="0" Duration="0:0:0.18"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleX"
+                                                             To="0.93" Duration="0:0:0.07"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleY"
+                                                             To="0.93" Duration="0:0:0.07"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleX"
+                                                             To="1" Duration="0:0:0.14"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
+                                                             Storyboard.TargetProperty="ScaleY"
+                                                             To="1" Duration="0:0:0.14"
+                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="LyricsProviderListBoxItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Background" Value="#141414"/>
+            <Setter Property="BorderBrush" Value="#242424"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,11"/>
+            <Setter Property="Margin" Value="0,0,0,6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <TranslateTransform/>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="RowBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="10"
+                                Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="26"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="RankText"
+                                           Grid.Column="0"
+                                           Text="1"
+                                           FontSize="13"
+                                           FontWeight="Bold"
+                                           FontFamily="{StaticResource SFProDisplay}"
+                                           Foreground="{DynamicResource AccentBrushStrong}"
+                                           VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1"
+                                            VerticalAlignment="Center"
+                                            Margin="0,0,12,0">
+                                    <TextBlock x:Name="ProviderTitle"
+                                               Text="{Binding}"
+                                               FontSize="13.5"
+                                               FontWeight="SemiBold"
+                                               FontFamily="{StaticResource SFProDisplay}"
+                                               Foreground="{StaticResource SoftText}"/>
+                                    <TextBlock x:Name="ProviderDescription"
+                                               FontSize="11.5"
+                                               Foreground="{StaticResource MutedText}"
+                                               FontFamily="{StaticResource SettingsFont}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <Viewbox Grid.Column="2"
+                                         Width="14"
+                                         Height="10"
+                                         Stretch="Uniform"
+                                         VerticalAlignment="Center"
+                                         Opacity="0.75"
+                                         IsHitTestVisible="False">
+                                    <Path x:Name="GripGlyph"
+                                          Data="M2 2.2h16v1.6H2zm0 3.8h16v1.6H2zm0 3.8h16v1.6H2z"
+                                          Fill="#666666"/>
+                                </Viewbox>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="0">
+                                <Setter TargetName="RankText" Property="Text" Value="1"/>
+                                <Setter TargetName="RankText" Property="Foreground" Value="{DynamicResource AccentBrushStrong}"/>
+                            </Trigger>
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="1">
+                                <Setter TargetName="RankText" Property="Text" Value="2"/>
+                                <Setter TargetName="RankText" Property="Foreground" Value="{StaticResource MutedText}"/>
+                            </Trigger>
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="2">
+                                <Setter TargetName="RankText" Property="Text" Value="3"/>
+                                <Setter TargetName="RankText" Property="Foreground" Value="{StaticResource MutedText}"/>
+                            </Trigger>
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="3">
+                                <Setter TargetName="RankText" Property="Text" Value="4"/>
+                                <Setter TargetName="RankText" Property="Foreground" Value="{StaticResource MutedText}"/>
+                            </Trigger>
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="4">
+                                <Setter TargetName="RankText" Property="Text" Value="5"/>
+                                <Setter TargetName="RankText" Property="Foreground" Value="{StaticResource MutedText}"/>
+                            </Trigger>
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="5">
+                                <Setter TargetName="RankText" Property="Text" Value="6"/>
+                                <Setter TargetName="RankText" Property="Foreground" Value="{StaticResource MutedText}"/>
+                            </Trigger>
+                            <DataTrigger Binding="{Binding}" Value="LRCLIB">
+                                <Setter TargetName="ProviderDescription" Property="Text" Value="{Binding Tag, ElementName=LyricsProviderList}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding}" Value="AMLL TTML DB">
+                                <Setter TargetName="ProviderDescription" Property="Text" Value="{Binding Tag, ElementName=LyricsProviderHint}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding}" Value="NetEase">
+                                <Setter TargetName="ProviderDescription" Property="Text" Value="{Binding Tag, ElementName=LyricsProviderLabel}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding}" Value="Kugou">
+                                <Setter TargetName="ProviderDescription" Property="Text" Value="{Binding Tag, ElementName=LyricsProviderHeaderGrid}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding}" Value="QQ Music">
+                                <Setter TargetName="ProviderDescription" Property="Text" Value="{Binding Tag, ElementName=LyricsProviderTextPanel}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding}" Value="lrc mux">
+                                <Setter TargetName="ProviderDescription" Property="Text" Value="{Binding Tag, ElementName=LyricsProviderPanel}"/>
+                            </DataTrigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="#1B1B1B"/>
+                                <Setter TargetName="RowBorder" Property="BorderBrush" Value="#343434"/>
+                                <Setter TargetName="GripGlyph" Property="Fill" Value="#9A9A9A"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="#1E1E1E"/>
+                                <Setter TargetName="RowBorder" Property="BorderBrush" Value="#4D4D4D"/>
+                                <Setter TargetName="ProviderTitle" Property="Foreground" Value="#FFFFFF"/>
+                                <Setter TargetName="GripGlyph" Property="Fill" Value="#B8B8B8"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -745,10 +986,43 @@
                         <!-- Fit every navigation item into the available height, including on smaller displays. -->
                         <Viewbox Grid.Row="0" Stretch="Uniform" StretchDirection="DownOnly"
                                  HorizontalAlignment="Left" VerticalAlignment="Top">
-                            <StackPanel Width="174">
+                            <Grid x:Name="NavItemsHost" Width="174" Background="Transparent" MouseLeave="NavItemsHost_MouseLeave">
+                                <Border x:Name="NavHoverIndicator"
+                                        Height="30"
+                                        VerticalAlignment="Top"
+                                        HorizontalAlignment="Stretch"
+                                        CornerRadius="15"
+                                        Background="{DynamicResource AccentNavHoverBrush}"
+                                        BorderBrush="{DynamicResource AccentNavHoverBorderBrush}"
+                                        BorderThickness="1"
+                                        Opacity="0"
+                                        IsHitTestVisible="False">
+                                    <Border.RenderTransform>
+                                        <TranslateTransform x:Name="NavHoverIndicatorTranslate" Y="0"/>
+                                    </Border.RenderTransform>
+                                </Border>
+                                <Border x:Name="NavActiveIndicator"
+                                        Height="30"
+                                        VerticalAlignment="Top"
+                                        HorizontalAlignment="Stretch"
+                                        CornerRadius="15"
+                                        Background="{DynamicResource AccentBrush}"
+                                        BorderThickness="0"
+                                        IsHitTestVisible="False"
+                                        RenderTransformOrigin="0.5,0.5">
+                                    <Border.RenderTransform>
+                                        <TransformGroup>
+                                            <ScaleTransform x:Name="NavActiveIndicatorScale"/>
+                                            <TranslateTransform x:Name="NavActiveIndicatorTranslate" Y="1"/>
+                                        </TransformGroup>
+                                    </Border.RenderTransform>
+                                    <Border x:Name="NavActiveHoverOverlay" CornerRadius="15"
+                                            Background="{DynamicResource AccentNavSelectedHoverBrush}"
+                                            Opacity="0" IsHitTestVisible="False"/>
+                                </Border>
+                                <StackPanel x:Name="NavItemsStack" Width="174">
                                 <Border x:Name="NavSearching" Style="{StaticResource NavButton}"
                                         Visibility="Collapsed"
-                                        Background="{StaticResource NavItemActiveBg}"
                                         MouseLeftButtonDown="Nav_Click" Tag="Searching">
                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                         <TextBlock Text="&#xE721;" FontFamily="{StaticResource IconFont}" FontSize="14" Width="14" TextAlignment="Center"
@@ -758,7 +1032,6 @@
                                     </StackPanel>
                                 </Border>
                                 <Border x:Name="NavAppearance" Style="{StaticResource NavButton}"
-                                        Background="{StaticResource NavItemActiveBg}"
                                         MouseLeftButtonDown="Nav_Click" Tag="Appearance">
                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                         <Viewbox Width="14" Height="14" VerticalAlignment="Center" Margin="0,0,10,0">
@@ -895,7 +1168,8 @@
                                                    Foreground="#AAAAAA" VerticalAlignment="Center"/>
                                     </StackPanel>
                                 </Border>
-                            </StackPanel>
+                                </StackPanel>
+                            </Grid>
                         </Viewbox>
 
                         <Border Grid.Row="1" Margin="10,4,10,0" Padding="0,12,0,12"
@@ -1060,6 +1334,20 @@
                                     <StackPanel>
                                         <TextBlock x:Name="AppearanceHeader" Text="APPEARANCE" Style="{StaticResource SectionHeader}" Visibility="Collapsed"/>
 
+                                        <Border Style="{StaticResource SettingRowBorder}">
+                                            <StackPanel>
+                                                <DockPanel>
+                                                    <TextBlock x:Name="AccentColorValue" DockPanel.Dock="Right" HorizontalAlignment="Right"
+                                                               Foreground="{DynamicResource AccentBrushStrong}" FontSize="12"/>
+                                                    <TextBlock x:Name="AccentColorLabel" Text="Accent color" Style="{StaticResource SettingTitleText}"/>
+                                                </DockPanel>
+                                                <TextBlock x:Name="AccentColorHint" Text="Choose the highlight color used throughout the app."
+                                                           Style="{StaticResource SettingHintText}" Margin="0,4,0,0"/>
+                                                <WrapPanel x:Name="AccentColorChoices" Margin="-7,12,0,0"
+                                                           KeyboardNavigation.TabNavigation="Once" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                                            </StackPanel>
+                                        </Border>
+
                                         <!-- Navigation Tabs Order & Visibility -->
                                         <Border Style="{StaticResource SettingRowBorder}">
                                             <StackPanel>
@@ -1193,6 +1481,8 @@
 
                                         <Border Style="{StaticResource SettingRowBorder}">
                                             <StackPanel>
+
+
                                                 <TextBlock x:Name="NavTabsLabel" Text="Navigation Tabs" Style="{StaticResource SettingTitleText}"/>
                                                 <TextBlock x:Name="NavTabsHint" Text="Hold and drag icons in the notch to reorder tabs, or arrange them here."
                                                            Style="{StaticResource SettingHintText}"
@@ -1438,12 +1728,13 @@
                                         <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
                                             <StackPanel>
                                                 <controls:ElasticSlider x:Name="IdleAutoHideDelaySlider"
-                                                        Label="Idle delay" Unit=" s"
+                                                        Label="Idle delay" Unit=" s" ValueFormat="0.#"
                                                         Description="How long the notch stays empty before hiding."
-                                                        Minimum="2"
+                                                        Minimum="0.1"
                                                         Maximum="30"
                                                         Value="5"
-                                                        TickFrequency="1"
+                                                        TickFrequency="0.1"
+                                                        SmallChange="0.1"
                                                         IsSnapToTickEnabled="True"/>
                                                 <TextBlock x:Name="IdleAutoHideDelayKeywords" Visibility="Collapsed"/>
                                             </StackPanel>
@@ -1459,13 +1750,34 @@
 
                                         <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
                                             <StackPanel>
-                                                <CheckBox x:Name="SystemNotifyCheck" x:Uid="systemNotify" Content="Show system notifications"/>
+                                                <CheckBox x:Name="SystemNotifyCheck" x:Uid="systemNotify" Content="Show system notifications"
+                                                          Checked="SystemNotifyCheck_Changed" Unchecked="SystemNotifyCheck_Changed"/>
                                                 <TextBlock x:Name="SystemNotifyHint" Text="Allow the notch to surface device and system signals."
                                                            Style="{StaticResource SettingHintText}"
                                                            Margin="0,4,0,0"/>
                                             </StackPanel>
                                         </Border>
 
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4"><StackPanel>
+                                                <CheckBox x:Name="AutoDismissNotifyCheck" x:Uid="autoDismissNotify" Content="Auto-dismiss notifications"
+                                                          Checked="AutoDismissNotifyCheck_Changed" Unchecked="AutoDismissNotifyCheck_Changed"/>
+                                                <TextBlock x:Name="AutoDismissNotifyHint" Text="Automatically collapse the notification banner after the set duration."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,0"/>
+                                            </StackPanel></Border>
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
+                                            <StackPanel>
+                                                <controls:ElasticSlider x:Name="NotificationDurationSlider"
+                                                        Label="Notification duration" Unit=" s" ValueFormat="0.#"
+                                                        Description="How long each notification stays visible on the notch."
+                                                        Minimum="1.5"
+                                                        Maximum="15"
+                                                        Value="5"
+                                                        TickFrequency="0.5"
+                                                        SmallChange="0.5"
+                                                        IsSnapToTickEnabled="True"/>
+                                            </StackPanel>
+                                        </Border>
                                         <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4"><StackPanel>
                                                 <CheckBox x:Name="HideCameraCheck" Content="Hide camera" Checked="ClipboardSetting_Changed" Unchecked="ClipboardSetting_Changed"/>
                                                 <TextBlock x:Name="HideCameraHint" Text="Hide the camera tab and stop its preview." Style="{StaticResource SettingHintText}" Margin="0,4,0,0"/>
@@ -1676,6 +1988,9 @@
                                     <StackPanel>
                                         <TextBlock x:Name="DisplayHeader" Text="DEVICES" Style="{StaticResource SectionHeader}" Visibility="Collapsed"/>
                                         <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
+                                            <CheckBox x:Name="ShowMutedMicGlyphCheck" Content="Show a small mic while muted" Checked="ShowMutedMicGlyphCheck_Changed" Unchecked="ShowMutedMicGlyphCheck_Changed"/>
+                                        </Border>
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
                                             <StackPanel>
                                                 <TextBlock x:Name="MonitorLabel" Text="Active Monitor" Style="{StaticResource SettingTitleText}"/>
                                                 <TextBlock x:Name="MonitorHint" Text="Choose which screen anchors the notch."
@@ -1700,6 +2015,15 @@
                                                            Style="{StaticResource SettingHintText}"
                                                            Margin="0,4,0,0"/>
                                                 <ComboBox x:Name="VisualizerAudioCombo" SelectionChanged="VisualizerAudioCombo_SelectionChanged"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4">
+                                            <StackPanel>
+                                                <TextBlock x:Name="BatteryDeviceLabel" Style="{StaticResource SettingTitleText}"/>
+                                                <TextBlock x:Name="BatteryDeviceHint" Style="{StaticResource SettingHintText}" Margin="0,4,0,0"/>
+                                                <ComboBox x:Name="BatteryDeviceCombo" SelectedValuePath="Tag"
+                                                          SelectionChanged="BatteryDeviceCombo_SelectionChanged"
+                                                          DropDownOpened="BatteryDeviceCombo_DropDownOpened"/>
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>
@@ -1744,6 +2068,7 @@
                                                            Style="{StaticResource SettingHintText}"
                                                            Margin="0,4,0,6"/>
                                                 <TextBox x:Name="ManualCityTextBox"
+                                                         TextChanged="ManualCityTextBox_TextChanged"
                                                          Height="40"
                                                          Padding="12,10"
                                                          FontSize="12"
@@ -1752,7 +2077,7 @@
                                                          Foreground="{StaticResource SettingsTextBrush}"
                                                          BorderBrush="#2A2A2A"
                                                          BorderThickness="1"
-                                                         CaretBrush="#C8C8C8"
+                                                         CaretBrush="{DynamicResource AccentBrushStrong}"
                                                          VerticalContentAlignment="Center">
                                                     <TextBox.Resources>
                                                         <Style TargetType="Border">
@@ -1959,7 +2284,7 @@
                                                               Checked="EnableOnlineLyricsCheck_Changed"
                                                               Unchecked="EnableOnlineLyricsCheck_Changed"/>
                                                     <TextBlock x:Name="EnableOnlineLyricsHint"
-                                                               Text="Fetch synced lyrics from public providers (LRCLIB, lrc mux) for now-playing songs."
+                                                               Text="Fetch synced lyrics from AMLL TTML DB and other public providers for now-playing songs."
                                                                Style="{StaticResource SettingHintText}"
                                                                Margin="0,4,0,0"
                                                                TextWrapping="Wrap"/>
@@ -2099,11 +2424,11 @@
                                                 <ComboBox x:Name="SpotlightAiProviderCombo" MinHeight="40" Margin="0,6,0,16" SelectionChanged="SpotlightAiProvider_Changed"/>
                                                 <TextBlock x:Name="SpotlightAiModelLabel" Style="{StaticResource SettingHintText}"/>
                                                 <Border Background="#141414" BorderBrush="#2A2A2A" BorderThickness="1" CornerRadius="10" MinHeight="40" Padding="12,8" Margin="0,6,0,16">
-                                                    <TextBox x:Name="SpotlightAiModelBox" TextChanged="SpotlightAiModel_Changed" Background="Transparent" Foreground="{StaticResource SettingsTextBrush}" CaretBrush="#C8C8C8" BorderThickness="0" FontSize="13" FontWeight="Bold" FontFamily="{StaticResource SFProDisplay}" VerticalContentAlignment="Center"/>
+                                                    <TextBox x:Name="SpotlightAiModelBox" TextChanged="SpotlightAiModel_Changed" Background="Transparent" Foreground="{StaticResource SettingsTextBrush}" CaretBrush="{DynamicResource AccentBrushStrong}" BorderThickness="0" FontSize="13" FontWeight="Bold" FontFamily="{StaticResource SFProDisplay}" VerticalContentAlignment="Center"/>
                                                 </Border>
                                                 <TextBlock x:Name="SpotlightAiKeyLabel" Style="{StaticResource SettingHintText}"/>
                                                 <Border Background="#141414" BorderBrush="#2A2A2A" BorderThickness="1" CornerRadius="10" MinHeight="40" Padding="12,8" Margin="0,6,0,0">
-                                                    <PasswordBox x:Name="SpotlightAiKeyBox" PasswordChanged="SpotlightAiInput_Changed" FontFamily="{StaticResource SFProDisplay}" FontSize="13" FontWeight="Bold" PasswordChar="•" Background="Transparent" Foreground="{StaticResource SettingsTextBrush}" CaretBrush="#C8C8C8" BorderThickness="0" VerticalContentAlignment="Center"/>
+                                                    <PasswordBox x:Name="SpotlightAiKeyBox" PasswordChanged="SpotlightAiInput_Changed" FontFamily="{StaticResource SFProDisplay}" FontSize="13" FontWeight="Bold" PasswordChar="•" Background="Transparent" Foreground="{StaticResource SettingsTextBrush}" CaretBrush="{DynamicResource AccentBrushStrong}" BorderThickness="0" VerticalContentAlignment="Center"/>
                                                 </Border>
                                             </StackPanel>
                                         </Border>
@@ -2209,10 +2534,10 @@
                                                         <Grid Margin="0,0,0,10">
                                                             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                                             <TextBlock x:Name="TranslationProgressCaption" Foreground="{StaticResource SoftText}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,12,0"/>
-                                                            <TextBlock x:Name="TranslationProgressPercent" Grid.Column="1" Foreground="{StaticResource AccentBrushStrong}" FontWeight="SemiBold"/>
+                                                            <TextBlock x:Name="TranslationProgressPercent" Grid.Column="1" Foreground="{DynamicResource AccentBrushStrong}" FontWeight="SemiBold"/>
                                                         </Grid>
                                                         <Grid x:Name="TranslationProgressTrack" Height="8" ClipToBounds="True" SizeChanged="TranslationProgress_SizeChanged">
-                                                            <ProgressBar x:Name="TranslationModelProgress" Minimum="0" Maximum="100" Height="8" Foreground="{StaticResource AccentBrush}" Background="{StaticResource TrackBg}" AutomationProperties.Name="Model download progress">
+                                                            <ProgressBar x:Name="TranslationModelProgress" Minimum="0" Maximum="100" Height="8" Foreground="{DynamicResource AccentBrush}" Background="{StaticResource TrackBg}">
                                                                 <ProgressBar.Template>
                                                                     <ControlTemplate TargetType="ProgressBar">
                                                                         <Grid x:Name="PART_Track" Background="Transparent">
@@ -2237,10 +2562,10 @@
                                                     <Grid>
                                                         <Grid.ColumnDefinitions><ColumnDefinition Width="40"/><ColumnDefinition/></Grid.ColumnDefinitions>
                                                         <Border Background="{StaticResource TrackBg}" Width="28" Height="28" CornerRadius="14" VerticalAlignment="Top">
-                                                            <TextBlock Text="✓" Foreground="{StaticResource AccentBrushStrong}" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                            <TextBlock Text="✓" Foreground="{DynamicResource AccentBrushStrong}" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                                         </Border>
                                                         <StackPanel Grid.Column="1">
-                                                            <TextBlock x:Name="TranslationReadyTitle" Foreground="{StaticResource AccentBrushStrong}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                                            <TextBlock x:Name="TranslationReadyTitle" Foreground="{DynamicResource AccentBrushStrong}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                                             <TextBlock x:Name="TranslationReadyHint" Foreground="{StaticResource MutedText}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                                         </StackPanel>
                                                     </Grid>
@@ -2377,6 +2702,64 @@
                                                            Text="Display synced lyrics inside the expanded notch when listening on Spotify."
                                                            Style="{StaticResource SettingHintText}"
                                                            Margin="0,4,0,0"/>
+
+                                                <StackPanel x:Name="LyricsProviderPanel" Margin="0,14,0,0">
+                                                    <Grid x:Name="LyricsProviderHeaderGrid">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel x:Name="LyricsProviderTextPanel" Grid.Column="0" Margin="0,0,12,0">
+                                                            <TextBlock x:Name="LyricsProviderLabel" Style="{StaticResource SettingTitleText}"/>
+                                                            <TextBlock x:Name="LyricsProviderHint" Style="{StaticResource SettingHintText}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                        </StackPanel>
+                                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,2,0,0">
+                                                            <Button x:Name="LyricsProviderUp"
+                                                                    Style="{StaticResource CompactIconButton}"
+                                                                    Click="LyricsProviderMove_Click"
+                                                                    Tag="-1">
+                                                                <Viewbox Width="13" Height="13" Stretch="Uniform">
+                                                                    <Path Data="M8 2.5L2.5 8h3.75v5.5h3.5V8H13.5L8 2.5z"
+                                                                          Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                                                </Viewbox>
+                                                            </Button>
+                                                            <Button x:Name="LyricsProviderDown"
+                                                                    Style="{StaticResource CompactIconButton}"
+                                                                    Margin="6,0,0,0"
+                                                                    Click="LyricsProviderMove_Click"
+                                                                    Tag="1">
+                                                                <Viewbox Width="13" Height="13" Stretch="Uniform">
+                                                                    <Path Data="M8 13.5L13.5 8H9.75V2.5h-3.5V8H2.5L8 13.5z"
+                                                                          Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                                                </Viewbox>
+                                                            </Button>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                    <ListBox x:Name="LyricsProviderList"
+                                                             Margin="0,10,0,0"
+                                                             Background="Transparent"
+                                                             BorderThickness="0"
+                                                             Padding="0"
+                                                             SelectionMode="Single"
+                                                             AlternationCount="10"
+                                                             AllowDrop="True"
+                                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                             ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                                             ItemContainerStyle="{StaticResource LyricsProviderListBoxItemStyle}"
+                                                             SelectionChanged="LyricsProviderList_SelectionChanged"
+                                                             PreviewMouseLeftButtonDown="LyricsProviderList_PreviewMouseLeftButtonDown"
+                                                             PreviewMouseMove="LyricsProviderList_PreviewMouseMove"
+                                                             MouseDoubleClick="LyricsProviderList_MouseDoubleClick"
+                                                             PreviewKeyDown="LyricsProviderList_PreviewKeyDown"
+                                                             DragOver="LyricsProviderList_DragOver"
+                                                             Drop="LyricsProviderList_Drop">
+                                                        <ListBox.Template>
+                                                            <ControlTemplate TargetType="ListBox">
+                                                                <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                                                            </ControlTemplate>
+                                                        </ListBox.Template>
+                                                    </ListBox>
+                                                </StackPanel>
 
                                                 <CheckBox x:Name="EnableSpotifyCanvasCheck"
                                                           x:Uid="enableSpotifyCanvas"
@@ -2585,7 +2968,7 @@
                                                              Foreground="{StaticResource SettingsTextBrush}"
                                                              BorderBrush="#2A2A2A"
                                                              BorderThickness="1"
-                                                             CaretBrush="#C8C8C8"
+                                                             CaretBrush="{DynamicResource AccentBrushStrong}"
                                                              VerticalContentAlignment="Center"
                                                              PasswordChar="●"
                                                              PasswordChanged="YouTubeApiKeyPasswordBox_PasswordChanged">
@@ -2604,7 +2987,7 @@
                                                              Foreground="{StaticResource SettingsTextBrush}"
                                                              BorderBrush="#2A2A2A"
                                                              BorderThickness="1"
-                                                             CaretBrush="#C8C8C8"
+                                                             CaretBrush="{DynamicResource AccentBrushStrong}"
                                                              VerticalContentAlignment="Center"
                                                              Visibility="Collapsed"
                                                              TextChanged="YouTubeApiKeyTextBox_TextChanged">
@@ -2703,6 +3086,21 @@
                                             </StackPanel>
                                         </Border>
 
+                                        <Border Style="{StaticResource SettingRowBorder}" Margin="0,4,0,4">
+                                            <StackPanel>
+                                                <CheckBox x:Name="EnableShadowCheck"
+                                                          x:Uid="enableShadow"
+                                                          Content="Notch drop shadow"
+                                                          Checked="EnableShadowCheck_Changed"
+                                                          Unchecked="EnableShadowCheck_Changed"
+                                                          Margin="0,0,0,0"/>
+                                                <TextBlock x:Name="EnableShadowHint"
+                                                           Text="Render a soft drop shadow beneath the notch."
+                                                           Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                        </Border>
+
                                         <Border Style="{StaticResource SettingRowBorder}" Margin="0,0,0,4" BorderThickness="0">
                                             <StackPanel>
                                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -2753,7 +3151,7 @@
                                 </Border>
                             </StackPanel>
 
-                            <StackPanel x:Name="PanelDonating" Visibility="Collapsed">
+                            <StackPanel x:Name="PanelDonating" Visibility="Collapsed" IsVisibleChanged="PanelDonating_IsVisibleChanged">
                                 <Border x:Name="DonatingCard" Style="{StaticResource CardBorderStyle}" Margin="0,0,0,6" Opacity="0">
                                     <Border.RenderTransform>
                                         <TranslateTransform x:Name="DonatingCardTranslate" Y="12"/>
@@ -2778,25 +3176,61 @@
                                                 <!-- Soft background aura glow -->
                                                 <Path Data="M 12,2 L 15.09,8.26 L 22,9.27 L 17,14.14 L 18.18,21.02 L 12,17.77 L 5.82,21.02 L 7,14.14 L 2,9.27 L 8.91,8.26 Z"
                                                       Stretch="Uniform"
-                                                      Fill="#44FFB800">
-                                                    <Path.Effect>
-                                                        <BlurEffect Radius="16"/>
-                                                    </Path.Effect>
+                                                      Fill="#22FFB800"
+                                                      RenderTransformOrigin="0.5,0.5">
+                                                    <Path.RenderTransform>
+                                                        <ScaleTransform ScaleX="1.18" ScaleY="1.18"/>
+                                                    </Path.RenderTransform>
                                                 </Path>
 
                                                 <!-- Main animated Star -->
                                                 <Path x:Name="AnimatedStarPath"
                                                       Data="M 12,2 L 15.09,8.26 L 22,9.27 L 17,14.14 L 18.18,21.02 L 12,17.77 L 5.82,21.02 L 7,14.14 L 2,9.27 L 8.91,8.26 Z"
                                                       Stretch="Uniform"
+                                                      Fill="#FFFFC83D"
                                                       RenderTransformOrigin="0.5,0.5">
-                                                    <Path.Fill>
-                                                        <LinearGradientBrush StartPoint="0.1,0" EndPoint="0.9,1">
-                                                            <GradientStop Color="#FFFBEA" Offset="0.0"/>
-                                                            <GradientStop Color="#FFD54F" Offset="0.3"/>
-                                                            <GradientStop Color="#FFB800" Offset="0.7"/>
-                                                            <GradientStop Color="#FF8F00" Offset="1.0"/>
-                                                        </LinearGradientBrush>
-                                                    </Path.Fill>
+                                                    <Path.Resources>
+                                                        <Storyboard x:Key="StarPulseStoryboard"
+                                                                    RepeatBehavior="Forever"
+                                                                    Timeline.DesiredFrameRate="24">
+                                                            <DoubleAnimation Storyboard.TargetName="StarScaleTransform"
+                                                                             Storyboard.TargetProperty="ScaleX"
+                                                                             From="0.92" To="1.14"
+                                                                             Duration="0:0:1.6"
+                                                                             AutoReverse="True">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <SineEase EasingMode="EaseInOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="StarScaleTransform"
+                                                                             Storyboard.TargetProperty="ScaleY"
+                                                                             From="0.92" To="1.14"
+                                                                             Duration="0:0:1.6"
+                                                                             AutoReverse="True">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <SineEase EasingMode="EaseInOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="StarRotateTransform"
+                                                                             Storyboard.TargetProperty="Angle"
+                                                                             From="-8" To="8"
+                                                                             Duration="0:0:2.4"
+                                                                             AutoReverse="True">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <SineEase EasingMode="EaseInOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="StarShadowEffect"
+                                                                             Storyboard.TargetProperty="Opacity"
+                                                                             From="0.4" To="0.95"
+                                                                             Duration="0:0:1.6"
+                                                                             AutoReverse="True">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <SineEase EasingMode="EaseInOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                        </Storyboard>
+                                                    </Path.Resources>
                                                     <Path.Effect>
                                                         <DropShadowEffect x:Name="StarShadowEffect"
                                                                           Color="#FFB800"
@@ -2810,48 +3244,6 @@
                                                             <RotateTransform x:Name="StarRotateTransform" Angle="0"/>
                                                         </TransformGroup>
                                                     </Path.RenderTransform>
-                                                    <!-- Started and stopped from code while the star is on screen: the window is prepared hidden at start-up,
-                                                         and a Forever storyboard there would keep WPF drawing at the display's full rate all the time. -->
-                                                    <Path.Resources>
-                                                        <Storyboard x:Key="StarPulse" RepeatBehavior="Forever">
-                                                                    <DoubleAnimation Storyboard.TargetName="StarScaleTransform"
-                                                                                     Storyboard.TargetProperty="ScaleX"
-                                                                                     From="0.92" To="1.14"
-                                                                                     Duration="0:0:1.6"
-                                                                                     AutoReverse="True">
-                                                                        <DoubleAnimation.EasingFunction>
-                                                                            <SineEase EasingMode="EaseInOut"/>
-                                                                        </DoubleAnimation.EasingFunction>
-                                                                    </DoubleAnimation>
-                                                                    <DoubleAnimation Storyboard.TargetName="StarScaleTransform"
-                                                                                     Storyboard.TargetProperty="ScaleY"
-                                                                                     From="0.92" To="1.14"
-                                                                                     Duration="0:0:1.6"
-                                                                                     AutoReverse="True">
-                                                                        <DoubleAnimation.EasingFunction>
-                                                                            <SineEase EasingMode="EaseInOut"/>
-                                                                        </DoubleAnimation.EasingFunction>
-                                                                    </DoubleAnimation>
-                                                                    <DoubleAnimation Storyboard.TargetName="StarRotateTransform"
-                                                                                     Storyboard.TargetProperty="Angle"
-                                                                                     From="-8" To="8"
-                                                                                     Duration="0:0:2.4"
-                                                                                     AutoReverse="True">
-                                                                        <DoubleAnimation.EasingFunction>
-                                                                            <SineEase EasingMode="EaseInOut"/>
-                                                                        </DoubleAnimation.EasingFunction>
-                                                                    </DoubleAnimation>
-                                                                    <DoubleAnimation Storyboard.TargetName="StarShadowEffect"
-                                                                                     Storyboard.TargetProperty="Opacity"
-                                                                                     From="0.4" To="0.95"
-                                                                                     Duration="0:0:1.6"
-                                                                                     AutoReverse="True">
-                                                                        <DoubleAnimation.EasingFunction>
-                                                                            <SineEase EasingMode="EaseInOut"/>
-                                                                        </DoubleAnimation.EasingFunction>
-                                                                    </DoubleAnimation>
-                                                                </Storyboard>
-                                                    </Path.Resources>
                                                 </Path>
                                             </Grid>
 
@@ -2862,7 +3254,7 @@
                                                            Style="{StaticResource SettingTitleText}"
                                                            TextWrapping="Wrap"/>
                                                 <TextBlock x:Name="StarRepoDescription"
-                                                           Text="Giving a star on GitHub is completely free, but it is a huge motivation for w0otdev to keep maintaining and developing this project."
+                                                           Text="Giving a star on GitHub is completely free, but it is a huge motivation for w0otdev &amp; viper1aa to keep maintaining and developing this project."
                                                            Style="{StaticResource SettingHintText}"
                                                            LineHeight="17"
                                                            Margin="0,4,0,0"
@@ -3333,7 +3725,7 @@
                             </Grid.RenderTransform>
 
                             <!-- Shadow Layer -->
-                            <Border CornerRadius="16"
+                            <Border x:Name="Cpp26PromptShadowLayer" CornerRadius="16"
                                     Background="#F0101620">
                                 <Border.Effect>
                                     <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.45" Color="Black" Direction="270"/>
@@ -3388,7 +3780,7 @@
                         </Grid.RenderTransform>
 
                         <!-- Shadow Layer -->
-                        <Border CornerRadius="16"
+                        <Border x:Name="RestartPromptShadowLayer" CornerRadius="16"
                                 Background="#F018140E">
                             <Border.Effect>
                                 <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.45" Color="Black" Direction="270"/>
@@ -3467,7 +3859,7 @@
                             Content="Apply"
                             Click="Apply_Click"/>
                     <Button x:Name="SaveButton" Grid.Column="2" Height="36" MinWidth="96"
-                            Background="#DCDCDC" BorderBrush="#DCDCDC"
+                            Background="{DynamicResource AccentBrush}" BorderBrush="{DynamicResource AccentBrush}"
                             Margin="8,0,0,0"
                             Content="Save"
                             Style="{StaticResource PrimaryButton}"

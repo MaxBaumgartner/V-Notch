@@ -20,6 +20,12 @@ internal sealed class ClickThroughController : IDisposable
 {
     private const int NearIntervalMs = 15;
     private const int FarIntervalMs = 120;
+    // A cursor resting near the notch (over browser tabs, say) kept the 15 ms hit test running all the time; once it
+    // has not moved for a few checks, 60 ms is enough, and the first movement brings 15 ms back.
+    private const int NearStillIntervalMs = 60;
+    private const int StillChecksBeforeBackoff = 4;
+    private POINT _lastCursor;
+    private int _stillChecks;
     // Poll quickly once the cursor is this close to the window, so the style is right before it arrives.
     private const int NearMarginPx = 32;
 
@@ -55,7 +61,10 @@ internal sealed class ClickThroughController : IDisposable
 
         bool near = cursor.X >= rect.Left - NearMarginPx && cursor.X < rect.Right + NearMarginPx &&
                     cursor.Y >= rect.Top - NearMarginPx && cursor.Y < rect.Bottom + NearMarginPx;
-        var interval = TimeSpan.FromMilliseconds(near ? NearIntervalMs : FarIntervalMs);
+        _stillChecks = cursor.X == _lastCursor.X && cursor.Y == _lastCursor.Y ? _stillChecks + 1 : 0;
+        _lastCursor = cursor;
+        int nearMs = _stillChecks >= StillChecksBeforeBackoff ? NearStillIntervalMs : NearIntervalMs;
+        var interval = TimeSpan.FromMilliseconds(near ? nearMs : FarIntervalMs);
         if (_timer.Interval != interval) _timer.Interval = interval;
 
         bool inside = cursor.X >= rect.Left && cursor.X < rect.Right && cursor.Y >= rect.Top && cursor.Y < rect.Bottom;
