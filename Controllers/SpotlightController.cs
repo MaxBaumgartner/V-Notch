@@ -325,7 +325,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     {
         if (_disposed || generation != _hostGeneration) return;
         // Everywhere, fullscreen games included: Win opens Spotlight, a second Win closes it and the game gets the
-        // focus back. (Telling a game from a frameless app such as Discord is guesswork anyway.)
+        // foreground back (ParkWindow). (Telling a game from a frameless app such as Discord is guesswork anyway.)
         IntPtr foreground = GetForegroundWindow();
         string action = _window?.IsSpotlightOpen == true ? "close" : "open";
         RuntimeLog.Log(LogTag, $"Win tap ({action}), foreground {TaskbarReveal.Describe(foreground)}");

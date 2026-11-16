@@ -205,6 +205,7 @@
   "battery.charging": "Mengisi daya",
   "battery.fullyCharged": "Terisi penuh",
   "battery.onBattery": "Menggunakan baterai",
+  "battery.fullIn": "Penuh dalam {0}",
   "bluetooth.connected": "Terhubung",
   "bluetooth.disconnected": "Terputus",
   "changelog.current": "SAAT INI",

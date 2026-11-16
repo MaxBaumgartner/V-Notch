@@ -205,6 +205,7 @@
   "battery.charging": "Зарядка",
   "battery.fullyCharged": "Полный заряд",
   "battery.onBattery": "От аккумулятора",
+  "battery.fullIn": "Полная через {0}",
   "bluetooth.connected": "Подключено",
   "bluetooth.disconnected": "Отключено",
   "changelog.current": "ТЕКУЩАЯ",

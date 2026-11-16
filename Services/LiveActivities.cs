@@ -10,7 +10,8 @@ internal enum LiveActivity
     Claude,
     Countdown,
     Lesson,
-    Download
+    Download,
+    Charging
 }
 
 /// <summary>
@@ -23,9 +24,12 @@ internal static class LiveActivities
 {
     /// <param name="moreClaude">More than one Claude Code session is live: with Claude in the notch and nothing
     /// else in the orb, the other sessions take the orb.</param>
-    /// <param name="lesson">A lesson or a break at school is running (see <see cref="ControlCenter.LessonClock"/>).</param>
+    /// <param name="charging">The laptop is charging: it only ever takes a free orb (plugging in and out push in
+    /// front for a moment, see MainWindow.ChargeOrb).</param>
+    /// <param name="lesson">A lesson or a break at school is running (see <see cref="ControlCenter.LessonClock"/>).
+    /// Last, so upstream's order of the others stays as it is.</param>
     public static (LiveActivity Main, LiveActivity Bubble) Arrange(bool music, ClaudeSessionStatus? claude, bool countdown, bool moreClaude = false,
-        bool lesson = false, bool download = false)
+        bool download = false, bool charging = false, bool lesson = false)
     {
         // Highest first.
         var ranked = new LiveActivity[5];
@@ -52,6 +56,7 @@ internal static class LiveActivities
             break;
         }
         if (bubble == LiveActivity.None && main == LiveActivity.Claude && moreClaude) bubble = LiveActivity.Claude;
+        if (bubble == LiveActivity.None && charging) bubble = LiveActivity.Charging;
         return (main, bubble);
     }
 }

@@ -480,6 +480,55 @@
                       VerticalAlignment="Top"/>
             </Grid>
 
+            <!-- Charging: a cable from the orb across the gap and under the notch; now and then a light runs along it
+                 into the notch. Under the orb and the notch, so both ends disappear into them. -->
+            <Canvas x:Name="ChargeCable"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top"
+                    Width="34" Height="34"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="False"
+                    RenderTransformOrigin="1,0.5">
+                <Canvas.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform x:Name="ChargeCableGrow" ScaleX="1" ScaleY="1"/>
+                        <TranslateTransform x:Name="ChargeCableAnchor"/>
+                    </TransformGroup>
+                </Canvas.RenderTransform>
+                <Path x:Name="ChargeCableLeft" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round">
+                    <Path.RenderTransform>
+                        <TransformGroup>
+                            <ScaleTransform x:Name="ChargeCableLeftScale" CenterX="0" CenterY="17"/>
+                            <RotateTransform x:Name="ChargeCableLeftTurn" CenterX="0" CenterY="17"/>
+                        </TransformGroup>
+                    </Path.RenderTransform>
+                </Path>
+                <Path x:Name="ChargeCableRight" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round">
+                    <Path.RenderTransform>
+                        <TransformGroup>
+                            <ScaleTransform x:Name="ChargeCableRightScale" CenterX="34" CenterY="17"/>
+                            <RotateTransform x:Name="ChargeCableRightTurn" CenterX="34" CenterY="17"/>
+                        </TransformGroup>
+                    </Path.RenderTransform>
+                </Path>
+                <Canvas x:Name="ChargeCableGlint" Opacity="0">
+                    <Canvas.RenderTransform>
+                        <TranslateTransform x:Name="ChargeCableGlintShift"/>
+                    </Canvas.RenderTransform>
+                    <Ellipse x:Name="ChargeCableGlintHalo" Width="6" Height="6" Canvas.Left="-3" Canvas.Top="14"/>
+                    <Ellipse Width="2.6" Height="2.6" Canvas.Left="-1.3" Canvas.Top="15.7" Fill="White"/>
+                </Canvas>
+                <Canvas x:Name="ChargeCableSparks" Width="34" Height="34" Opacity="0">
+                    <Canvas.RenderTransform>
+                        <ScaleTransform x:Name="ChargeCableSparksScale" CenterX="17" CenterY="17"/>
+                    </Canvas.RenderTransform>
+                    <Line X1="17" Y1="15" X2="17" Y2="11.6" StrokeThickness="1.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                    <Line X1="17" Y1="19" X2="17" Y2="22.4" StrokeThickness="1.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                    <Line X1="15" Y1="16" X2="12.6" Y2="13.6" StrokeThickness="1.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                    <Line X1="19" Y1="16" X2="21.4" Y2="13.6" StrokeThickness="1.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                </Canvas>
+            </Canvas>
+
             <!-- The second live activity (Claude Code, the music, a running timer), whichever ranks below the one in the
                  notch: a small orb that buds off the notch's right side (from under it), like the second island on an
                  iPhone. A tap opens it into a pill; a tap on the pill goes to what it shows. -->
@@ -565,6 +614,41 @@
                                       StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round">
                                     <Path.RenderTransform>
                                         <TranslateTransform x:Name="BubbleDownloadArrowShift"/>
+                                    </Path.RenderTransform>
+                                </Path>
+                            </Canvas>
+                        </Viewbox>
+                        <!-- Charging: a ring that fills with the battery around a bolt; a light leaves it towards the cable.
+                             Fills the whole orb, so its colours are set in MainWindow.ChargeOrb. -->
+                        <Viewbox x:Name="BubbleChargeFace" Visibility="Collapsed">
+                            <Canvas Width="100" Height="100">
+                                <Path x:Name="ChargeTrack" StrokeThickness="6.5">
+                                    <Path.Data>
+                                        <EllipseGeometry Center="50,50" RadiusX="42" RadiusY="42"/>
+                                    </Path.Data>
+                                </Path>
+                                <Path x:Name="ChargeRing" StrokeThickness="6.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                <Rectangle x:Name="ChargeGlint" Width="12" Height="5" RadiusX="2.5" RadiusY="2.5"
+                                           Canvas.Top="47.5" Fill="White" Opacity="0">
+                                    <Rectangle.RenderTransform>
+                                        <TranslateTransform x:Name="ChargeGlintShift" X="44"/>
+                                    </Rectangle.RenderTransform>
+                                </Rectangle>
+                                <Canvas x:Name="ChargeBoltBox" Width="100" Height="100">
+                                    <Canvas.RenderTransform>
+                                        <TransformGroup>
+                                            <ScaleTransform x:Name="ChargeBoltScale" CenterX="50" CenterY="50"/>
+                                            <RotateTransform x:Name="ChargeBoltTurn" CenterX="50" CenterY="50"/>
+                                        </TransformGroup>
+                                    </Canvas.RenderTransform>
+                                    <Path Data="M54.7,25.3 L36.5,53.5 H49.1 L45.9,74.7 L64.1,46.5 H51.5 Z" Fill="#26FFFFFF"/>
+                                    <Path x:Name="ChargeBolt" Data="M54.7,25.3 L36.5,53.5 H49.1 L45.9,74.7 L64.1,46.5 H51.5 Z" Opacity="0"/>
+                                </Canvas>
+                                <Path x:Name="ChargeCheck" Data="M33.5,51.8 L45,62.6 L66.8,38.8" StrokeThickness="7"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeDashCap="Round" StrokeLineJoin="Round"
+                                      StrokeDashArray="7 7" StrokeDashOffset="7" Opacity="0">
+                                    <Path.RenderTransform>
+                                        <ScaleTransform x:Name="ChargeCheckScale" CenterX="50" CenterY="50"/>
                                     </Path.RenderTransform>
                                 </Path>
                             </Canvas>
@@ -709,6 +793,14 @@
                                 Background="{StaticResource NotchGradient}"
                                 IsHitTestVisible="False"
                                 CornerRadius="0,0,20,20"/>
+
+                        <!-- Charging: the right edge glows a moment when the light from the cable arrives. -->
+                        <Border x:Name="ChargeNotchGlow"
+                                HorizontalAlignment="Right"
+                                Width="56"
+                                IsHitTestVisible="False"
+                                Opacity="0"
+                                CornerRadius="0,0,20,0"/>
 
                         <!-- Final rounded clip for material stack; kept outside blurred children
                              so post-effects cannot spread Touch Light into rectangular corners. -->

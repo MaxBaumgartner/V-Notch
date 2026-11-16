@@ -48,6 +48,45 @@ public class LiveActivitiesTests
         Assert.Equal((main, bubble), (actualMain.ToString(), actualBubble.ToString()));
     }
 
+    [Theory]
+    // Charging only takes a free orb: anything else live keeps it, and it never holds the notch.
+    [InlineData(false, null, false, false, false, "None", "Charging")]
+    [InlineData(true, null, false, false, false, "Music", "Charging")]
+    [InlineData(false, "Working", false, false, false, "Claude", "Charging")]
+    [InlineData(true, "Working", false, false, false, "Music", "Claude")]
+    [InlineData(false, null, true, false, false, "None", "Countdown")]
+    [InlineData(false, null, false, true, false, "None", "Download")]
+    // The other Claude sessions outrank it too.
+    [InlineData(false, "Working", false, false, true, "Claude", "Claude")]
+    public void ChargingOnlyTakesAFreeOrb(bool music, string? claude, bool countdown, bool download, bool moreClaude, string main, string bubble)
+    {
+        ClaudeSessionStatus? status = claude == null ? null : Enum.Parse<ClaudeSessionStatus>(claude);
+        var (actualMain, actualBubble) = LiveActivities.Arrange(music, status, countdown, moreClaude, download, charging: true);
+        Assert.Equal((main, bubble), (actualMain.ToString(), actualBubble.ToString()));
+    }
+
+    [Theory]
+    [InlineData(5, 0xD9, 0x87, 0x7E)]   // rose up to 20 %
+    [InlineData(20, 0xD9, 0x87, 0x7E)]
+    [InlineData(21, 0xD6, 0xB0, 0x7A)]  // sand up to 50 %
+    [InlineData(50, 0xD6, 0xB0, 0x7A)]
+    [InlineData(51, 0x8E, 0xCF, 0xA6)]  // mint above
+    [InlineData(100, 0x8E, 0xCF, 0xA6)]
+    public void TheChargeTintFollowsTheBattery(int percent, byte r, byte g, byte b)
+    {
+        Assert.Equal(System.Windows.Media.Color.FromRgb(r, g, b), MainWindow.ChargeTintFor(percent));
+    }
+
+    [Theory]
+    [InlineData(1, "1 min")]
+    [InlineData(41, "41 min")]
+    [InlineData(60, "1 h")]
+    [InlineData(72, "1 h 12 min")]
+    public void TheTimeUntilFullIsShort(int minutes, string expected)
+    {
+        Assert.Equal(expected, MainWindow.FormatChargeTime(minutes));
+    }
+
     [Fact]
     public void LiveSessionsPutWhoWaitsFirstThenWhoWorksLongest()
     {

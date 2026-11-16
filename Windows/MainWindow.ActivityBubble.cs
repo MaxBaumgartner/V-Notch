@@ -59,7 +59,9 @@ public partial class MainWindow
         bool music = MediaDisplayController.ShouldBeCompactMode(info);
         var live = _claudeLiveSessions;
         var (main, bubble) = LiveActivities.Arrange(music, _claudeLiveSession?.Status, IsCountdownLive, moreClaude: live.Count > 1,
-            lesson: IsLessonLive, download: _downloads.Count > 0);
+            lesson: IsLessonLive, download: _downloads.Count > 0, charging: WantsChargingOrb);
+        // Plugging in or out (or a full battery) pushes in front of whatever has the orb, for a moment.
+        if (_chargeMoment != ChargeMoment.None) bubble = LiveActivity.Charging;
         _mainActivity = main;
         _bubbleClaudeSessions = bubble != LiveActivity.Claude ? new()
             : main == LiveActivity.Claude ? live.Skip(1).ToList() : live.ToList();
@@ -145,6 +147,7 @@ public partial class MainWindow
         double notchWidth = _isExpanded ? _collapsedWidth : NotchBorder.ActualWidth;
         BubbleAnchor.X = Math.Round(NotchContainer.ActualWidth / 2 + notchWidth / 2 + ear + BubbleGap);
         BubbleAnchor.Y = 0;
+        if (_bubbleActivity == LiveActivity.Charging) PositionChargeCable();
     }
 
     private double BubbleOpenTargetWidth() =>
@@ -158,10 +161,12 @@ public partial class MainWindow
 
     #region Faces and words
 
-    private static double FaceSize(LiveActivity activity, bool open) => activity switch
+    private double FaceSize(LiveActivity activity, bool open) => activity switch
     {
         LiveActivity.Music => open ? 30 : 24,
         LiveActivity.Countdown or LiveActivity.Lesson or LiveActivity.Download => open ? 26 : 21,
+        // The charging ring fills the whole orb.
+        LiveActivity.Charging => open ? BubbleOpenHeight : BubbleSize,
         _ => open ? 19 : 16
     };
 
@@ -173,12 +178,21 @@ public partial class MainWindow
 
     private void SetBubbleFace(LiveActivity activity)
     {
+        // Still collapsed: the orb is about to bud out, so the face shows only once it has landed.
+        bool budding = ActivityBubble.Visibility != Visibility.Visible;
+        if (_bubbleActivity == LiveActivity.Charging && activity != LiveActivity.Charging) LeaveChargeFace(fast: true);
         _bubbleActivity = activity;
         BubbleClaudeFace.Visibility = activity == LiveActivity.Claude ? Visibility.Visible : Visibility.Collapsed;
         BubbleMusicFace.Visibility = activity == LiveActivity.Music ? Visibility.Visible : Visibility.Collapsed;
         BubbleTimerFace.Visibility = activity == LiveActivity.Countdown ? Visibility.Visible : Visibility.Collapsed;
         BubbleLessonFace.Visibility = activity == LiveActivity.Lesson ? Visibility.Visible : Visibility.Collapsed;
         BubbleDownloadFace.Visibility = activity == LiveActivity.Download ? Visibility.Visible : Visibility.Collapsed;
+        BubbleChargeFace.Visibility = activity == LiveActivity.Charging ? Visibility.Visible : Visibility.Collapsed;
+        if (activity == LiveActivity.Charging)
+        {
+            PrepareChargeFace();
+            ChargeAfter(TimeSpan.FromMilliseconds(budding ? 540 : 160), ChargeFaceReady);
+        }
         foreach (var property in new[] { WidthProperty, HeightProperty, MarginProperty })
             BubbleIcon.BeginAnimation(property, null);
         double size = FaceSize(activity, _bubbleOpen);
@@ -221,6 +235,9 @@ public partial class MainWindow
             case LiveActivity.Download when _downloads.Count > 0:
                 (title, subtitle, trailing) = DownloadWords(_downloads);
                 ShowDownloadProgress(_downloads[0].Percent);
+                break;
+            case LiveActivity.Charging when _chargeBattery is { } battery:
+                (title, subtitle, trailing) = ChargeWords(battery);
                 break;
         }
         BubbleTitle.Text = title;
@@ -313,6 +330,7 @@ public partial class MainWindow
     {
         int token = ++_bubbleToken;
         _bubbleCloseTimer?.Stop();
+        if (_bubbleActivity == LiveActivity.Charging) LeaveChargeFace(fast: true);
         if (ActivityBubble.Visibility != Visibility.Visible) return;
         if (_bubbleOpen && !_bubbleListMode) HideBubbleDetail(fast: true);
         _bubbleOpen = false;
@@ -355,6 +373,8 @@ public partial class MainWindow
     {
         int token = ++_bubbleToken;
         if (_bubbleOpen) CloseBubble();
+        // The cable goes back into the orb while the charging face sinks away.
+        if (_bubbleActivity == LiveActivity.Charging) LeaveChargeFace(fast: false);
         if (AnimationConfig.ReduceMotion)
         {
             SetBubbleFace(next);
@@ -823,6 +843,10 @@ public partial class MainWindow
                 break;
             case LiveActivity.Download when _downloads.Count > 0:
                 OpenDownloadSource(_downloads[0]);
+                break;
+            case LiveActivity.Charging:
+                // The system tab: power mode and the rest of the machine.
+                _transitionCoordinator.RequestView(NotchView.Timer, "ActivityBubble");
                 break;
         }
     }

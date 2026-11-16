@@ -205,6 +205,7 @@
   "battery.charging": "Ładowanie",
   "battery.fullyCharged": "W pełni naładowana",
   "battery.onBattery": "Zasilanie z baterii",
+  "battery.fullIn": "Pełna za {0}",
   "bluetooth.connected": "Połączono",
   "bluetooth.disconnected": "Rozłączono",
   "changelog.current": "BIEŻĄCA",

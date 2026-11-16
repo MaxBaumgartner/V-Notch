@@ -205,6 +205,7 @@
   "battery.charging": "चार्ज हो रहा है",
   "battery.fullyCharged": "पूरी तरह चार्ज है",
   "battery.onBattery": "बैटरी पर चल रहा है",
+  "battery.fullIn": "{0} में पूरी",
   "bluetooth.connected": "कनेक्ट है",
   "bluetooth.disconnected": "डिस्कनेक्ट है",
   "changelog.current": "मौजूदा",

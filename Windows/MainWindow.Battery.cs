@@ -31,6 +31,8 @@ public partial class MainWindow
 
         if (_shimmerWanted && allowed) StartTitleShimmer();
         else StopTitleShimmerInternal();
+
+        RefreshChargePulse();
     }
 
     private void OnReduceMotionChanged()
@@ -97,15 +99,8 @@ public partial class MainWindow
             StopChargingPulse();
         }
 
-        if (battery.IsPowerConnected && _wasPluggedIn == false)
-        {
-            ShowChargingGlance(battery, ChargingGlanceKind.PluggedIn);
-        }
-        else if (_wasPluggedIn == true && !battery.IsPowerConnected)
-        {
-            ShowChargingGlance(battery, ChargingGlanceKind.Unplugged);
-        }
-        _wasPluggedIn = battery.IsPowerConnected;
+        // Plugging in and out now plays in the orb beside the notch (MainWindow.ChargeOrb), not as a glance in it.
+        UpdateChargeOrb(battery);
     }
 
     private enum ChargingGlanceKind

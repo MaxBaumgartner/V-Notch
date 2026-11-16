@@ -205,6 +205,7 @@
   "battery.charging": "جارٍ الشحن",
   "battery.fullyCharged": "مشحونة بالكامل",
   "battery.onBattery": "على البطارية",
+  "battery.fullIn": "ممتلئة خلال {0}",
   "bluetooth.connected": "متصل",
   "bluetooth.disconnected": "غير متصل",
   "changelog.current": "الحالي",

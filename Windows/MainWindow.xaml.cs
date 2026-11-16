@@ -721,6 +721,7 @@ public partial class MainWindow : Window
         StopZOrderWatchdog();
         StopTitleGradientShift();
         StopChargingNotificationDismissTimer();
+        StopChargeTimers();
         StopClipboardRevertTimer();
         MediaPlayback.Dispose();
         System.Windows.Input.InputManager.Current.PreProcessInput -= BlockGreetingInput;

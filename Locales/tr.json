@@ -205,6 +205,7 @@
   "battery.charging": "Şarj oluyor",
   "battery.fullyCharged": "Tam şarj oldu",
   "battery.onBattery": "Pilde çalışıyor",
+  "battery.fullIn": "{0} içinde dolu",
   "bluetooth.connected": "Bağlandı",
   "bluetooth.disconnected": "Bağlantı kesildi",
   "changelog.current": "MEVCUT",

@@ -60,11 +60,13 @@ public sealed class MainWindowCompactFeedbackTests
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 60, IsCharging = true, IsPluggedIn = true });
             Assert.True(Field<bool>(window, "_chargingPulseWanted"));
             Assert.NotNull(Field<object?>(window, "_chargingPulseStoryboard"));
-            Assert.Equal(Loc.Get("battery.charging"), window.ChargingStatusText.Text);
+            // Plugging in and out play in the orb beside the notch now, not as a glance in it.
+            Assert.Equal("PlugIn", Field<object>(window, "_chargeMoment").ToString());
+            Assert.False(Field<bool>(window, "_isChargingNotificationVisible"));
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 10, IsPluggedIn = false, IsBatterySaver = true });
             Assert.True(AnimationConfig.ReduceMotion);
             Assert.Null(Field<object?>(window, "_chargingPulseStoryboard"));
-            Assert.Equal(Loc.Get("battery.onBattery"), window.ChargingStatusText.Text);
+            Assert.Equal("Unplug", Field<object>(window, "_chargeMoment").ToString());
             await WpfFrameWaiter.UntilAsync(() => window.ChargingBolt.Opacity == 0 && Math.Abs(window.BatteryFillScale.ScaleX - 0.1) < 0.000001, "battery fill and charging bolt updated", ct);
             Assert.Equal(0.1, window.BatteryFillScale.ScaleX, 5);
             Invoke(window, "CancelChargingGlanceImmediate");
@@ -94,14 +96,19 @@ public sealed class MainWindowCompactFeedbackTests
     });
 
     [Fact]
-    public void PluggingInAFullBatteryShowsFullyChargedGlanceWithoutAChargingFlag() => SharedStaTestRunner.Run(() =>
+    public void PluggingInAFullBatteryTakesTheOrbForAMomentButDoesNotStay() => SharedStaTestRunner.Run(() =>
     {
         using var fixture = CreateFixture();
         var window = fixture.Window;
         Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 100 });
         Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 100, IsPluggedIn = true });
-        Assert.True(Field<bool>(window, "_isChargingNotificationVisible"));
-        Assert.Equal(Loc.Get("battery.fullyCharged"), window.ChargingStatusText.Text);
+        Assert.False(Field<bool>(window, "_isChargingNotificationVisible"));
+        Assert.Equal("PlugIn", Field<object>(window, "_chargeMoment").ToString());
+        // When the moment ends without charging, the battery counts as full and the quiet orb does not stay.
+        Invoke(window, "EndChargeMoment");
+        Assert.Equal("None", Field<object>(window, "_chargeMoment").ToString());
+        Assert.True(Field<bool>(window, "_chargeDone"));
+        Assert.False((bool)typeof(MainWindow).GetProperty("WantsChargingOrb", Private)!.GetValue(window)!);
     });
 
     [Theory]

@@ -205,6 +205,7 @@
   "battery.charging": "Đang sạc",
   "battery.fullyCharged": "Đã sạc đầy",
   "battery.onBattery": "Dùng pin",
+  "battery.fullIn": "Đầy sau {0}",
   "bluetooth.connected": "Đã kết nối",
   "bluetooth.disconnected": "Đã ngắt kết nối",
   "changelog.current": "HIỆN TẠI",

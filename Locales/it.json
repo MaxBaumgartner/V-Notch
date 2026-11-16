@@ -205,6 +205,7 @@
   "battery.charging": "In carica",
   "battery.fullyCharged": "Carica completa",
   "battery.onBattery": "A batteria",
+  "battery.fullIn": "Carica tra {0}",
   "bluetooth.connected": "Connesso",
   "bluetooth.disconnected": "Disconnesso",
   "changelog.current": "ATTUALE",

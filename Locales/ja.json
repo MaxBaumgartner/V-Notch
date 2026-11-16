@@ -205,6 +205,7 @@
   "battery.charging": "充電中",
   "battery.fullyCharged": "満充電",
   "battery.onBattery": "バッテリー駆動",
+  "battery.fullIn": "あと{0}で満充電",
   "bluetooth.connected": "接続済み",
   "bluetooth.disconnected": "切断済み",
   "changelog.current": "現在",
