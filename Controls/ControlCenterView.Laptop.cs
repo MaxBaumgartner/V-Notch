@@ -21,15 +21,22 @@ public partial class ControlCenterView
     // A few colours to pick for a keyboard with colour zones.
     private static readonly string[] KeyboardColors = ["#FFFFFF", "#FF3B30", "#30D158", "#0A84FF", "#BF5AF2"];
 
+    private static readonly TimeSpan LaptopModeConfirmWindow = TimeSpan.FromSeconds(3);
+
     private readonly StackPanel _laptopSection = new();
     private string _laptopKey = "";
     private TextBlock? _laptopReadings;
+    private LaptopStatus? _laptopStatus;
+    // The notch never changes the performance mode on its own, nor on one stray click (the tab still moving, a
+    // section popping in under the pointer): a first tap only asks, a second tap within a few seconds switches.
+    private string? _laptopModeArmed;
 
     private void BuildLaptopSectionIfChanged(LaptopStatus? laptop)
     {
+        _laptopStatus = laptop;
         string key = laptop == null
             ? $"none|{IsExpanded("laptop")}"
-            : $"{laptop.Mode}|{laptop.MaxFan}|{laptop.KeyboardLight}|{laptop.KeyboardZones}|{laptop.KeyboardColor}|{IsExpanded("laptop")}";
+            : $"{laptop.Mode}|{laptop.MaxFan}|{laptop.KeyboardLight}|{laptop.KeyboardZones}|{laptop.KeyboardColor}|{IsExpanded("laptop")}|{_laptopModeArmed}";
         if (key != _laptopKey)
         {
             _laptopKey = key;
@@ -56,8 +63,24 @@ public partial class ControlCenterView
         foreach (string mode in LaptopModes)
         {
             string chosen = mode;
-            modes.Children.Add(TextButton(Loc.Get("control.laptop." + mode), accent: laptop.Mode == mode,
-                () => LaptopAction(() => LaptopControl.SetMode(chosen))));
+            bool current = laptop.Mode == mode;
+            bool armed = _laptopModeArmed == mode;
+            var button = TextButton(Loc.Get(armed ? "home.sure" : "control.laptop." + mode), accent: current || armed, () =>
+            {
+                if (current) return;
+                if (_laptopModeArmed != chosen)
+                {
+                    _laptopModeArmed = chosen;
+                    BuildLaptopSectionIfChanged(_laptopStatus);
+                    DisarmLaptopModeLater(chosen);
+                    return;
+                }
+                _laptopModeArmed = null;
+                RuntimeLog.Log("LAPTOP", $"Performance mode {laptop.Mode ?? "?"} -> {chosen}, confirmed in the system tab");
+                LaptopAction(() => LaptopControl.SetMode(chosen));
+            });
+            if (armed) Bounce(button, 1.08);
+            modes.Children.Add(button);
         }
         AddAction(modeRow, modes);
         _laptopSection.Children.Add(modeRow);
@@ -122,6 +145,23 @@ public partial class ControlCenterView
             LaptopAction(() => LaptopControl.SetKeyboardColor(hex));
         };
         return swatch;
+    }
+
+    /// <summary>An unconfirmed "Sure?" goes back to the mode's name after a few seconds.</summary>
+    private void DisarmLaptopModeLater(string mode)
+    {
+        var timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background)
+        {
+            Interval = LaptopModeConfirmWindow
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (_laptopModeArmed != mode) return;
+            _laptopModeArmed = null;
+            BuildLaptopSectionIfChanged(_laptopStatus);
+        };
+        timer.Start();
     }
 
     /// <summary>The BIOS takes a moment: ask off the UI thread, then read the laptop again.</summary>

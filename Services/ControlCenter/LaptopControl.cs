@@ -29,7 +29,14 @@ internal static class LaptopControl
 
     public static LaptopStatus? Read() => Send(new JsonObject { ["cmd"] = "status" }) is { } reply ? Parse(reply) : null;
 
-    public static bool SetMode(string mode) => Ok(Send(new JsonObject { ["cmd"] = "mode", ["value"] = mode }));
+    /// <summary>The only way V-Notch changes the performance mode; every request is logged, so a change that has no
+    /// "LAPTOP" line in the log came from elsewhere (OMEN Gaming Hub, the BIOS on mains power or battery).</summary>
+    public static bool SetMode(string mode)
+    {
+        bool ok = Ok(Send(new JsonObject { ["cmd"] = "mode", ["value"] = mode }));
+        RuntimeLog.Log("LAPTOP", $"Performance mode {mode} sent to the OMEN helper: {(ok ? "done" : "refused or no helper")}");
+        return ok;
+    }
 
     public static bool SetMaxFan(bool on) => Ok(Send(new JsonObject { ["cmd"] = "maxFan", ["value"] = on }));
 
