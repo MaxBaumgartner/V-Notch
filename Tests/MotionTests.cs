@@ -13,7 +13,8 @@ public sealed class MotionTests
     {
         var scale = new ScaleTransform(1, 1);
         Motion.To(scale, ScaleTransform.ScaleXProperty, 2, Motion.Glide);
-        await Task.Delay(30);
+        await WpfFrameWaiter.UntilAsync(() => Math.Abs(Motion.VelocityOf(scale, ScaleTransform.ScaleXProperty)) > .01,
+            "spring has advanced on the WPF clock");
 
         double speed = Motion.VelocityOf(scale, ScaleTransform.ScaleXProperty);
         Assert.True(Math.Abs(speed) > 0.01, $"still moving, was {speed}");

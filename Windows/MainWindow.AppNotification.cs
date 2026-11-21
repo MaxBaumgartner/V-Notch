@@ -16,7 +16,7 @@ public partial class MainWindow
     private bool _isAppNotificationBannerExiting;
     private bool _isAppNotificationHovered;
     private int _appNotificationGeneration;
-    private int _appNotificationMorphGeneration;
+    private VNotch.Presenters.CompactSurfaceAttachment? _appBannerAttachment;
     private double _appNotificationBaseWidth;
     private double _appNotificationBaseHeight;
     private double _appNotificationBaseCornerRadius;
@@ -24,6 +24,7 @@ public partial class MainWindow
     private UiScheduledTimer? _appNotificationDismissTimer;
     private long _appNotificationDismissDeadline;
     private int _appNotificationRemainingMs;
+    private bool _appNotificationMotionVisibilityHooked;
 
     internal bool IsAppNotificationBannerActive => _isAppNotificationBannerVisible;
 
@@ -68,7 +69,14 @@ public partial class MainWindow
         _isAppNotificationBannerExiting = false;
         _activeAppNotification = notification;
         StopAppNotificationDismissTimer();
+        _appNotificationRemainingMs = 0;
+        if (!_appNotificationMotionVisibilityHooked)
+        {
+            _appNotificationMotionVisibilityHooked = true;
+            AppNotificationBanner.IsVisibleChanged += (_, _) => RefreshAppNotificationMotionVisibility();
+        }
         ResetAppNotificationPointer();
+        if (replacing) KeepCompactDeparture(AppNotificationContent);
         ResetAppNotificationVisuals();
 
         if (_compactPillArbiter.ActiveSlot != CompactPillSlot.None)
@@ -193,9 +201,9 @@ public partial class MainWindow
     {
         if (!_isAppNotificationBannerVisible && !_isAppNotificationBannerExiting) return;
         ++_appNotificationGeneration;
-        ++_appNotificationMorphGeneration;
         StopAppNotificationDismissTimer();
         ResetAppNotificationPointer();
+        _appBannerAttachment?.Detach(false);
         FreezeAppNotificationShell();
         ResetAppNotificationVisuals();
         _isAppNotificationBannerVisible = false;
@@ -210,7 +218,8 @@ public partial class MainWindow
     private void ScheduleAppNotificationDismiss(int durationMs, int generation)
     {
         if (!_settings.AutoDismissNotifications || _isAppNotificationHovered || _appNotificationPointerDown ||
-            !_isAppNotificationBannerVisible || _isAppNotificationBannerExiting || _appNotificationDismissTimer != null) return;
+            !_isAppNotificationBannerVisible || _isAppNotificationBannerExiting || _appNotificationDismissTimer != null ||
+            !AppNotificationBanner.IsVisible || !_isNotchVisible || _isHiddenByFullscreen) return;
         int remaining = Math.Clamp(durationMs, 1, 15000);
         _appNotificationRemainingMs = remaining;
         _appNotificationDismissDeadline = Environment.TickCount64 + remaining;
@@ -228,6 +237,17 @@ public partial class MainWindow
         if (!AnimationConfig.ReduceMotion)
             AnimateAppNotificationValue(AppNotificationProgressScale, ScaleTransform.ScaleXProperty, 0, remaining, linear: true);
         timer.Start();
+    }
+
+    private void RefreshAppNotificationMotionVisibility()
+    {
+        if (!_isAppNotificationBannerVisible || _isAppNotificationBannerExiting) return;
+        if (!AppNotificationBanner.IsVisible || !_isNotchVisible || _isHiddenByFullscreen)
+            PauseAppNotificationDismiss();
+        else if (_appNotificationRemainingMs > 0)
+            ScheduleAppNotificationDismiss(_appNotificationRemainingMs, _appNotificationGeneration);
+        if (AnimationConfig.ReduceMotion)
+            SetAppNotificationValue(AppNotificationProgressScale, ScaleTransform.ScaleXProperty, AppNotificationProgressScale.ScaleX);
     }
 
     private void PauseAppNotificationDismiss()

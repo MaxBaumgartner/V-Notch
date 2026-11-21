@@ -27,11 +27,6 @@ public partial class ControlCenterView
 
     private static readonly TimeSpan PiRefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PiSchoolMaxAge = TimeSpan.FromMinutes(5);
-    private const int PiMaxDeadlines = 4;
-    private const int PiMaxSubmitted = 3;
-    private const int PiMaxExams = 4;
-    private const int PiMaxTodos = 6;
-    private static readonly TimeSpan ExamHorizon = TimeSpan.FromDays(21);
     private static readonly Brush DueSoon = Frozen("#D2AE7C");
     private static readonly Brush DueToday = Frozen("#D2857E");
 
@@ -66,9 +61,8 @@ public partial class ControlCenterView
         _untisUrl = untisUrl;
         if (IsSchoolPage)
         {
-            ControlRoot.Children.Add(_piSchoolSection);
-            ControlRoot.Children.Add(_piExamSection);
-            ControlRoot.Children.Add(_piTodoSection);
+            MountCompactPage();
+            _compactPage.Children.Add(_piSchoolSection);
             SetMoodColors(SchoolCalm.Main, SchoolCalm.Warmer, SchoolCalm.Cooler);
         }
         else
@@ -86,10 +80,12 @@ public partial class ControlCenterView
             BuildPiPage();
             RefreshPi();
             _piTimer?.Start();
+            if (IsSchoolPage) UpdateCountdownVisibility();
         }
         else
         {
             _piTimer?.Stop();
+            _schoolCountdownTimer?.Stop();
             _homeLoops.StopAll();
             if (_todoBox?.IsKeyboardFocusWithin == true) KeyboardInputRequested?.Invoke(false);
         }
@@ -157,11 +153,10 @@ public partial class ControlCenterView
         if (key == _piKey) return;
         _piKey = key;
 
-        bool arriving = _piSchoolSection.Children.OfType<SkeletonPlaceholder>().Any() && _piSchool != null;
         BuildPiSchool();
         BuildPiExams();
         BuildPiTodos();
-        if (arriving && IsVisible) RevealRows(TimeSpan.Zero);
+        ComposeSchoolDrawer();
         ContentHeightChanged?.Invoke();
     }
 
@@ -213,200 +208,6 @@ public partial class ControlCenterView
     };
 
     // Parts of the school tab that follow each other in when the tab opens (see RevealSchoolDetails).
-    private readonly List<(FrameworkElement Part, int Index)> _schoolDetails = new();
-    private Action? _resweepSchoolRing;
-
-    /// <summary>
-    /// Opening the school tab: the hero's ring sweeps up to its share again and the parts of the hero and the
-    /// test cards follow each other in, like Claude's hero.
-    /// </summary>
-    private void RevealSchoolDetails()
-    {
-        _resweepSchoolRing?.Invoke();
-        foreach (var (part, index) in _schoolDetails) DetailArrive(part, index);
-    }
-
-    private void BuildPiSchool()
-    {
-        _accent = _mood;
-        _piSchoolSection.Children.Clear();
-        _schoolDetails.Clear();
-        _resweepSchoolRing = null;
-        if (_isLocalOnly() || _pi?.IsConfigured != true)
-        {
-            _piSchoolSection.Children.Add(NewRow("\uE7BA", Loc.Get(_isLocalOnly() ? "pi.localOnly" : "pi.notConfigured"), muted: true));
-            return;
-        }
-        if (_piSchool is not { } school)
-        {
-            _piSchoolSection.Children.Add(new SkeletonPlaceholder(!_piReachable,
-                Loc.Get(_piReachable ? "pi.loading" : "pi.unreachable"), 108, 34, 34, 34));
-            return;
-        }
-
-        var now = DateTimeOffset.Now;
-        var open = school.Deadlines.Where(d => !d.Submitted && d.Due >= now).OrderBy(d => d.Due).ToList();
-        var nextExam = school.Exams.Where(e => e.Date.Date >= DateTime.Today).OrderBy(e => e.Date).FirstOrDefault();
-        TimeSpan? untilNext = open.Count > 0 ? open[0].Due - now : null;
-        if (nextExam != null && (untilNext == null || nextExam.Date - DateTime.Now < untilNext)) untilNext = nextExam.Date - DateTime.Now;
-        var mood = SchoolMood(untilNext);
-        SetMoodColors(mood.Main, mood.Warmer, mood.Cooler);
-
-        // What is due next, big, like the player in the music tab.
-        if (open.Count > 0) _piSchoolSection.Children.Add(NextDeadlineHero(open[0], now));
-        else _piSchoolSection.Children.Add(NewRow("\uE73E", Loc.Get("school.nothingDue"), muted: true));
-
-        if (open.Count > 1 || school.Deadlines.Any(d => d.Submitted))
-        {
-            _piSchoolSection.Children.Add(BuildSectionHeader("pi.school", Loc.Get("school.deadlines"), "", null, topMargin: 12));
-            if (!IsExpanded("pi.school")) return;
-        }
-        foreach (var deadline in open.Skip(1).Take(PiMaxDeadlines))
-        {
-            var left = deadline.Due - now;
-            var row = NewRow("\uE916", deadline.Name);
-            Brush urgency = left < TimeSpan.FromDays(1) ? DueToday : left < TimeSpan.FromDays(3) ? DueSoon : Muted;
-            var status = AddStatus(row, "", urgency);
-            LiveText(status, () =>
-            {
-                string due = $"{ShortCourse(deadline.Course)} · {DueText(deadline.Due, deadline.Due - DateTimeOffset.Now)}";
-                status.ToolTip = due;
-                return due;
-            });
-            // Open the project or the WMC repo, fetch the task's files, hand maths photos in: like the dashboard's panel.
-            if (deadline.Cmid > 0) AddAction(row, PiTaskActions(deadline, row));
-            // Straight to the assignment's page, where it is handed in (a WMC task: its Moodle link to Classroom 50).
-            if (deadline.Cmid > 0) OpenOnClick(row, () => DeadlineLink(deadline), SignInToSchoolAsync);
-            _piSchoolSection.Children.Add(row);
-        }
-        // Handed in during the last week, newest first, in a calm mint: the Pi keeps them for 7 days after their due date.
-        var weekAgo = now.AddDays(-7);
-        foreach (var deadline in school.Deadlines.Where(d => d.Submitted && (d.SubmittedAt ?? d.Due) >= weekAgo)
-                     .OrderByDescending(d => d.SubmittedAt ?? d.Due).Take(PiMaxSubmitted))
-        {
-            var row = NewRow("\uE73E", deadline.Name, dim: true);
-            string day = (deadline.SubmittedAt ?? deadline.Due).ToLocalTime().ToString("ddd d.M.", Loc.GetCulture());
-            AddStatus(row, Loc.Get("pi.handedIn", ShortCourse(deadline.Course), day), HandedIn);
-            if (deadline.Cmid > 0) OpenOnClick(row, () => DeadlineLink(deadline), SignInToSchoolAsync);
-            _piSchoolSection.Children.Add(row);
-        }
-    }
-
-    private static readonly Brush HandedIn = Frozen("#9BCFC4");
-    private const double HeroRing = 84;
-    // The ring counts down two weeks: a task due in a fortnight or more starts full.
-    private static readonly TimeSpan HeroRingSpan = TimeSpan.FromDays(14);
-
-    /// <summary>
-    /// The next deadline as the tab's hero: a ring that empties as the due date comes closer, with the days left in
-    /// it, the task's name, its subject and date, and the buttons of its row (open the project, the files, hand in).
-    /// </summary>
-    private FrameworkElement NextDeadlineHero(PiDeadline deadline, DateTimeOffset now)
-    {
-        var left = deadline.Due - now;
-        double share = Math.Clamp(left.TotalMilliseconds / HeroRingSpan.TotalMilliseconds, 0.02, 1);
-        const double Stroke = 7;
-        double r = (HeroRing - Stroke) / 2, c = HeroRing / 2;
-        var value = new Path { Stroke = _mood, StrokeThickness = Stroke, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
-        var number = MakeLabel("", 20, VNotch.Services.UiPalette.PrimaryBrush);
-        number.HorizontalAlignment = HorizontalAlignment.Center;
-        var unit = MakeLabel("", 10, Muted);
-        unit.HorizontalAlignment = HorizontalAlignment.Center;
-        // Days, then hours on the last day: counted on between the Pi's reads.
-        LiveText(number, () =>
-        {
-            var l = deadline.Due - DateTimeOffset.Now;
-            return l < TimeSpan.FromDays(1) ? $"{Math.Max(0, (int)l.TotalHours)}" : $"{(int)Math.Ceiling(l.TotalDays)}";
-        });
-        LiveText(unit, () => Loc.Get(deadline.Due - DateTimeOffset.Now < TimeSpan.FromDays(1) ? "school.hours" : "school.days"));
-        var ring = new Grid
-        {
-            Width = HeroRing,
-            Height = HeroRing,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children =
-            {
-                new Ellipse { Stroke = Track, StrokeThickness = Stroke, Opacity = 0.6 },
-                value,
-                new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { number, unit } }
-            }
-        };
-        // The ring sweeps to its share when the tab opens.
-        var tween = new WeatherTween { Step = t => value.Data = Arc(c, c, r, -90, Math.Min(359.5, 360 * t)) };
-        bool animate = IsVisible && !AnimationConfig.ReduceMotion;
-        if (animate) tween.To(share, from: 0);
-        else tween.Play(share, share, 0, WeatherMotion.OutQuint);
-        // A reopened tab sweeps the last stretch again; a sweep still on its way just carries on.
-        _resweepSchoolRing = () =>
-        {
-            if (ring.IsVisible && !Motion.IsRunning(tween, WeatherTween.ValueProperty)) tween.To(share, from: share * .8);
-        };
-
-        var title = MakeLabel(deadline.Name, 16, VNotch.Services.UiPalette.PrimaryBrush);
-        var meta = MakeLabel($"{ShortCourse(deadline.Course)} · {deadline.Due.ToLocalTime().ToString("ddd d.M. · HH:mm", Loc.GetCulture())}", 12, _moodSoft);
-        meta.Margin = new Thickness(0, 3, 0, 0);
-        _schoolDetails.Add((ring, 0));
-        _schoolDetails.Add((title, 1));
-        _schoolDetails.Add((meta, 2));
-        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0), Children = { title, meta } };
-
-        var hero = new Grid { Margin = new Thickness(0, 0, 0, 6), Background = Brushes.Transparent };
-        hero.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        hero.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        hero.Children.Add(ring);
-        Grid.SetColumn(text, 1);
-        hero.Children.Add(text);
-        if (deadline.Cmid > 0)
-        {
-            var actions = PiTaskActions(deadline, hero);
-            actions.HorizontalAlignment = HorizontalAlignment.Left;
-            actions.Margin = new Thickness(0, 9, 0, 0);
-            text.Children.Add(actions);
-            OpenOnClick(title, () => DeadlineLink(deadline), SignInToSchoolAsync);
-        }
-        return hero;
-    }
-
-    /// <summary>Tests and school exams of the next three weeks, as a row of tiles; the next few days glow rosé.</summary>
-    private void BuildPiExams()
-    {
-        _piExamSection.Children.Clear();
-        if (_piSchool is not { } school || _isLocalOnly()) return;
-        var exams = school.Exams.Where(e => e.Date.Date >= DateTime.Today && e.Date - DateTime.Today <= ExamHorizon)
-            .OrderBy(e => e.Date).Take(PiMaxExams).ToList();
-        if (exams.Count == 0) return;
-        _piExamSection.Children.Add(BuildSectionHeader("pi.exams", Loc.Get("school.exams"), "", null, topMargin: 12));
-        if (!IsExpanded("pi.exams")) return;
-
-        var grid = TileGrid(PiMaxExams, PiMaxExams);
-        for (int i = 0; i < exams.Count; i++)
-        {
-            var exam = exams[i];
-            int days = (exam.Date.Date - DateTime.Today).Days;
-            bool soon = days <= 5;
-            string when = exam.Date.ToString("ddd d.M.", Loc.GetCulture())
-                + (days == 0 ? " · " + Loc.Get("school.today") : soon ? " · " + Loc.Get("school.inDaysShort", days) : "");
-            var date = MakeLabel(when, 10.5, soon ? DueToday : Muted);
-            var subject = MakeLabel(ExamSubject(exam), 14, VNotch.Services.UiPalette.PrimaryBrush);
-            subject.Margin = new Thickness(0, 3, 0, 0);
-            var kind = MakeLabel(exam.Kind, 10.5, Muted);
-            var card = Card();
-            card.Padding = new Thickness(11, 8, 11, 8);
-            card.Background = soon ? Wash(DueToday, 0.18) : new SolidColorBrush(((SolidColorBrush)CardBg).Color);
-            card.Child = new StackPanel { Children = { date, subject, kind } };
-            card.ToolTip = exam.Title;
-            Pressable(card, () => soon ? Wash(DueToday, 0.18) : CardBg, CardHover, grow: true);
-            // The subject leans towards the pointer, independently of the card's squish.
-            DetailHover(card, subject);
-            OpenOnClick(card, () => SchoolLinks.Untis(_untisUrl()), SignInToSchoolAsync);
-            PlaceTile(grid, card, i, PiMaxExams);
-            _schoolDetails.Add((date, 3 + i));
-            _schoolDetails.Add((subject, 4 + i));
-            _schoolDetails.Add((kind, 5 + i));
-        }
-        _piExamSection.Children.Add(grid);
-    }
-
     /// <summary>"0D" → "D", "1WMC" → "WMC", "0POSETHI" → "POSE": like the dashboard's subject chips.</summary>
     internal static string ExamSubject(PiExam exam)
     {
@@ -492,45 +293,6 @@ public partial class ControlCenterView
 
     #region To-dos
 
-    private void BuildPiTodos()
-    {
-        _piTodoSection.Children.Clear();
-        if (_isLocalOnly() || _pi?.IsConfigured != true || _piTodos == null) return;
-        _piTodoSection.Children.Add(BuildSectionHeader("pi.todos", Loc.Get("pi.todos"), "", null, topMargin: 14));
-        if (!IsExpanded("pi.todos")) return;
-
-        _piTodoSection.Children.Add(TodoComposer());
-        _accent = _mood;
-        int shown = 0;
-        foreach (var todo in _piTodos)
-        {
-            if (todo.Done || shown == PiMaxTodos) continue;
-            shown++;
-            var row = NewRow("\uE739", todo.Text);
-            string id = todo.Id;
-            AddStatus(row, "", Muted, Toggle(false, done =>
-            {
-                // The box ticks itself with a little hop as the row leaves; the switch and row move together.
-                if (done && RowGlyph(row) is { } glyph)
-                {
-                    glyph.Text = "";
-                    DetailReaction(glyph);
-                }
-                if (done && !AnimationConfig.ReduceMotion)
-                {
-                    var away = new TranslateTransform();
-                    row.RenderTransform = away;
-                    Motion.To(row, OpacityProperty, 0, Motion.Exit);
-                    Motion.To(away, TranslateTransform.XProperty, 28, Motion.Exit);
-                    GlideHeight(row, 0, from: row.ActualHeight);
-                }
-                SetTodoDone(id, done);
-            }));
-            _piTodoSection.Children.Add(row);
-        }
-        if (shown == 0) _piTodoSection.Children.Add(NewRow("\uE73E", Loc.Get("pi.todosEmpty"), muted: true));
-    }
-
     /// <summary>The glyph at the start of a <see cref="NewRow"/>.</summary>
     private static TextBlock? RowGlyph(Grid row) =>
         row.Children.OfType<StackPanel>().FirstOrDefault()?.Children.OfType<TextBlock>().FirstOrDefault();
@@ -601,11 +363,11 @@ public partial class ControlCenterView
         field.Children.Add(box);
         var shell = new Border
         {
-            Background = ComboBg,
+            Background = Brushes.Transparent,
             BorderBrush = ComboBorder,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12, 7, 12, 7),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            CornerRadius = new CornerRadius(0),
+            Padding = new Thickness(0, 5, 0, 5),
             Margin = new Thickness(0, 0, 0, 6),
             Cursor = Cursors.IBeam,
             Child = field

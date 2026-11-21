@@ -23,7 +23,9 @@ public sealed record TransitionPlan(
     double TargetHeight,
     double TargetCornerRadius,
     TransitionMotionConfig Motion,
-    int NavigationDirection = 1
+    int NavigationDirection = 1,
+    // The shell height the switch starts from; a shrinking shell lets the new page wait a little longer.
+    double FromHeight = double.NaN
 );
 
 public enum TransitionExecutionStatus

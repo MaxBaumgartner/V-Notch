@@ -29,6 +29,7 @@ public partial class MainWindow
     private void UpdateMediaBackground(MediaInfo? info, bool forceRefresh = false)
     {
         bool glass = IsLiquidGlassEnabled;
+        var colourDuration = AnimationConfig.ReduceMotion ? TimeSpan.Zero : TimeSpan.FromMilliseconds(CanSwipeMusic ? 700 : 420);
 
         if (info == null || (!info.IsAnyMediaPlaying && string.IsNullOrEmpty(info.CurrentTrack)))
         {
@@ -61,7 +62,7 @@ public partial class MainWindow
         bool isNewTrack = _lastTrackId != null && _lastTrackId != currentTrackId;
         _lastTrackId = currentTrackId;
 
-        if (isNewTrack && !forceRefresh && !_isFadingTrack && _isExpanded && !suppressBackdrop)
+        if (isNewTrack && !forceRefresh && !_isFadingTrack && _isExpanded && !suppressBackdrop && !CanSwipeMusic)
         {
             _isFadingTrack = true;
             FadeToBlackThenUpdate(info);
@@ -112,7 +113,7 @@ public partial class MainWindow
         var uiColorAnim = new ColorAnimation
         {
             To = vibrantTargetColor,
-            Duration = TimeSpan.FromMilliseconds(420),
+            Duration = colourDuration,
             EasingFunction = _easeQuadOut
         };
         var iconInkAnim = uiColorAnim.Clone();
@@ -177,13 +178,13 @@ public partial class MainWindow
         var progressStartAnim = new ColorAnimation
         {
             To = vibrantTargetColor,
-            Duration = TimeSpan.FromMilliseconds(420),
+            Duration = colourDuration,
             EasingFunction = _easeQuadOut
         };
         var progressEndAnim = new ColorAnimation
         {
             To = progressDarkColor,
-            Duration = TimeSpan.FromMilliseconds(420),
+            Duration = colourDuration,
             EasingFunction = _easeQuadOut
         };
         System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(progressStartAnim, VNotch.Services.AnimationConfig.TargetFps);
@@ -217,13 +218,13 @@ public partial class MainWindow
         var volStartAnim = new ColorAnimation
         {
             To = vibrantTargetColor,
-            Duration = TimeSpan.FromMilliseconds(420),
+            Duration = colourDuration,
             EasingFunction = _easeQuadOut
         };
         var volEndAnim = new ColorAnimation
         {
             To = progressDarkColor,
-            Duration = TimeSpan.FromMilliseconds(420),
+            Duration = colourDuration,
             EasingFunction = _easeQuadOut
         };
         System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(volStartAnim, VNotch.Services.AnimationConfig.TargetFps);
@@ -800,6 +801,17 @@ public partial class MainWindow
 
         double activeOpacity = activeImg.Opacity;
 
+        if (CanSwipeMusic && activeOpacity > .001 && targetImg.Opacity > .001 &&
+            activeImg.Source != null && targetImg.Source != null)
+        {
+            // Flatten only an interrupted dissolve, so neither of its visible colours disappears on retarget.
+            var current = FlattenMediaBackdrop((BitmapSource)MediaBackgroundImageBack.Source, MediaBackgroundImageBack.Opacity,
+                (BitmapSource)MediaBackgroundImage.Source, MediaBackgroundImage.Opacity);
+            current.Freeze();
+            activeImg.Source = activeImg2.Source = current;
+            activeOpacity = 1;
+        }
+
         MediaBackgroundImage.BeginAnimation(OpacityProperty, null);
         MediaBackgroundImage2.BeginAnimation(OpacityProperty, null);
         MediaBackgroundImageBack.BeginAnimation(OpacityProperty, null);
@@ -814,7 +826,7 @@ public partial class MainWindow
         targetImg2.Source = blurred;
 
         bool oldAlreadyGone = activeOpacity < 0.05 || activeImg.Source == null;
-        var dur = oldAlreadyGone ? TimeSpan.FromMilliseconds(380) : TimeSpan.FromMilliseconds(550);
+        var dur = AnimationConfig.ReduceMotion ? TimeSpan.Zero : TimeSpan.FromMilliseconds(CanSwipeMusic ? 700 : oldAlreadyGone ? 380 : 550);
         var ease = new CubicEase { EasingMode = oldAlreadyGone ? EasingMode.EaseOut : EasingMode.EaseInOut };
 
         var fadeIn = new DoubleAnimation { From = 0.0, To = 1.0, Duration = dur, EasingFunction = ease };
@@ -849,6 +861,29 @@ public partial class MainWindow
         activeImg2.BeginAnimation(OpacityProperty, fadeOut);
     }
 
+    private static BitmapSource FlattenMediaBackdrop(BitmapSource back, double backOpacity, BitmapSource front, double frontOpacity)
+    {
+        // Read the tiny blur buffers directly; a GPU snapshot can be empty before its first render pass.
+        static byte[] Pixels(BitmapSource source)
+        {
+            var resized = new TransformedBitmap(source, new ScaleTransform(128d / source.PixelWidth, 128d / source.PixelHeight));
+            var converted = new FormatConvertedBitmap(resized, PixelFormats.Pbgra32, null, 0);
+            var pixels = new byte[128 * 128 * 4];
+            converted.CopyPixels(pixels, 128 * 4, 0);
+            return pixels;
+        }
+        var behind = Pixels(back);
+        var above = Pixels(front);
+        for (int pixel = 0; pixel < behind.Length; pixel += 4)
+        {
+            double remaining = 1 - above[pixel + 3] / 255d * frontOpacity;
+            for (int channel = 0; channel < 4; channel++)
+                behind[pixel + channel] = (byte)Math.Clamp(Math.Round(above[pixel + channel] * frontOpacity +
+                    behind[pixel + channel] * backOpacity * remaining), 0, 255);
+        }
+        return BitmapSource.Create(128, 128, 96, 96, PixelFormats.Pbgra32, null, behind, 128 * 4);
+    }
+
     #endregion
 
     #region Title Gradient Animation
@@ -867,9 +902,10 @@ public partial class MainWindow
             artistColor = Color.FromArgb(191, titleColor.R, titleColor.G, titleColor.B);
         }
 
-        var colorAnim = new ColorAnimation { To = titleColor, Duration = TimeSpan.FromMilliseconds(500), EasingFunction = _easeQuadOut };
-        var artistColorAnim = new ColorAnimation { To = artistColor, Duration = TimeSpan.FromMilliseconds(500), EasingFunction = _easeQuadOut };
-        var iconAnim = new ColorAnimation { To = titleColor, Duration = TimeSpan.FromMilliseconds(500), EasingFunction = _easeQuadOut };
+        var colourDuration = AnimationConfig.ReduceMotion ? TimeSpan.Zero : TimeSpan.FromMilliseconds(CanSwipeMusic ? 700 : 500);
+        var colorAnim = new ColorAnimation { To = titleColor, Duration = colourDuration, EasingFunction = _easeQuadOut };
+        var artistColorAnim = new ColorAnimation { To = artistColor, Duration = colourDuration, EasingFunction = _easeQuadOut };
+        var iconAnim = new ColorAnimation { To = titleColor, Duration = colourDuration, EasingFunction = _easeQuadOut };
         Timeline.SetDesiredFrameRate(colorAnim, VNotch.Services.AnimationConfig.TargetFps);
         Timeline.SetDesiredFrameRate(artistColorAnim, VNotch.Services.AnimationConfig.TargetFps);
         Timeline.SetDesiredFrameRate(iconAnim, AnimationConfig.TargetFps);

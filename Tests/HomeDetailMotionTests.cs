@@ -55,7 +55,7 @@ public sealed class HomeDetailMotionTests
         Assert.Contains("120 W", scene.Plug.Text);
         Assert.False(scene.Tween(scene.Heating, "CurrentRoll").HasAnimatedProperties);
         Assert.False(scene.GlowScale.HasAnimatedProperties);
-        Assert.False(scene.Rays.HasAnimatedProperties);
+        Assert.Equal(0, scene.LightIcon.RenderTransform.Value.OffsetY);
     });
 
     [Fact]
@@ -74,7 +74,7 @@ public sealed class HomeDetailMotionTests
         scene.Light(true);
         scene.Root.Visibility = Visibility.Collapsed;
         Assert.False(scene.GlowScale.HasAnimatedProperties);
-        Assert.False(scene.Rays.HasAnimatedProperties);
+        Assert.Equal(0, scene.LightIcon.RenderTransform.Value.OffsetY);
         Assert.True(((LoopSet)Scene.Field(scene.View, "_homeLoops")).IsEmpty);
     });
 
@@ -99,7 +99,7 @@ public sealed class HomeDetailMotionTests
         internal TextBlock Plug { get; }
         internal TextBlock Pi { get; }
         internal ScaleTransform GlowScale => (ScaleTransform)Field(_light, "GlowScale");
-        internal FrameworkElement Rays => (FrameworkElement)Field(_light, "Rays");
+        internal FrameworkElement LightIcon => (FrameworkElement)Field(_light, "Icon");
 
         internal Scene()
         {

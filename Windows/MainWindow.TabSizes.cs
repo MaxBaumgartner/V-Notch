@@ -10,17 +10,15 @@ using static VNotch.Services.AnimationPrimitives;
 namespace VNotch;
 
 /// <summary>
-/// Every tab has a size of its own again, the way upstream's do (music 480 wide, clock 600, camera 520,
-/// the mixer 720 and as tall as its rows). The control-center tabs get a width that suits what they show
-/// (Claude 640, home 680, school 580; the system tab stays the big one) and grow or shrink to their
-/// content between a floor and the height where their list starts to scroll.
+/// Home, school and system fit their compact controls and grow with their drawers up to the scroll cap.
 /// </summary>
 public partial class MainWindow
 {
-    private const double HomeViewWidth = 680;
-    private const double SchoolViewWidth = 580;
-    private const double CenterViewMinHeight = 160;
-    private const double CenterViewMaxHeight = 420;
+    private const double HomeViewWidth = 560;
+    private const double SchoolViewWidth = 430;
+    private const double CenterViewMinHeight = 82;
+    // As tall as the Claude tab may grow, so an open drawer fits instead of scrolling.
+    private const double CenterViewMaxHeight = 580;
 
     private double _homeViewHeight = CenterViewMaxHeight;
     private double _schoolViewHeight = CenterViewMaxHeight;
@@ -41,6 +39,15 @@ public partial class MainWindow
         _schoolViewHeight = FitHeight(SchoolCenter, SchoolContent, SchoolViewWidth, CenterViewMinHeight, CenterViewMaxHeight);
 
     private void OnHomeContentHeightChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, SettleHomeNotchToFit);
+
+    private double MeasureSystemViewHeight() =>
+        FitHeight(ControlCenter, TimerContent, _clockViewWidth, 82, CenterViewMaxHeight);
+
+    private void OnSystemContentHeightChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+    {
+        if (_transitionCoordinator.TargetView != VNotch.Models.NotchView.Timer || _cleanedUp || IsCountdownCompletionVisualActive) return;
+        SettleNotchToContent(TimerContent, MeasureSystemViewHeight(), () => _transitionCoordinator.TargetView == VNotch.Models.NotchView.Timer);
+    }));
 
     private void OnSchoolContentHeightChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, SettleSchoolNotchToFit);
 
@@ -64,6 +71,16 @@ public partial class MainWindow
     /// </summary>
     private void SettleNotchToContent(FrameworkElement content, double target, Func<bool> stillOpen)
     {
+        if (_shellDragActive) return;
+        var center = ReferenceEquals(content, PiContent) ? PiCenter : ReferenceEquals(content, SchoolContent) ? SchoolCenter :
+            ReferenceEquals(content, TimerContent) ? ControlCenter : ClaudeCenter;
+        if (center.IsLayoutFollowing && !_shellAttachment.IsAttached)
+        {
+            Motion.Stop(content, HeightProperty, Math.Max(0, target - content.Margin.Top - content.Margin.Bottom));
+            Motion.Stop(NotchBorder, HeightProperty, target);
+            ResizeHostWindowHeight(target);
+            return;
+        }
         double current = double.IsFinite(NotchBorder.Height) ? NotchBorder.Height :
             NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : target;
         double chrome = content.Margin.Top + content.Margin.Bottom;
@@ -76,13 +93,14 @@ public partial class MainWindow
 
         // Auto-sized content needs a finite initial value; subsequent changes retain the live spring.
         if (!double.IsFinite(content.Height)) content.Height = Math.Max(0, current - chrome);
-        Motion.To(content, HeightProperty, Math.Max(0, target - chrome), Motion.Glide);
+        var spring = ReferenceEquals(center, ClaudeCenter) ? Motion.Glide : Motion.Shift;
+        Motion.To(content, HeightProperty, Math.Max(0, target - chrome), spring);
         void Arrived()
         {
             if (generation != _centerNotchHeightGeneration || !stillOpen()) return;
             if (!growing) ResizeHostWindowHeight(target);
         }
         if (_notchShellPresenter?.RetargetHeight(target, Arrived) != true)
-            Motion.To(NotchBorder, HeightProperty, target, Motion.Glide, done: Arrived);
+            Motion.To(NotchBorder, HeightProperty, target, spring, done: Arrived);
     }
 }

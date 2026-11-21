@@ -33,7 +33,7 @@ public partial class MainWindow
         {
             (SettingsButton, "tooltip.settings"),
             (HomeIconButton, "nav.media"), (ClipboardIconButton, "nav.clipboard"), (CameraIconButton, "nav.camera"),
-            (TimerIconButton, "nav.controls"), (ClaudeIconButton, "nav.claude"), (PiIconButton, "nav.pi"), (SchoolIconButton, "nav.school"), (WeatherIconButton, "nav.weather"), (AudioIconButton, "nav.audio"),
+            (TimerIconButton, "nav.controls"), (ClaudeIconButton, "nav.claude"), (PiIconButton, "nav.pi"), (SchoolIconButton, "nav.school"), (AudioIconButton, "nav.audio"),
             (CameraSection, "settings.camera"), (UpdateNotificationButton, "tooltip.downloadUpdate"),
             (MediaPlayback.PrevButton, "media.previous"), (InlinePrevButton, "media.previous"),
             (MediaPlayback.NextButton, "media.next"), (InlineNextButton, "media.next"),

@@ -13,20 +13,6 @@ public partial class MainWindow
     private const int NotificationTransitionMs = 240;
     private const int NotificationOpenMs = 360;
 
-    private static DoubleAnimationUsingKeyFrames AppNotificationMotion(double from, double to, int milliseconds,
-        int delay = 0, bool linear = false, IEasingFunction? easing = null)
-    {
-        milliseconds = Math.Clamp(milliseconds, 120, 200);
-        var motion = new DoubleAnimationUsingKeyFrames { FillBehavior = FillBehavior.HoldEnd };
-        motion.KeyFrames.Add(new DiscreteDoubleKeyFrame(from, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-        if (delay > 0) motion.KeyFrames.Add(new DiscreteDoubleKeyFrame(from, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(delay))));
-        var end = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(delay + Math.Max(1, milliseconds)));
-        if (linear) motion.KeyFrames.Add(new LinearDoubleKeyFrame(to, end));
-        else motion.KeyFrames.Add(new EasingDoubleKeyFrame(to, end, easing ?? _easeAppleOut));
-        Timeline.SetDesiredFrameRate(motion, AnimationConfig.TargetFps);
-        return motion;
-    }
-
     private static void SetAppNotificationValue(Animatable target, DependencyProperty property, double value)
     {
         Motion.Stop(target, property, value);
@@ -42,7 +28,9 @@ public partial class MainWindow
         }
         if (linear)
         {
-            target.BeginAnimation(property, new DoubleAnimation(to, TimeSpan.FromMilliseconds(milliseconds)));
+            var progress = new DoubleAnimation(to, TimeSpan.FromMilliseconds(milliseconds));
+            Timeline.SetDesiredFrameRate(progress, AnimationConfig.TargetFps);
+            target.BeginAnimation(property, progress);
             return;
         }
         Motion.To(target, property, to, easing == _easeQuadIn ? Motion.Exit :
@@ -56,32 +44,24 @@ public partial class MainWindow
 
     private static void AnimateAppNotificationOpacity(UIElement target, double to, int milliseconds, int delay = 0, IEasingFunction? easing = null)
     {
-        double from = target.Opacity;
         if (milliseconds <= 0 || AnimationConfig.ReduceMotion)
         {
             SetAppNotificationOpacity(target, to);
             return;
         }
-        SetAppNotificationOpacity(target, from);
-        target.BeginAnimation(OpacityProperty, AppNotificationMotion(from, to, milliseconds, easing: easing));
+        Motion.To(target, OpacityProperty, to, milliseconds <= NotificationFeedbackMs ? Motion.PressDown : Motion.Exit);
     }
 
     private void PresentAppNotification(bool replacing)
     {
-        if (AppNotificationBanner.Opacity <= 0 &&
-            !Motion.IsRunning(AppNotificationBannerTranslate, TranslateTransform.YProperty))
-        {
-            SetAppNotificationOpacity(AppNotificationBanner, 0);
-            SetAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.YProperty,
-                AnimationConfig.ReduceMotion ? 0 : 6);
-        }
+        // The attachment reveals the whole face with the shell; only a message replacement swaps in place.
+        SetAppNotificationOpacity(AppNotificationBanner, 1);
+        SetAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.YProperty, 0);
         TransitionAppNotificationBlurCover(entering: true);
-        AnimateAppNotificationOpacity(AppNotificationBanner, 1, NotificationTransitionMs, easing: _easeAppleOut);
-        AnimateAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.YProperty, 0,
-            NotificationTransitionMs, easing: _easeAppleOut);
-        Motion.To(AppNotificationBannerTranslate, TranslateTransform.XProperty, 0, Motion.Pop);
-        Motion.To(AppNotificationBannerScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale);
-        Motion.To(AppNotificationBannerScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale);
+        Motion.To(AppNotificationBannerTranslate, TranslateTransform.XProperty, 0, Motion.Exit,
+            from: replacing ? 6 : null);
+        SetAppNotificationValue(AppNotificationBannerScale, ScaleTransform.ScaleXProperty, 1);
+        SetAppNotificationValue(AppNotificationBannerScale, ScaleTransform.ScaleYProperty, 1);
         AppNotificationHoverSurface.Visibility = Visibility.Visible;
         AnimateAppNotificationHoverFeedback();
     }
@@ -96,11 +76,12 @@ public partial class MainWindow
     private void AnimateAppNotificationShell(double width, double height, double radius, int milliseconds,
         Action? completed = null, IEasingFunction? easing = null)
     {
-        int morph = ++_appNotificationMorphGeneration;
+        _notchShellPresenter?.CancelCurrentAnimation();
         SetAppNotificationValue(NotchScale, ScaleTransform.ScaleXProperty, 1);
         SetAppNotificationValue(NotchShadowScale, ScaleTransform.ScaleXProperty, 1);
         if (AnimationConfig.ReduceMotion || milliseconds == 0)
         {
+            _appBannerAttachment?.Detach(!_isAppNotificationBannerExiting);
             Motion.Stop(NotchBorder, WidthProperty, width);
             Motion.Stop(NotchBorder, HeightProperty, height);
             Motion.Stop(this, CurrentCornerRadiusProperty, radius);
@@ -113,22 +94,13 @@ public partial class MainWindow
             Motion.Stop(NotchBorder, WidthProperty, NotchBorder.ActualWidth > 0 ? NotchBorder.ActualWidth : GetCollapsedWidth());
         if (!double.IsFinite(NotchBorder.Height))
             Motion.Stop(NotchBorder, HeightProperty, NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : GetCollapsedHeight());
-        Motion.To(NotchBorder, WidthProperty, width, spring, done: () =>
-        {
-            if (morph == _appNotificationMorphGeneration && Math.Abs(NotchBorder.Width - width) < .5)
-                Motion.Stop(NotchBorder, WidthProperty, width);
-        });
-        Motion.To(NotchBorder, HeightProperty, height, spring, done: () =>
-        {
-            if (morph != _appNotificationMorphGeneration) return;
-            if (Math.Abs(NotchBorder.Height - height) > .5) return;
-            Motion.Stop(NotchBorder, HeightProperty, height);
-            completed?.Invoke();
-        });
         Motion.To(this, CurrentCornerRadiusProperty, radius, spring);
+        _appBannerAttachment ??= new(NotchBorder, AppNotificationBanner,
+            () => new Size(GetCollapsedWidth(), GetCollapsedHeight()));
+        _appBannerAttachment.MoveTo(width, height, spring, shown: !_isAppNotificationBannerExiting, done: completed);
     }
 
-    private void BeginAppNotificationDismiss(int direction, bool immediate = false)
+    private void BeginAppNotificationDismiss(int direction, bool immediate = false, double velocity = 0)
     {
         if (!_isAppNotificationBannerVisible || _isAppNotificationBannerExiting) return;
         StopAppNotificationDismissTimer();
@@ -138,17 +110,12 @@ public partial class MainWindow
         int generation = ++_appNotificationGeneration;
         AppNotificationBanner.IsHitTestVisible = false;
         if (!immediate) TransitionAppNotificationBlurCover(entering: false);
-        AnimateAppNotificationOpacity(AppNotificationBanner, 0, immediate ? 0 : 180, easing: _easeQuadIn);
-        Motion.To(AppNotificationBannerScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
-        Motion.To(AppNotificationBannerScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
         AnimateAppNotificationHoverFeedback();
-        AnimateAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.YProperty, direction == 0 ? -3 : 0,
-            180, easing: _easeQuadIn);
         if (direction != 0)
         {
             double travel = Math.Abs(AppNotificationShellTranslate.X) + 80;
-            AnimateAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.XProperty,
-                direction * travel, 180, easing: _easeQuadIn);
+            Motion.To(AppNotificationBannerTranslate, TranslateTransform.XProperty,
+                direction * travel, Motion.Exit, velocity: velocity);
         }
         foreach (var translate in new[] { AppNotificationShellTranslate, AppNotificationShadowTranslate })
         {
@@ -171,23 +138,19 @@ public partial class MainWindow
                 if (_isMusicCompactMode && _currentMediaInfo != null)
                 {
                     MusicCompactContent.Visibility = Visibility.Visible;
-                    MusicCompactContent.BeginAnimation(OpacityProperty, MakeCompactContentRestore());
+                    Motion.To(MusicCompactContent, OpacityProperty, 1, Motion.Exit);
                     RestoreCompactMediaPresentation();
                 }
                 else
                 {
                     CollapsedContent.Visibility = Visibility.Visible;
-                    CollapsedContent.BeginAnimation(OpacityProperty, MakeCompactContentRestore());
+                    Motion.To(CollapsedContent, OpacityProperty, 1, Motion.Exit);
                 }
             }, easing: _easeAppleInOut);
     }
 
     private void ResetAppNotificationVisuals()
     {
-        if (AppNotificationBanner.Visibility == Visibility.Visible && !_isAppNotificationBannerExiting)
-        {
-            KeepCompactDeparture(AppNotificationBanner);
-        }
         ResetAppNotificationBlurCover();
         // The frozen old face owns departure; new text and artwork reveal together on the live face.
         SetAppNotificationOpacity(AppNotificationBanner, 0);

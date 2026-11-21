@@ -43,7 +43,7 @@ public sealed class NotchNavigationIntegrationTests
             await StartAsync(window, ct);
             var coordinator = Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
             Assert.False(window.SettingsButton.IsHitTestVisible);
-            var views = new[] { NotchView.Media, NotchView.Secondary, NotchView.Timer, NotchView.Claude, NotchView.Pi, NotchView.School, NotchView.Weather, NotchView.AudioMixer, NotchView.Camera };
+            var views = new[] { NotchView.Media, NotchView.Secondary, NotchView.Timer, NotchView.Claude, NotchView.Pi, NotchView.School, NotchView.AudioMixer, NotchView.Camera };
             bool capturedHeader = false;
             async Task Navigate(NotchView view)
             {
@@ -137,7 +137,6 @@ public sealed class NotchNavigationIntegrationTests
                         NotchView.Claude => window.ClaudeContent,
                         NotchView.Pi => window.PiContent,
                         NotchView.School => window.SchoolContent,
-                        NotchView.Weather => window.WeatherContent,
                         _ => window.AudioContent
                     };
                     Assert.Equal(Visibility.Visible, content.Visibility);
@@ -333,9 +332,10 @@ public sealed class NotchNavigationIntegrationTests
         void Sample(object? _, EventArgs args)
         {
             if (!IsAnimating(window) || !window.ExpandedContent.IsVisible) return;
-            var origin = window.ExpandedContent.TransformToAncestor(window.NotchContainer).Transform(new Point());
-            double expected = (window.NotchContainer.ActualWidth - window.ExpandedContent.ActualWidth) / 2;
-            maxError = Math.Max(maxError, Math.Abs(origin.X - expected));
+            var bounds = window.ExpandedContent.TransformToAncestor(window.NotchContainer)
+                .TransformBounds(new Rect(window.ExpandedContent.RenderSize));
+            double expected = window.NotchContainer.ActualWidth / 2;
+            maxError = Math.Max(maxError, Math.Abs(bounds.Left + bounds.Width / 2 - expected));
             samples++;
         }
         CompositionTarget.Rendering += Sample;

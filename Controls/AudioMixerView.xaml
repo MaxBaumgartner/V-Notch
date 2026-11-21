@@ -12,7 +12,7 @@
                   Width="682"
                   HorizontalAlignment="Left"
                   VerticalAlignment="Top"
-                  VerticalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Hidden"
                   HorizontalScrollBarVisibility="Disabled"
                   PanningMode="VerticalOnly"
                   Padding="0,0,7,0"

@@ -79,7 +79,7 @@ public partial class ControlCenterView
             LoadPiAssignment(cmid);
             return panel;
         }
-        _accent = Pink;
+        _accent = Frozen("#CF9AB2");
         _piTasks.TryGetValue(cmid, out var state);
         switch (state?.Step)
         {

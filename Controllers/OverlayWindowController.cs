@@ -67,6 +67,19 @@ public sealed class OverlayWindowController : IDisposable
         _ensureTopmost();
     }
 
+    /// <summary>
+    /// Hidden for Windows while WPF still counts the window as shown (see MainWindow.FullscreenPark).
+    /// </summary>
+    public bool IsParked { get; private set; }
+
+    public void SetParked(bool parked)
+    {
+        if (parked == IsParked || _state.Hwnd == IntPtr.Zero) return;
+        IsParked = parked;
+        ShowWindow(_state.Hwnd, parked ? SW_HIDE : SW_SHOWNA);
+        if (!parked) ApplyPreferredZOrder();
+    }
+
     public bool IsKeyboardInputEnabled { get; private set; }
 
     public void SetKeyboardInput(bool enabled)
@@ -330,6 +343,10 @@ public sealed class OverlayWindowController : IDisposable
             pos.flags |= SWP_NOZORDER;
         else if ((pos.flags & SWP_NOZORDER) == 0)
             pos.hwndInsertAfter = PreferredZOrder;
+
+        // Size and z-order upkeep passes SWP_SHOWWINDOW; a parked window stays off the screen.
+        if (IsParked)
+            pos.flags &= ~SWP_SHOWWINDOW;
 
         Marshal.StructureToPtr(pos, lParam, false);
     }

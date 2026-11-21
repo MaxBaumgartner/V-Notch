@@ -345,7 +345,7 @@ public partial class SettingsWindow
             }
         }
         foreach (var row in _searchRows)
-            ObserveSearchRow(row);
+            ObserveSearchInputs(row.Row, row);
         foreach (var button in _navButtons.Values)
             ObserveSearchInputs(button, null);
         RebuildNativeSearchArena();

@@ -759,9 +759,11 @@ internal static unsafe partial class Win32Interop
     public const uint SWP_SHOWWINDOW = 0x0040;
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
+    public const int SW_HIDE = 0;
     public const int SW_RESTORE = 9;
     public const int SW_SHOW = 5;
     public const int SW_SHOWMAXIMIZED = 3;
+    public const int SW_SHOWNA = 8;
     public const int WS_CAPTION = 0x00C00000;
     public const int WS_THICKFRAME = 0x00040000;
     public const int WS_EX_TOOLWINDOW = 0x00000080;

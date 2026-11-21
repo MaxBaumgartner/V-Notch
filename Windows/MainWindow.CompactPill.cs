@@ -46,21 +46,28 @@ public partial class MainWindow
             surface.RenderSize.Width <= 0 || surface.RenderSize.Height <= 0) return;
         // Freeze the outgoing face before its owner clears state; it can leave without keeping any live loops alive.
         var size = surface.RenderSize;
+        Rect bounds = surface.TransformToAncestor(NotchLiveContent).TransformBounds(new Rect(size));
+        double parentOpacity = 1;
+        for (var parent = VisualTreeHelper.GetParent(surface); parent != null && parent != NotchLiveContent;
+             parent = VisualTreeHelper.GetParent(parent))
+            if (parent is UIElement element) parentOpacity *= element.Opacity;
+        if (bounds.Width <= 0 || bounds.Height <= 0 || parentOpacity <= 0) return;
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(size.Width * 2),
             (int)Math.Ceiling(size.Height * 2), 192, 192, PixelFormats.Pbgra32);
         // Render in local coordinates: a child's layout offset otherwise cuts its glyph out of the bitmap.
         var drawing = new DrawingVisual();
         using (var dc = drawing.RenderOpen())
-            dc.DrawRectangle(new VisualBrush(surface) { Stretch = Stretch.Fill }, null, new Rect(size));
+            dc.DrawRectangle(new VisualBrush(surface) { Stretch = Stretch.Fill,
+                ViewboxUnits = BrushMappingMode.Absolute, Viewbox = new Rect(size) }, null, new Rect(size));
         bitmap.Render(drawing);
         bitmap.Freeze();
-        Point position = surface.TranslatePoint(new Point(), NotchLiveContent);
+        Point position = bounds.TopLeft;
         var scale = new ScaleTransform(1, 1);
         var slide = new TranslateTransform();
         var transforms = new TransformGroup();
         transforms.Children.Add(scale);
         transforms.Children.Add(slide);
-        var face = new Image { Source = bitmap, Width = size.Width, Height = size.Height,
+        var face = new Image { Source = bitmap, Width = bounds.Width, Height = bounds.Height, Opacity = parentOpacity,
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(position.X, position.Y, 0, 0), IsHitTestVisible = false,
             RenderTransformOrigin = new Point(.5, .5), RenderTransform = transforms };

@@ -15,6 +15,8 @@ public partial class MainWindow
     private Point _appNotificationLastPointer;
     private long _appNotificationLastPointerTime;
     private double _appNotificationPointerVelocity;
+    private Vector _appNotificationDragOffset;
+    private double _appNotificationShellVelocity;
 
     internal void BeginAppNotificationInteraction(Point point, long timestamp)
     {
@@ -24,6 +26,13 @@ public partial class MainWindow
         _appNotificationPointerOrigin = _appNotificationLastPointer = point;
         _appNotificationLastPointerTime = timestamp;
         _appNotificationPointerVelocity = 0;
+        _appNotificationShellVelocity = 0;
+        _appNotificationDragOffset = new Vector(AppNotificationShellTranslate.X, AppNotificationShellTranslate.Y);
+        foreach (var translate in new[] { AppNotificationShellTranslate, AppNotificationShadowTranslate })
+        {
+            Motion.Stop(translate, TranslateTransform.XProperty);
+            Motion.Stop(translate, TranslateTransform.YProperty);
+        }
         PauseAppNotificationDismiss();
         AnimateAppNotificationHoverFeedback();
     }
@@ -41,10 +50,13 @@ public partial class MainWindow
         }
         long elapsed = Math.Max(1, timestamp - _appNotificationLastPointerTime);
         _appNotificationPointerVelocity = (point.X - _appNotificationLastPointer.X) / elapsed;
+        double distance = Math.Abs(delta.X);
+        double x = _appNotificationDragOffset.X + Math.Sign(delta.X) *
+            (Math.Min(distance, 72) + 2 * RubberBand(distance - 72, 72));
+        double y = _appNotificationDragOffset.Y + Math.Clamp(delta.Y * .12, -12, 12);
+        _appNotificationShellVelocity = (x - AppNotificationShellTranslate.X) * 1000 / elapsed;
         _appNotificationLastPointer = point;
         _appNotificationLastPointerTime = timestamp;
-        double x = delta.X / (1 + Math.Abs(delta.X) / 280);
-        double y = Math.Clamp(delta.Y * .12, -12, 12);
         SetAppNotificationValue(AppNotificationShellTranslate, TranslateTransform.XProperty, x);
         SetAppNotificationValue(AppNotificationShadowTranslate, TranslateTransform.XProperty, x);
         SetAppNotificationValue(AppNotificationShellTranslate, TranslateTransform.YProperty, y);
@@ -58,26 +70,27 @@ public partial class MainWindow
         if (!_appNotificationPointerDown) return false;
         double delta = point.X - _appNotificationPointerOrigin.X;
         double velocity = timestamp - _appNotificationLastPointerTime <= 100 ? _appNotificationPointerVelocity : 0;
+        double shellVelocity = timestamp - _appNotificationLastPointerTime <= 100 ? _appNotificationShellVelocity : 0;
         bool dragging = _appNotificationDragging;
         bool dismiss = dragging && (Math.Abs(delta) >= 72 ||
             (Math.Abs(delta) >= 16 && Math.Abs(velocity) >= .65 && Math.Sign(delta) == Math.Sign(velocity)));
         ResetAppNotificationPointer();
-        if (dismiss) BeginAppNotificationDismiss(Math.Sign(delta));
+        if (dismiss) BeginAppNotificationDismiss(Math.Sign(delta), velocity: shellVelocity);
         else
         {
-            SnapAppNotificationBack();
+            SnapAppNotificationBack(shellVelocity);
             if (!_isAppNotificationHovered && _settings.AutoDismissNotifications)
                 ScheduleAppNotificationDismiss(_appNotificationRemainingMs, _appNotificationGeneration);
         }
         return !dragging;
     }
 
-    private void SnapAppNotificationBack()
+    private void SnapAppNotificationBack(double velocity = 0)
     {
         foreach (var translate in new[] { AppNotificationShellTranslate, AppNotificationShadowTranslate })
         {
-            AnimateAppNotificationValue(translate, TranslateTransform.XProperty, 0, NotificationTransitionMs);
-            AnimateAppNotificationValue(translate, TranslateTransform.YProperty, 0, NotificationTransitionMs);
+            Motion.To(translate, TranslateTransform.XProperty, 0, Motion.PopBack, velocity: velocity);
+            Motion.To(translate, TranslateTransform.YProperty, 0, Motion.PopBack);
         }
         AnimateAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.YProperty, 0, NotificationTransitionMs);
         AnimateAppNotificationOpacity(AppNotificationBanner, 1, 180);

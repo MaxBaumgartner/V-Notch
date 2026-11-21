@@ -89,6 +89,7 @@ public partial class ControlCenterView
     internal void AttachBackdrop(MoodBackdrop backdrop)
     {
         _backdrop = backdrop;
+        if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.System) backdrop.Intensity = .25;
         var (main, warmer, cooler) = _moodColors ?? (MoodAt(0), MoodAt(22), MoodAt(0));
         backdrop.SetMood(main, warmer, cooler, 0);
     }
@@ -111,7 +112,7 @@ public partial class ControlCenterView
         if (_moodColors is { } now && now.Main == main && now.Warmer == warmer && now.Cooler == cooler) return;
         bool first = _moodColors == null;
         _moodColors = (main, warmer, cooler);
-        double ms = first || !IsVisible ? 0 : MoodFadeMs;
+        double ms = first || !IsVisible ? 0 : Page == ControlCenterPage.Claude ? MoodFadeMs : 220;
         SetOrTint(_mood, main, ms);
         SetOrTint(_moodInk, Lift(main, 0.3), ms);
         SetOrTint(_moodSoft, Alpha(Lift(main, 0.2), 0.88), ms);

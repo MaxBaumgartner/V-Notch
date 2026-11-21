@@ -261,16 +261,19 @@ public partial class MainWindow : Window
         _transitionCoordinator.TransitionRequested += OnTransitionRequested;
         _transitionCoordinator.CountdownCompletionDisplayRequested += OnCountdownCompletionDisplayRequested;
 
+        InitializeShellAttachment();
         _notchShellPresenter = new VNotch.Presenters.NotchShellPresenter(new VNotch.Presenters.NotchShellViewRefs
         {
             NotchBorder = NotchBorder,
             NotchContainer = NotchContainer,
+            Attachment = _shellAttachment,
             AnimateCornerRadius = (radius, dur) => AnimateCornerRadius(radius, dur),
             CornerRadiusBuilder = MakeNotchCornerRadius,
             IsSessionCurrent = sessionId => !_cleanedUp && sessionId == _transitionCoordinator.ActiveTransitionId
         });
         _notchContentPresenter = new VNotch.Presenters.NotchContentTransitionPresenter(new VNotch.Presenters.NotchContentViewRefs
         {
+            ShellAttachment = _shellAttachment,
             ExpandedContent = ExpandedContent,
             TimerContent = TimerContent,
             AudioContent = AudioContent,
@@ -280,13 +283,13 @@ public partial class MainWindow : Window
             ClaudeContent = ClaudeContent,
             PiContent = PiContent,
             SchoolContent = SchoolContent,
-            WeatherContent = WeatherContent,
             IsSessionCurrent = sessionId => !_cleanedUp && sessionId == _transitionCoordinator.ActiveTransitionId
         });
         _viewModel = viewModel;
         DataContext = _viewModel;
         MediaPlayback.Attach(_viewModel.Media, mediaService);
         _viewModel.Media.PlayPauseToggled += OnViewModelPlayPauseToggled;
+        InitializeMusicMotion();
         MediaPlayback.BufferingChanged += value => MusicViz.IsBuffering = value;
         CountdownWidget.Attach(_viewModel.Timer);
         CountdownWidget.Completed += (_, _) =>
@@ -439,6 +442,7 @@ public partial class MainWindow : Window
         _hoverCollapseTimer.Tick += (s, e) =>
         {
             _hoverCollapseTimer.Stop();
+            if (_isGestureActive) return;
             if (IsScreenCaptureActive) return;
             if (IsKeyboardFocusWithin) return;
             _hoverCollapseTimer.Interval = TimeSpan.FromMilliseconds(_settings.HoverCollapseDelay);
@@ -475,6 +479,7 @@ public partial class MainWindow : Window
         _hoverThumbnailDelayTimer.Tick += (s, e) =>
         {
             _hoverThumbnailDelayTimer.Stop();
+            if (_isGestureActive) return;
 
             if (IsScreenCaptureActive) return;
             if (IsCountdownCompletionVisualActive || _isVolumeIndicatorActive) return;
@@ -602,7 +607,6 @@ public partial class MainWindow : Window
             if (_cleanedUp) return;
             _viewModel.Initialize();
             StartCoreModules();
-            ScheduleSettingsFirstOpenPreparation();
         }), DispatcherPriority.ApplicationIdle);
     }
 
@@ -703,6 +707,11 @@ public partial class MainWindow : Window
         _notchManager.HoverService.HoverLeave -= HoverService_HoverLeave;
         _notchManager.HoverService.MousePositionChanged -= HoverService_MousePositionChangedForDesktopReveal;
         _viewModel.Media.PlayPauseToggled -= OnViewModelPlayPauseToggled;
+        _viewModel.Media.NextTrackTriggered -= MusicNextRequested;
+        _viewModel.Media.PreviousTrackTriggered -= MusicPreviousRequested;
+        ResetMusicMotion();
+        _musicMediaKeys?.Dispose();
+        _musicMediaKeys = null;
         _viewModel.MediaInfoUpdated -= ViewModel_MediaInfoUpdated;
         if (_viewModel.IsExpandedCheck == _isExpandedCheck) _viewModel.IsExpandedCheck = null;
         _batteryModule.BatteryUpdated -= BatteryModule_BatteryUpdated;
@@ -818,7 +827,6 @@ public partial class MainWindow : Window
         _isClaudeView = snapshot.CurrentView == VNotch.Models.NotchView.Claude;
         _isPiView = snapshot.CurrentView == VNotch.Models.NotchView.Pi;
         _isSchoolView = snapshot.CurrentView == VNotch.Models.NotchView.School;
-        _isWeatherView = snapshot.CurrentView == VNotch.Models.NotchView.Weather;
         _isAudioView = snapshot.CurrentView == VNotch.Models.NotchView.AudioMixer;
         _isSecondaryView = snapshot.CurrentView == VNotch.Models.NotchView.Secondary;
         _isTimerView = snapshot.CurrentView == VNotch.Models.NotchView.Timer;
@@ -847,9 +855,8 @@ public partial class MainWindow : Window
             if (_transitionRequestQueued) return;
             _transitionRequestQueued = true;
         }
-        // Several requests can arrive before the next UI turn. Animate only the
-        // newest target, at input priority, so render/layout can finish first.
-        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, (Action)(() =>
+        // Coalesce this UI turn, then retarget before rendering; a busy render loop must not delay a reversal.
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, (Action)(() =>
         {
             VNotch.Controllers.TransitionRequestEventArgs? latest;
             lock (_transitionRequestGate)
@@ -869,7 +876,7 @@ public partial class MainWindow : Window
         _navigationVisualTarget = args.TargetView == VNotch.Models.NotchView.Compact ? null : args.TargetView;
         UpdateNavIconsActiveState();
         if (args.FromView == VNotch.Models.NotchView.Secondary && args.TargetView != VNotch.Models.NotchView.Secondary)
-            _clipboardTrayView?.BeginExit();
+            _clipboardTrayView?.BeginExit(animate: false);
         if (args.TargetView != VNotch.Models.NotchView.Secondary &&
             _clipboardHistory?.Store.IsPersonalUnlocked == true)
             _ = _clipboardHistory.LockPersonalAsync();
@@ -892,8 +899,8 @@ public partial class MainWindow : Window
             FinalizePendingCameraPreviewTeardown();
         if (args.TargetView != VNotch.Models.NotchView.Compact && args.Reason != "CountdownCompletion" &&
             ((args.FromView != VNotch.Models.NotchView.Compact && args.FromView != args.TargetView) ||
-             args.TargetView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.School or VNotch.Models.NotchView.Weather ||
-             args.FromView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.School or VNotch.Models.NotchView.Weather))
+             args.TargetView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.School ||
+             args.FromView is VNotch.Models.NotchView.Secondary or VNotch.Models.NotchView.Camera or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi or VNotch.Models.NotchView.School))
         {
             ExpandNotch(args.TransitionId, targetView: args.TargetView, fromView: args.FromView);
             return;
@@ -1043,6 +1050,7 @@ public partial class MainWindow : Window
         // A muted mic in a call stays visible as a tab while a fullscreen app hides the notch.
         ApplyMicMutedPresentation();
         _isFullscreenSlideAnimating = true;
+        UpdateFullscreenParking();
 
         double slideDistance = NotchVisibilitySlideDistance;
 
@@ -1084,6 +1092,7 @@ public partial class MainWindow : Window
                     NotchContainer.BeginAnimation(UIElement.OpacityProperty, null);
                     NotchContainer.Opacity = 0;
                 }
+                UpdateFullscreenParking();
             });
         }
     }
@@ -1153,6 +1162,7 @@ public partial class MainWindow : Window
         }
 
         ApplyNotchVisibilityState();
+        UpdateFullscreenParking();
 
         RefreshAmbientAnimations();
 
@@ -1894,6 +1904,7 @@ public partial class MainWindow : Window
 
     private void NotchWrapper_MouseLeave(object sender, MouseEventArgs e)
     {
+        if (_isGestureActive) return;
         OnNotchHoverForClaudePeek(entered: false);
         if (IsScreenCaptureActive)
         {
@@ -1938,6 +1949,7 @@ public partial class MainWindow : Window
 
     private void QueueHoverExpand()
     {
+        if (_isGestureActive) return;
         if (IsScreenCaptureActive) return;
         if (IsCountdownCompletionVisualActive || IsAppNotificationBannerActive) return;
 
@@ -1957,6 +1969,7 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(new Action(() =>
         {
+            if (_isGestureActive) return;
             _hoverThumbnailDelayTimer.Stop();
             if (IsScreenCaptureActive)
             {
@@ -2117,6 +2130,8 @@ public partial class MainWindow : Window
         OpenAppSettings();
     }
 
+    private void TraySettingsTargeted(object sender, RoutedEventArgs e) => ScheduleSettingsFirstOpenPreparation();
+
     private void Settings_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
@@ -2128,6 +2143,7 @@ public partial class MainWindow : Window
 
     private void SettingsButton_MouseEnter(object sender, MouseEventArgs e)
     {
+        ScheduleSettingsFirstOpenPreparation();
         SettingsButton.CacheMode ??= new System.Windows.Media.BitmapCache(1.5);
         AnimateSettingsHover(true);
     }

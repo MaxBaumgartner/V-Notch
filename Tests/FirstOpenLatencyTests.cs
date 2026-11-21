@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Threading;
+using Hardcodet.Wpf.TaskbarNotification;
 using Microsoft.Extensions.DependencyInjection;
 using VNotch.Controllers;
 using VNotch.Models;
@@ -23,9 +24,8 @@ public sealed class FirstOpenLatencyTests(ITestOutputHelper output)
         await using var fixture = Create();
         var window = fixture.Window;
         window.Show();
-        await WpfFrameWaiter.UntilAsync(() =>
-            typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!.GetValue(window) is SettingsWindow { IsLoaded: true, IsVisible: false },
-            "post-entrance settings preparation finishes", ct);
+        HoverTray(window);
+        await WaitForPreparedSettingsAsync(window, ct);
 
         var pauses = new List<double>();
         void Capture(string message) => output.WriteLine(message);
@@ -48,12 +48,25 @@ public sealed class FirstOpenLatencyTests(ITestOutputHelper output)
                 }
             };
             timer.Start();
+            var starts = new Dictionary<DispatcherOperation, double>();
+            void Started(object? s, DispatcherHookEventArgs e) => starts[e.Operation] = watch.Elapsed.TotalMilliseconds;
+            void Finished(object? s, DispatcherHookEventArgs e)
+            {
+                if (!starts.Remove(e.Operation, out var start)) return;
+                if (watch.Elapsed.TotalMilliseconds - start < 25) return;
+                var op = e.Operation;
+                var callback = typeof(DispatcherOperation).GetField("_method", Private)?.GetValue(op) as Delegate;
+                output.WriteLine($"[{start:F0}] {watch.Elapsed.TotalMilliseconds - start:F0} {op.Priority} {callback?.Method.DeclaringType}/{callback?.Method.Name}");
+            }
+            window.Dispatcher.Hooks.OperationStarted += Started;
+            window.Dispatcher.Hooks.OperationCompleted += Finished;
             try
             {
                 typeof(MainWindow).GetMethod("OpenAppSettings", Private)!.Invoke(window, [false]);
+                output.WriteLine($"click returned at {watch.Elapsed.TotalMilliseconds:F0}");
                 await WpfFrameWaiter.UntilAsync(() => closed, "settings close completes", ct);
             }
-            finally { timer.Stop(); }
+            finally { timer.Stop(); window.Dispatcher.Hooks.OperationStarted -= Started; window.Dispatcher.Hooks.OperationCompleted -= Finished; }
             pauses.Add(longestPause);
             output.WriteLine($"Settings open {attempt + 1}: longest UI pause {longestPause:F1} ms");
             await WpfFrameWaiter.UntilAsync(() => !Animating(window), "settings return settles", ct);
@@ -98,7 +111,7 @@ public sealed class FirstOpenLatencyTests(ITestOutputHelper output)
     });
 
     [Fact]
-    public void SettingsPreparationWaitsUntilTheNotchStartupEntranceHasFinished() => SharedStaTestRunner.RunAsync(async ct =>
+    public void SettingsPreparationWaitsForTrayHoverAfterTheStartupEntrance() => SharedStaTestRunner.RunAsync(async ct =>
     {
         await using var fixture = Create();
         var window = fixture.Window;
@@ -112,14 +125,71 @@ public sealed class FirstOpenLatencyTests(ITestOutputHelper output)
         try
         {
             window.Show();
-            Assert.Null(typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!.GetValue(window));
             await WpfFrameWaiter.UntilAsync(() =>
-                typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!.GetValue(window) is SettingsWindow { IsLoaded: true, IsVisible: false },
-                "deferred settings preparation completes", ct);
+                (bool)typeof(MainWindow).GetField("_postAppearInitializationStarted", Private)!.GetValue(window)!,
+                "startup entrance finishes", ct);
+            await window.Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.ApplicationIdle);
+            Assert.Null(typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!.GetValue(window));
+            Assert.Null(afterEntrance);
+            HoverTray(window);
+            await WaitForPreparedSettingsAsync(window, ct);
             Assert.True(afterEntrance);
         }
         finally { SettingsWindow.FirstOpenProbe -= Capture; }
     });
+
+    [Fact]
+    public void SettingsPreparationExpiresAndTheNextHoverPreparesAFreshWindow() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create();
+        var window = fixture.Window;
+        window.Show();
+        HoverTray(window);
+        var first = await WaitForPreparedSettingsAsync(window, ct);
+        var expiryField = typeof(MainWindow).GetField("_settingsPreparationExpiry", Private)!;
+        var expiry = Assert.IsType<UiScheduledTimer>(expiryField.GetValue(window));
+        Assert.Equal(TimeSpan.FromSeconds(30), expiry.Interval);
+        long firstDeadline = expiry.DueTimestamp;
+        HoverTray(window);
+        Assert.True(expiry.DueTimestamp > firstDeadline);
+        bool closed = false;
+        first.Closed += (_, _) => closed = true;
+        string originalLanguage = Loc.CurrentLanguage;
+        try
+        {
+            // Expiring an unused Settings snapshot must preserve changes made elsewhere.
+            Loc.SetLanguage("vi");
+            expiry.Interval = TimeSpan.FromMilliseconds(1);
+            await WpfFrameWaiter.UntilAsync(() => closed, "unused settings window is released", ct);
+            Assert.Equal("vi", Loc.CurrentLanguage);
+        }
+        finally { Loc.SetLanguage(originalLanguage); }
+        Assert.Null(expiryField.GetValue(window));
+        Assert.Null(typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!.GetValue(window));
+
+        HoverTray(window);
+        var next = await WaitForPreparedSettingsAsync(window, ct);
+        Assert.NotSame(first, next);
+        typeof(MainWindow).GetMethod("OpenAppSettings", Private)!.Invoke(window, [false]);
+        Assert.True(next.IsVisible);
+        Assert.Null(expiryField.GetValue(window));
+        HoverTray(window);
+        await window.Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.ApplicationIdle);
+        Assert.Null(typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!.GetValue(window));
+    });
+
+    private static void HoverTray(MainWindow window) =>
+        window.TrayIcon.RaiseEvent(new RoutedEventArgs(TaskbarIcon.TrayMouseMoveEvent));
+
+    private static async Task<SettingsWindow> WaitForPreparedSettingsAsync(MainWindow window, CancellationToken ct)
+    {
+        var preparedField = typeof(MainWindow).GetField("_preparedSettingsWindow", Private)!;
+        await WpfFrameWaiter.UntilAsync(() =>
+            preparedField.GetValue(window) is SettingsWindow { IsLoaded: true, IsVisible: false } &&
+            typeof(MainWindow).GetField("_settingsPreparationExpiry", Private)!.GetValue(window) != null,
+            "tray hover finishes preparing Settings", ct);
+        return (SettingsWindow)preparedField.GetValue(window)!;
+    }
 
     private static bool Animating(MainWindow window) =>
         (bool)typeof(MainWindow).GetProperty("_isAnimating", Private)!.GetValue(window)!;

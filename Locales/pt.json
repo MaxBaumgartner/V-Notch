@@ -1349,6 +1349,7 @@
   "home.piOk": "tudo verde",
   "home.fix": "Corrigir",
   "school.deadlines": "Entregas",
+  "school.until": "até {0}",
   "school.exams": "Provas e exames",
   "school.nothingDue": "Nada pendente",
   "school.days": "dias",

@@ -133,7 +133,7 @@ public sealed partial class ClipboardTray
             AnimateLayer(EmptyText, true, 0, true, MotionStandard, 4);
     }
 
-    public void BeginEntrance()
+    public void BeginEntrance(bool animate = true)
     {
         bool reversing = _trayLeaving && !_entranceWasHidden && IsVisible && Opacity > 0.01;
         _entranceWasHidden = false;
@@ -143,6 +143,20 @@ public sealed partial class ClipboardTray
         // The view entrance already owns the row fade; do not restart it when
         // the initial asynchronous search finishes.
         _animateResults = false;
+
+        if (!animate)
+        {
+            _entranceStaggerVersion = 0;
+            _entranceAnimatedContainers.Clear();
+            foreach (var layer in new FrameworkElement[] { SearchSurface, ToolbarSurface, CategoryScroll, Cards,
+                LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette, StatusPanel,
+                DeleteConfirmationPanel, LabelEditorPanel })
+            {
+                Motion.Stop(layer, OpacityProperty, 1);
+                layer.RenderTransform = Transform.Identity;
+            }
+            return;
+        }
 
         // Fluid, organic Apple waterfall fade:
         // Header components land first with subtle upward drift.
@@ -197,7 +211,7 @@ public sealed partial class ClipboardTray
         if (_trayDropBorderVisible) AnimateTrayDropBorder(true, !reversing);
     }
 
-    public void BeginExit()
+    public void BeginExit(bool animate = true)
     {
         CancelCategoryReorder();
         CloseLabelEditor(immediately: true);
@@ -207,10 +221,11 @@ public sealed partial class ClipboardTray
         UpdatePinCaret();
         StopEntranceWork();
         CancelThumbnailLoads();
-        AnimateTrayDropBorder(false);
         _entranceStaggerVersion = 0;
         _entranceAnimatedContainers.Clear();
         ++_motionVersion;
+        if (!animate) return;
+        AnimateTrayDropBorder(false);
         AnimateLayer(Cards, false, 0);
         AnimateLayer(CategoryScroll, false, 20);
         AnimateLayer(SearchSurface, false, 40);

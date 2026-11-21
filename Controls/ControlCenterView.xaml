@@ -6,13 +6,17 @@
         <fonts:AppFont x:Key="ControlSystemFont" Fallbacks="Nirmala UI, Segoe UI" />
     </UserControl.Resources>
     <Grid>
+    <!-- The bar stays hidden (wheel and panning still scroll, the edge fades show there is more). The viewer
+         reaches HoverBleed px past the page on every side and the page sits back inside by the same amount, so a
+         tile at the edge that rises under the pointer is not cut off by the scroll clip. -->
     <ScrollViewer x:Name="ControlScrollViewer"
                   HorizontalAlignment="Stretch"
                   VerticalAlignment="Stretch"
-                  VerticalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Hidden"
                   HorizontalScrollBarVisibility="Disabled"
                   PanningMode="VerticalOnly"
-                  Padding="0,0,7,0"
+                  Padding="0"
+                  Margin="-6"
                   ScrollChanged="ControlScrollViewer_ScrollChanged">
         <ScrollViewer.Resources>
 
@@ -90,7 +94,7 @@
                 <GradientStop x:Name="ControlFadeBottomStop" Color="Black" Offset="1"/>
             </LinearGradientBrush>
         </ScrollViewer.OpacityMask>
-        <StackPanel x:Name="ControlRoot"/>
+        <StackPanel x:Name="ControlRoot" Margin="6"/>
     </ScrollViewer>
 
     <Grid x:Name="ControlOverlay"

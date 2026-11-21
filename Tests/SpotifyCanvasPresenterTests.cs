@@ -13,6 +13,33 @@ public sealed class SpotifyCanvasPresenterTests
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
+    [Fact]
+    public void WindowCreatesLoopPlayersOnlyForTheFirstVideoSource() => SharedStaTestRunner.Run(() =>
+    {
+        using var fixture = new GreetingAcceptanceTests.MainWindowFixture("en", greeting: false,
+            settings => settings.EnableLocalOnlyMode = true);
+        var window = fixture.Window;
+        var players = window.LyricsCanvasViewport.Children.OfType<MediaElement>();
+        Assert.Empty(players);
+        typeof(MainWindow).GetProperty("SpotifyCanvasController", Private)!.GetValue(window);
+        var presenter = Assert.IsType<SpotifyCanvasPresenter>(
+            typeof(MainWindow).GetField("_spotifyCanvasPresenter", Private)!.GetValue(window));
+        presenter.ApplyPresentation(new(.7, false, true, false));
+        presenter.Hide(clearSource: true);
+        Assert.Empty(players);
+
+        presenter.SetSource(Source(), 1, false);
+        var firstPair = players.ToArray();
+        Assert.Equal(2, firstPair.Length);
+        Assert.All(firstPair, player => Assert.Equal(Source(), player.Source));
+        presenter.Hide(clearSource: true);
+        presenter.SetSource(Source(), 2, false);
+        Assert.Equal(firstPair, players.ToArray());
+        presenter.Dispose();
+        Assert.Empty(players);
+        Assert.Contains(window.LyricsCanvasBrightnessOverlay, window.LyricsCanvasViewport.Children.Cast<UIElement>());
+    });
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
@@ -33,6 +60,7 @@ public sealed class SpotifyCanvasPresenterTests
         Assert.False(presenter.IsCanvasVisiblyShowing);
         int opened = 0;
         presenter.MediaOpened += (_, _) => opened++;
+        Assert.NotNull(refs.Video);
         refs.Video.RaiseEvent(new RoutedEventArgs(MediaElement.MediaOpenedEvent));
         refs.VideoAlt?.RaiseEvent(new RoutedEventArgs(MediaElement.MediaOpenedEvent));
         Assert.Equal(1, opened);
@@ -69,6 +97,7 @@ public sealed class SpotifyCanvasPresenterTests
         using var presenter = new SpotifyCanvasPresenter(refs, Dispatcher.CurrentDispatcher);
         presenter.ApplyPresentation(new(1, true, true, true));
         presenter.SetSource(Source(), 1, false);
+        Assert.NotNull(refs.Video);
         refs.Video.RaiseEvent(new RoutedEventArgs(MediaElement.MediaOpenedEvent));
         int ended = 0;
         presenter.MediaEnded += (_, _) => ended++;
@@ -107,6 +136,7 @@ public sealed class SpotifyCanvasPresenterTests
         using var presenter = new SpotifyCanvasPresenter(refs, Dispatcher.CurrentDispatcher);
         presenter.ApplyPresentation(new(.5, true, true, true));
         presenter.SetSource(Source(), 1, false);
+        Assert.NotNull(refs.Video);
         refs.Video.RaiseEvent(new RoutedEventArgs(MediaElement.MediaOpenedEvent));
         await WpfFrameWaiter.UntilAsync(() => presenter.IsCanvasVisiblyShowing, "canvas open before failure", ct);
         var error = (ExceptionRoutedEventArgs)typeof(ExceptionRoutedEventArgs).GetConstructors(Private).Single()
@@ -140,6 +170,7 @@ public sealed class SpotifyCanvasPresenterTests
         int unloaded = 0, opened = 0;
         presenter.Unloaded += (_, _) => unloaded++;
         presenter.MediaOpened += (_, _) => opened++;
+        Assert.NotNull(refs.Video);
         refs.Video.RaiseEvent(new RoutedEventArgs(FrameworkElement.UnloadedEvent));
         Assert.Equal(1, unloaded);
         Assert.Null(presenter.CurrentSource);

@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Media.Animation;
@@ -15,8 +14,8 @@ namespace VNotch.Services;
 internal static partial class Motion
 {
     // Shell: the notch itself opening and closing. Width leads, height swings a little longer.
-    public static readonly SpringMotion ShellOpenWidth = Ms(400, 0.44);
-    public static readonly SpringMotion ShellOpenHeight = Ms(520, 0.36);
+    public static readonly SpringMotion ShellOpenWidth = Ms(400, 0.48);
+    public static readonly SpringMotion ShellOpenHeight = Ms(520, 0.39);
     public static readonly SpringMotion ShellCloseWidth = Ms(340, 0.24);
     public static readonly SpringMotion ShellCloseHeight = Ms(300, 0.10);
 
@@ -31,6 +30,8 @@ internal static partial class Motion
 
     // Glide: size and layout changes (tab switch, folding sections, sliders settling).
     public static readonly SpringMotion Glide = Ms(420, 0.28);
+    public static readonly SpringMotion Shift = Ms(380, 0.05);
+    public static readonly SpringMotion Flick = Ms(480, 0.30);
 
     // Tile: content arriving, staggered by StaggerMs from TileFromScale.
     public static readonly SpringMotion Tile = Ms(450, 0.50);
@@ -55,8 +56,7 @@ internal static partial class Motion
     private sealed class Running
     {
         public required SpringDoubleAnimation Spring;
-        public long StartedAt;
-        public double DelaySeconds;
+        public required AnimationClock Clock;
         /// <summary>Endings that outlive this spring: whichever spring replaces it carries them on.</summary>
         public Action? Kept;
     }
@@ -77,7 +77,7 @@ internal static partial class Motion
     /// </summary>
     public static void To(DependencyObject target, DependencyProperty property, double to, SpringMotion spring,
         double? from = null, TimeSpan? delay = null, int? fps = null, Action? done = null, double? velocity = null,
-        bool keep = false)
+        bool keep = false, double acceleration = 0)
     {
         if (target is not IAnimatable animatable) throw new ArgumentException("Target cannot be animated.", nameof(target));
         var live = Live.GetOrCreateValue(target);
@@ -96,7 +96,7 @@ internal static partial class Motion
 
         double speed = velocity ?? 0;
         if (velocity is null && from is null && live.TryGetValue(property, out var old))
-            speed = old.Spring.VelocityAt(Stopwatch.GetElapsedTime(old.StartedAt).TotalSeconds - old.DelaySeconds);
+            speed = old.Spring.VelocityAt(old.Clock.CurrentTime?.TotalSeconds ?? 0);
         double start = from ?? (double)target.GetValue(property);
         if (!double.IsFinite(start)) start = to;
 
@@ -105,7 +105,7 @@ internal static partial class Motion
         double settle = Math.Clamp(Math.Abs(to - start) * 0.005, 0.0005, SpringDoubleAnimation.PixelSettle);
         // A width or height that swings below zero throws, so sizes stop at zero.
         bool isSize = property == FrameworkElement.WidthProperty || property == FrameworkElement.HeightProperty;
-        var animation = spring.Animate(start, to, speed, settle, isSize ? 0 : double.NegativeInfinity);
+        var animation = spring.Animate(start, to, speed, settle, isSize ? 0 : double.NegativeInfinity, acceleration);
         if (animation.Duration.TimeSpan <= TimeSpan.Zero)
         {
             live.Remove(property);
@@ -118,9 +118,11 @@ internal static partial class Motion
         if (delay is { } wait && wait > TimeSpan.Zero) animation.BeginTime = wait;
         Timeline.SetDesiredFrameRate(animation, fps ?? AnimationConfig.TargetFps);
 
-        var running = new Running { Spring = animation, StartedAt = Stopwatch.GetTimestamp(), DelaySeconds = delay?.TotalSeconds ?? 0, Kept = kept };
+        // Read speed and arrival from the rendered clock; dispatcher stalls must not age them ahead of the picture.
+        var clock = animation.CreateClock();
+        var running = new Running { Spring = animation, Clock = clock, Kept = kept };
         live[property] = running;
-        animation.Completed += (_, _) =>
+        clock.Completed += (_, _) =>
         {
             if (live.TryGetValue(property, out var current) && ReferenceEquals(current, running)) live.Remove(property);
             else return; // replaced on the way: the newer spring owns the ending
@@ -129,13 +131,13 @@ internal static partial class Motion
         };
         // An entrance that waits must already sit at its start, or it shows its resting look until its turn.
         if (from is { } placed && delay is { } d && d > TimeSpan.Zero) target.SetValue(property, placed);
-        animatable.BeginAnimation(property, animation, HandoffBehavior.SnapshotAndReplace);
+        animatable.ApplyAnimationClock(property, clock, HandoffBehavior.SnapshotAndReplace);
     }
 
     /// <summary>Speed of the spring running on the property right now, in units per second; zero when at rest.</summary>
     public static double VelocityOf(DependencyObject target, DependencyProperty property) =>
         Live.TryGetValue(target, out var live) && live.TryGetValue(property, out var running)
-            ? running.Spring.VelocityAt(Stopwatch.GetElapsedTime(running.StartedAt).TotalSeconds - running.DelaySeconds)
+            ? running.Spring.VelocityAt(running.Clock.CurrentTime?.TotalSeconds ?? 0)
             : 0;
 
     /// <summary>
@@ -144,8 +146,7 @@ internal static partial class Motion
     /// </summary>
     public static bool IsRunning(DependencyObject target, DependencyProperty property) =>
         Live.TryGetValue(target, out var live) && live.TryGetValue(property, out var running) &&
-        Stopwatch.GetElapsedTime(running.StartedAt).TotalSeconds <
-            running.DelaySeconds + running.Spring.Duration.TimeSpan.TotalSeconds + 0.05;
+        running.Clock.CurrentState != ClockState.Filling;
 
     /// <summary>
     /// Forgets the spring on the property without touching its value or clock, for code that retires the clock

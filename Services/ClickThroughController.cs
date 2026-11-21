@@ -57,7 +57,14 @@ internal sealed class ClickThroughController : IDisposable
     /// <summary>Re-evaluates at once, e.g. after the notch changed shape under a resting cursor.</summary>
     public void Update()
     {
-        if (_disposed || !GetCursorPos(out var cursor) || !GetWindowRect(_hwnd, out var rect)) return;
+        if (_disposed) return;
+        if (System.Windows.Input.Mouse.Captured is System.Windows.Media.Visual captured &&
+            (ReferenceEquals(captured, _window) || captured.IsDescendantOf(_window)))
+        {
+            SetClickThrough(false);
+            return;
+        }
+        if (!GetCursorPos(out var cursor) || !GetWindowRect(_hwnd, out var rect)) return;
 
         bool near = cursor.X >= rect.Left - NearMarginPx && cursor.X < rect.Right + NearMarginPx &&
                     cursor.Y >= rect.Top - NearMarginPx && cursor.Y < rect.Bottom + NearMarginPx;

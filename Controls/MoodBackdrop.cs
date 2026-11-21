@@ -32,7 +32,7 @@ public sealed class MoodBackdrop : Grid
         public required GradientStop Core, Middle, Edge;
         public required TranslateTransform Shift;
         public required ScaleTransform Scale;
-        public required double Strength;
+        public required double Strength; // set again when the light gathers
         public required double DriftX, DriftY, DriftScale, DriftSeconds;
     }
 
@@ -62,6 +62,8 @@ public sealed class MoodBackdrop : Grid
             ApplyDrifting();
         }
     }
+
+    internal double Intensity { get => _canvas.Opacity; set => _canvas.Opacity = Math.Clamp(value, 0, 1); }
 
     private Field AddField(double x, double y, double w, double h, double strength, double dx, double dy, double ds, double seconds)
     {
@@ -94,9 +96,37 @@ public sealed class MoodBackdrop : Grid
     /// </summary>
     public void SetMood(Color main, Color warmer, Color cooler, double ms)
     {
+        (_main, _warmer, _cooler) = (main, warmer, cooler);
         Paint(_fields[0], main, ms);
         Paint(_fields[1], warmer, ms);
         Paint(_fields[2], cooler, ms);
+    }
+
+    private Color _main = Colors.Transparent, _warmer = Colors.Transparent, _cooler = Colors.Transparent;
+
+    /// <summary>
+    /// Gathers the light around one spot, the thing that gives the tab its colour (the power-mode tile), at full
+    /// strength, instead of a faint wash over the whole notch. The rest of the notch stays black.
+    /// <paramref name="center"/> is in this backdrop's coordinates.
+    /// </summary>
+    public void Gather(Point center)
+    {
+        if (ActualWidth <= 0) return;
+        double x = center.X - (ActualWidth - Width0) / 2, y = center.Y;
+        Place(_fields[0], x, y, 360, 220, 0.62);
+        Place(_fields[1], x + 70, y - 110, 290, 170, 0.26);
+        Place(_fields[2], x - 60, y + 80, 270, 150, 0.16);
+        Intensity = 1;
+        SetMood(_main, _warmer, _cooler, 0);
+    }
+
+    private static void Place(Field field, double centerX, double centerY, double width, double height, double strength)
+    {
+        field.Shape.Width = width;
+        field.Shape.Height = height;
+        Canvas.SetLeft(field.Shape, centerX - width / 2);
+        Canvas.SetTop(field.Shape, centerY - height / 2);
+        field.Strength = strength;
     }
 
     private static void Paint(Field field, Color color, double ms)

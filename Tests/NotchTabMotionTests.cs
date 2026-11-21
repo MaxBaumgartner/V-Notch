@@ -19,6 +19,33 @@ public sealed class NotchTabMotionTests
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [Fact]
+    public void NavigationRetargetIsAppliedBeforeTheNextRender() => SharedStaTestRunner.RunAsync(async _ =>
+    {
+        await using var fixture = MusicMotionTests.Create();
+        var window = fixture.Window;
+        window.NavigateToNotchView(NotchView.Media);
+        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
+        Assert.Null(typeof(MainWindow).GetField("_pendingTransitionRequest", Private)!.GetValue(window));
+        Assert.Equal(NotchView.Media, (NotchView?)typeof(MainWindow).GetField("_navigationVisualTarget", Private)!.GetValue(window));
+    });
+
+    [Theory]
+    [InlineData("de")]
+    [InlineData("en")]
+    public void LocalizingNavigationPreservesTheIconVisuals(string language) => SharedStaTestRunner.RunAsync(async _ =>
+    {
+        await using var fixture = new GreetingAcceptanceTests.MainWindowFixture(language, false,
+            settings => settings.EnableLocalOnlyMode = true,
+            services => services.AddSingleton<IMediaDetectionService>(new FakeMediaDetectionService()));
+        var window = fixture.Window;
+        foreach (var button in window.NavTabsStackPanel.Children.OfType<Border>())
+        {
+            Assert.NotEmpty(HomeSchoolTabTests.Descendants<System.Windows.Shapes.Path>(button));
+            Assert.DoesNotContain(HomeSchoolTabTests.Descendants<TextBlock>(button), text => !string.IsNullOrEmpty(text.Text));
+        }
+    });
+
+    [Fact]
     public void TabClickDuringOpeningRetargetsImmediately() => SharedStaTestRunner.RunAsync(async ct =>
     {
         bool previous = AnimationConfig.ReduceMotion;
@@ -195,12 +222,15 @@ public sealed class NotchTabMotionTests
         var motion = new TransitionMotionConfig(TimeSpan.FromMilliseconds(250), AnimationPrimitives._easeUiOut, 60, false);
         var plan = new TransitionPlan(1, NotchView.Media, NotchView.Timer, NotchShapeState.Expanding, 300, 200, 20, motion, direction);
         presenter.TransitionContent(plan, _ => { });
-        Assert.Equal(22 * direction, timer.RenderTransform.Value.OffsetX, 8);
+        Assert.Equal(8 * direction, timer.RenderTransform.Value.OffsetX, 8);
+        Assert.Equal(1, timer.RenderTransform.Value.M11);
+        Assert.Equal(1, timer.RenderTransform.Value.M22);
+        Assert.Equal(2, Assert.IsType<System.Windows.Media.Effects.BlurEffect>(timer.Effect).Radius);
         Assert.False(timer.IsHitTestVisible);
         var mediaOffset = Assert.IsType<TranslateTransform>(Assert.IsType<TransformGroup>(media.RenderTransform).Children[^1]);
         var timerOffset = Assert.IsType<TranslateTransform>(Assert.IsType<TransformGroup>(timer.RenderTransform).Children[^1]);
-        HoldAt(mediaOffset, TranslateTransform.XProperty, 0, -14 * direction);
-        HoldAt(timerOffset, TranslateTransform.XProperty, 22 * direction, 0);
+        HoldAt(mediaOffset, TranslateTransform.XProperty, 0, -6 * direction);
+        HoldAt(timerOffset, TranslateTransform.XProperty, 8 * direction, 0);
         HoldAt(media, UIElement.OpacityProperty, 1, 0);
         HoldAt(timer, UIElement.OpacityProperty, 0, 1);
         presenter.CancelActiveTransition();
@@ -226,6 +256,47 @@ public sealed class NotchTabMotionTests
         Assert.Equal(0, media.RenderTransform.Value.OffsetX);
         Assert.True(media.IsHitTestVisible);
         Assert.Equal(Visibility.Collapsed, timer.Visibility);
+    });
+
+    [Theory]
+    [InlineData(NotchView.Claude)]
+    [InlineData(NotchView.Pi)]
+    [InlineData(NotchView.School)]
+    public void ReturningToADepartingDashboardKeepsItsPageTransform(NotchView view) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        bool? animations = AnimationConfig.ClientAreaAnimationOverride;
+        await using var fixture = MusicMotionTests.Create();
+        var window = fixture.Window;
+        try
+        {
+            AnimationConfig.ClientAreaAnimationOverride = true;
+            AnimationConfig.SetReduceMotion(true);
+            window.Left = window.Top = -20000;
+            typeof(MainWindow).GetField("_cleanedUp", Private)!.SetValue(window, true);
+            window.Show();
+            typeof(MainWindow).GetField("_cleanedUp", Private)!.SetValue(window, false);
+            window.NavigateToNotchView(view);
+            var coordinator = (NotchTransitionCoordinator)typeof(MainWindow).GetField("_transitionCoordinator", Private)!.GetValue(window)!;
+            await WpfFrameWaiter.UntilAsync(() => !coordinator.IsTransitionActive, "initial dashboard", ct);
+            AnimationConfig.SetReduceMotion(false);
+            window.NavigateToNotchView(NotchView.Media);
+            FrameworkElement page = view == NotchView.Claude ? window.ClaudeContent : view == NotchView.Pi ? window.PiContent : window.SchoolContent;
+            await WpfFrameWaiter.UntilAsync(() => page.RenderTransform is TransformGroup, "departing dashboard", ct);
+            var transform = Assert.IsType<TransformGroup>(page.RenderTransform);
+            HoldAt(Assert.IsType<TranslateTransform>(transform.Children[^1]), TranslateTransform.XProperty, 0, -6);
+            Matrix frame = transform.Value;
+            window.NavigateToNotchView(view);
+            var pending = typeof(MainWindow).GetField("_pendingTransitionRequest", Private)!;
+            var request = pending.GetValue(window);
+            Assert.NotNull(request);
+            pending.SetValue(window, null);
+            Invoke(window, "ExecuteTransitionRequest", request!);
+            Assert.Same(transform, page.RenderTransform);
+            Assert.Equal(frame, page.RenderTransform.Value);
+            await WpfFrameWaiter.UntilAsync(() => !coordinator.IsTransitionActive, "returning dashboard settles", ct);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); AnimationConfig.ClientAreaAnimationOverride = animations; }
     });
 
     private static void HoldAt(IAnimatable target, DependencyProperty property, double from, double to)

@@ -108,7 +108,7 @@ public partial class MainWindow
             var shown = new List<string>();
             foreach (var (name, element) in new (string, System.Windows.UIElement?)[]
                      { ("Media", ExpandedContent), ("System", TimerContent), ("Home", PiContent), ("School", SchoolContent),
-                       ("Claude", ClaudeContent), ("Weather", WeatherContent), ("Audio", AudioContent), ("Shelf", SecondaryContent) })
+                       ("Claude", ClaudeContent), ("Audio", AudioContent), ("Shelf", SecondaryContent) })
                 if (element?.IsVisible == true) shown.Add(name);
             RuntimeLog.Info("RENDER-PROBE", $"expanded={_isExpanded} visible tabs=[{string.Join(",", shown)}] {lines.Count} driver(s): " + string.Join(" || ", lines));
             RuntimeLog.Info("RENDER-PROBE", "dispatcher, last 5 s: " + TakeDispatcherStats());

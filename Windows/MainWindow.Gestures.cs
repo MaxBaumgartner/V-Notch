@@ -114,6 +114,23 @@ public partial class MainWindow
 
     private async void NotchWrapper_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton == MouseButton.Left && _isExpanded &&
+            !IsShellDragControl(e.OriginalSource as DependencyObject) && FindShellScrollCandidate(e.OriginalSource as DependencyObject) is { } scroll)
+        {
+            if (TryBeginGesture(e, capture: false))
+            {
+                _shellPendingScroll = scroll;
+                _shellPendingScrollOrigin = e.GetPosition(this);
+            }
+            return;
+        }
+        if (e.ChangedButton == MouseButton.Left &&
+            (_isExpanded || (_isAnimating && _shellAttachment.IsAttached)) &&
+            !IsShellDragControl(e.OriginalSource as DependencyObject) && TryBeginGesture(e))
+        {
+            e.Handled = true;
+            return;
+        }
 
         if (e.ChangedButton != MouseButton.Middle) return;
         if (!_settings.EnableGestureControls) return;
@@ -126,6 +143,7 @@ public partial class MainWindow
 
     private void NotchWrapper_PreviewMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (e.ChangedButton == MouseButton.Left) CancelScrollShellCandidate();
 
         if (e.ChangedButton == MouseButton.Middle)
         {
@@ -193,53 +211,45 @@ public partial class MainWindow
         NotchBorder_GestureMouseUp(sender, e);
     }
 
-    private bool TryBeginGesture(MouseButtonEventArgs e)
+    private bool TryBeginGesture(MouseButtonEventArgs e, bool capture = true)
     {
         if (!_settings.EnableGestureControls)
         {
             RuntimeLog.Log(GestureLogTag, "blocked: EnableGestureControls=false");
             return false;
         }
-        if (_isAnimating)
-        {
-            RuntimeLog.Log(GestureLogTag, "blocked: _isAnimating=true");
-            return false;
-        }
+        if (_isDraggingVolumeIndicator || _isDraggingNotchDebug || _isGreetingActive ||
+            _spotlightMorphSessionActive || _spotlightMorphOwnsNotchVisibility) return false;
+        if (_isDebugDraggable || (_isAnimating && !_shellAttachment.IsAttached)) return false;
 
-        if (_isExpanded || _isMusicExpanded)
-        {
-            RuntimeLog.Log(GestureLogTag, $"blocked: expanded={_isExpanded} musicExpanded={_isMusicExpanded}");
-            return false;
-        }
-        if (_currentMediaInfo == null || !_currentMediaInfo.IsAnyMediaPlaying)
-        {
-            RuntimeLog.Log(GestureLogTag, $"blocked: mediaInfo={(_currentMediaInfo != null)} isPlaying={_currentMediaInfo?.IsAnyMediaPlaying}");
-            return false;
-        }
-
-        var pos = e.GetPosition(NotchBorder);
+        var pos = _isExpanded ? e.GetPosition(this) : e.GetPosition(NotchBorder);
+        _musicCoverPressed = IsMusicCoverSource(e.OriginalSource as DependencyObject);
         _gestureSampleAt = DateTime.UtcNow;
         _gestureSampleX = pos.X;
         _gestureReleaseVelocity = 0;
-        _gestureController.BeginTracking(pos);
+        BeginShellGestureTracking(pos, DateTime.UtcNow);
         _isGestureActive = true;
 
-        NotchWrapper.CaptureMouse();
+        if (capture) NotchWrapper.CaptureMouse();
 
         return true;
     }
 
     private void NotchBorder_GestureMouseMove(object sender, MouseEventArgs e)
     {
+        if (_shellPendingScroll != null) return;
         if (!_isGestureActive || !_gestureController.IsTracking) return;
 
-        var pos = e.GetPosition(NotchBorder);
+        var pos = _shellGestureWasOpen ? e.GetPosition(this) : e.GetPosition(NotchBorder);
         var now = DateTime.UtcNow;
         double seconds = (now - _gestureSampleAt).TotalSeconds;
         if (seconds > 0) _gestureReleaseVelocity = Math.Clamp((pos.X - _gestureSampleX) * 0.3 / seconds, -1200, 1200);
         _gestureSampleAt = now;
         _gestureSampleX = pos.X;
-        bool triggered = _gestureController.UpdateTracking(pos);
+        bool triggered = UpdateGestureTracking(pos, now);
+
+        if (_gestureController.IsVerticalDrag) { e.Handled = true; return; }
+        if (_shellGestureWasOpen) { e.Handled = _gestureController.HasDragAxis; return; }
 
         if (!triggered && !_gestureController.GestureTriggered)
         {
@@ -251,8 +261,39 @@ public partial class MainWindow
     {
         if (!_isGestureActive) return;
 
-        NotchWrapper.ReleaseMouseCapture();
+        if (_musicDragging)
+        {
+            FinishMusicSwipe(false, DateTime.UtcNow);
+            _gestureController.CancelTracking();
+            _isGestureActive = false;
+            NotchWrapper.ReleaseMouseCapture();
+            e.Handled = true;
+            return;
+        }
+
+        if (_shellDragActive)
+        {
+            FinishShellDrag(canceled: false);
+            _gestureController.CancelTracking();
+            _isGestureActive = false;
+            NotchWrapper.ReleaseMouseCapture();
+            e.Handled = true;
+            return;
+        }
+
         _isGestureActive = false;
+        NotchWrapper.ReleaseMouseCapture();
+
+        if (_shellGestureWasOpen)
+        {
+            _gestureController.CancelTracking();
+            if (!_gestureController.HasDragAxis && !_isAnimating)
+            {
+                if (_musicCoverPressed) OpenCurrentMediaSourceFromThumbnail();
+                else ToggleNotchFromClick(e.ClickCount);
+            }
+            return;
+        }
 
         var pos = e.GetPosition(NotchBorder);
         bool wasTap = _gestureController.EndTracking(pos);

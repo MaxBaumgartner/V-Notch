@@ -108,6 +108,7 @@ public partial class MainWindow
             {
                 BudBubble();
                 if (want != _bubbleActivity) SwapBubbleFace(want);
+                else if (want == LiveActivity.Charging) ChargeFaceReady();
             }
             else
             {
@@ -221,6 +222,8 @@ public partial class MainWindow
         double size = FaceSize(activity, _bubbleOpen);
         BubbleIcon.Width = BubbleIcon.Height = size;
         Motion.Stop(this, BubbleFaceInsetProperty, FaceMargin(activity, _bubbleOpen).Left);
+        // A zero inset may already be the property's default, so its callback need not run.
+        BubbleIcon.Margin = FaceMargin(activity, _bubbleOpen);
         UpdateBubbleContent();
         ApplyClaudeLiveMotion();
     }

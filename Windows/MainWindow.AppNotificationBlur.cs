@@ -54,25 +54,17 @@ public partial class MainWindow
     {
         if (!EnsureAppNotificationBlurCover()) return false;
         int version = ++_appNotificationBlurVersion;
-        int duration = entering ? NotificationTransitionMs : 120;
         if (entering)
         {
             SetAppNotificationOpacity(AppNotificationContent, 0);
             SetAppNotificationOpacity(AppNotificationBlurCover, 1);
         }
-        double from = AppNotificationBlurCover.Opacity;
-        SetAppNotificationOpacity(AppNotificationBlurCover, from);
-        var fade = AppNotificationMotion(from, entering ? 0 : 1, duration, easing: _easePowerOut3);
-        if (entering)
+        Motion.To(AppNotificationContent, OpacityProperty, entering ? 1 : 0, Motion.Exit);
+        Motion.To(AppNotificationBlurCover, OpacityProperty, entering ? 0 : 1, Motion.Exit, done: () =>
         {
-            fade.Completed += (_, _) =>
-            {
-                if (version != _appNotificationBlurVersion || !_isAppNotificationBannerVisible || _isAppNotificationBannerExiting) return;
-                ResetAppNotificationBlurCover();
-            };
-        }
-        AppNotificationBlurCover.BeginAnimation(OpacityProperty, fade);
-        AnimateAppNotificationOpacity(AppNotificationContent, entering ? 1 : 0, duration, easing: _easePowerOut3);
+            if (!entering || version != _appNotificationBlurVersion || !_isAppNotificationBannerVisible || _isAppNotificationBannerExiting) return;
+            ResetAppNotificationBlurCover();
+        });
         return true;
     }
 

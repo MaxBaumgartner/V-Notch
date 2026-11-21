@@ -60,7 +60,7 @@ public partial class MainWindow
     private void HomeIconButton_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
-        if ((_isCameraView || _isClaudeView || _isPiView || _isSchoolView || _isWeatherView) && !_isAnimating) { SwitchToPrimaryView(); return; }
+        if ((_isCameraView || _isClaudeView || _isPiView || _isSchoolView) && !_isAnimating) { SwitchToPrimaryView(); return; }
         if (_isAudioView && !_isAnimating)
         {
             SwitchFromAudioToPrimaryView();
@@ -128,6 +128,7 @@ public partial class MainWindow
 
     private void UpdateNavIconsActiveState(bool animate = true)
     {
+        UpdateCompactTabStatus();
         if (HomeIconButton == null || ClipboardIconButton == null || TimerIconButton == null || AudioIconButton == null)
             return;
 
@@ -137,11 +138,11 @@ public partial class MainWindow
         else if (_isClaudeView) fallbackView = NotchView.Claude;
         else if (_isPiView) fallbackView = NotchView.Pi;
         else if (_isSchoolView) fallbackView = NotchView.School;
-        else if (_isWeatherView) fallbackView = NotchView.Weather;
         else if (_isAudioView) fallbackView = NotchView.AudioMixer;
         else if (_isTimerView) fallbackView = NotchView.Timer;
         else if (_isSecondaryView) fallbackView = NotchView.Secondary;
         var target = _navigationVisualTarget ?? fallbackView;
+        UpdateNavSelection(target, animate);
         double homeTarget = target == NotchView.Media ? 1 : 0.45;
         double clipboardTarget = target == NotchView.Secondary ? 1 : 0.45;
         double timerTarget = target == NotchView.Timer ? 1 : 0.45;
@@ -151,7 +152,6 @@ public partial class MainWindow
         if (_navDragItem != ClaudeIconButton) AnimateNavIconOpacity(ClaudeIconButton, target == NotchView.Claude ? 1 : _isClaudeWaiting ? 0.85 : 0.45, animate);
         if (_navDragItem != PiIconButton) AnimateNavIconOpacity(PiIconButton, target == NotchView.Pi ? 1 : 0.45, animate);
         if (_navDragItem != SchoolIconButton) AnimateNavIconOpacity(SchoolIconButton, target == NotchView.School ? 1 : 0.45, animate);
-        if (_navDragItem != WeatherIconButton) AnimateNavIconOpacity(WeatherIconButton, target == NotchView.Weather ? 1 : 0.45, animate);
 
         // Only update opacity on items not currently being dragged by the user
         if (_navDragItem != HomeIconButton) AnimateNavIconOpacity(HomeIconButton, homeTarget, animate);

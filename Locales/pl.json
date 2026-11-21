@@ -1349,6 +1349,7 @@
   "home.piOk": "wszystko zielone",
   "home.fix": "Napraw",
   "school.deadlines": "Zadania do oddania",
+  "school.until": "do {0}",
   "school.exams": "Sprawdziany i egzaminy",
   "school.nothingDue": "Nic do oddania",
   "school.days": "dni",

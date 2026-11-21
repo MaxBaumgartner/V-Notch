@@ -115,13 +115,13 @@
                         </ToggleButton>
                         <ContentPresenter x:Name="OriginalContent" ContentSource="Content" Visibility="Collapsed"/>
                     </StackPanel><ControlTemplate.Triggers><Trigger Property="IsExpanded" Value="True"><Setter TargetName="OriginalContent" Property="Visibility" Value="Visible"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Expander.Template>
-                    <ScrollViewer MaxHeight="110" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer MaxHeight="110" VerticalScrollBarVisibility="Hidden">
                         <TextBlock x:Name="OriginalText" TextWrapping="Wrap" FontSize="13" Margin="0,6,0,0"/>
                     </ScrollViewer>
                 </Expander>
                 </StackPanel>
                 <Grid x:Name="ResultViewport" Grid.Row="3" ClipToBounds="True">
-                    <ScrollViewer x:Name="ResultScroll" MaxHeight="260" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <ScrollViewer x:Name="ResultScroll" MaxHeight="260" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
                         <Grid>
                             <TextBox x:Name="ResultText" IsReadOnly="True" TextWrapping="Wrap" FontSize="19" FontWeight="Bold"
                                      Background="Transparent" Foreground="#F2F2F2" BorderThickness="0" Padding="0"/>

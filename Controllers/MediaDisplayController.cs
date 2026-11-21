@@ -216,7 +216,8 @@ public sealed class MediaDisplayController
     {
         if (!hasRealTrack)
         {
-            return new DisplayTextResult("No media playing", "Artist name");
+            // In the user's language, and no "Artist name" placeholder under it.
+            return new DisplayTextResult(Loc.Get("media.noMedia"), "");
         }
 
         string titleText = info.CurrentTrack;

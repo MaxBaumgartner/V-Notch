@@ -1349,6 +1349,7 @@
   "home.piOk": "semua hijau",
   "home.fix": "Perbaiki",
   "school.deadlines": "Tugas",
+  "school.until": "sampai {0}",
   "school.exams": "Ulangan dan ujian",
   "school.nothingDue": "Tidak ada tugas",
   "school.days": "hari",

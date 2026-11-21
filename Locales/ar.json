@@ -1349,6 +1349,7 @@
   "home.piOk": "كل شيء سليم",
   "home.fix": "إصلاح",
   "school.deadlines": "التسليمات",
+  "school.until": "حتى {0}",
   "school.exams": "الاختبارات والامتحانات",
   "school.nothingDue": "لا شيء مستحق",
   "school.days": "أيام",

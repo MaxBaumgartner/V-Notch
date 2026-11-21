@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,11 +19,14 @@ public sealed class AppNotificationMotionTests
     {
         await using var fixture = CreateFixture();
         var window = fixture.Window;
+        using var host = new RenderHost(window);
+        Motion.Stop(window.NotchBorder, FrameworkElement.WidthProperty, 300);
+        Motion.Stop(window.NotchBorder, FrameworkElement.HeightProperty, 40);
         window.ShowAppNotification(Notification());
         await Task.Delay(120, ct);
         await WpfFrameWaiter.NextAsync(ct);
-        Assert.True(window.AppNotificationBanner.Opacity > .2, "The notification must reveal with the shell, without a separate waiting phase.");
-        await WpfFrameWaiter.UntilAsync(() => !DependencyPropertyHelper.GetValueSource(window.NotchBorder, FrameworkElement.WidthProperty).IsAnimated,
+        Assert.True(((FrameworkElement)window.AppNotificationBanner.Parent).Opacity > .2, "The notification must reveal with the shell, without a separate waiting phase.");
+        await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty),
             "notification finishes the main view geometry motion", ct);
     });
 
@@ -41,8 +45,13 @@ public sealed class AppNotificationMotionTests
         window.ShowAppNotification(Notification());
         Assert.Equal(initialWidth, window.NotchBorder.Width);
         Assert.Equal(initialHeight, window.NotchBorder.Height);
-        Assert.Equal(0, window.AppNotificationBanner.Opacity);
-        await WpfFrameWaiter.UntilAsync(() => window.AppNotificationBanner.Opacity > .2,
+        var layer = (FrameworkElement)window.AppNotificationBanner.Parent;
+        var scale = Assert.IsType<ScaleTransform>(layer.RenderTransform);
+        Assert.Equal(0, layer.Opacity);
+        Assert.Equal(initialWidth / layer.Width, scale.ScaleX, 6);
+        Assert.Equal(initialHeight / layer.Height, scale.ScaleY, 6);
+        Assert.Equal(1, window.AppNotificationBanner.Opacity);
+        await WpfFrameWaiter.UntilAsync(() => layer.Opacity > .2,
             "notification reveals its content during the morph", ct);
         Assert.Equal(1, window.AppNotificationAppNameText.Opacity);
         Assert.Equal(1, window.AppNotificationTitleText.Opacity);
@@ -117,6 +126,7 @@ public sealed class AppNotificationMotionTests
     {
         await using var fixture = CreateFixture(autoDismiss: true);
         var window = fixture.Window;
+        using var host = new RenderHost(window);
         window.ShowAppNotification(Notification());
         await WpfFrameWaiter.UntilAsync(() => window.AppNotificationProgressScale.ScaleX < .98, "dismiss countdown starts", ct);
         window.AnimateAppNotificationHover(true);
@@ -221,6 +231,165 @@ public sealed class AppNotificationMotionTests
         finally { AnimationConfig.SetReduceMotion(previous); }
     });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OpeningDuringEntranceOrExitClearsTheAttachmentWithoutAnOutgoingGhost(bool leaving) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture(autoDismiss: true);
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        Motion.Stop(window.NotchBorder, FrameworkElement.WidthProperty, 300);
+        Motion.Stop(window.NotchBorder, FrameworkElement.HeightProperty, 40);
+        window.ShowAppNotification(Notification());
+        var layer = (FrameworkElement)window.AppNotificationBanner.Parent;
+        if (leaving)
+        {
+            await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width), "banner settles before leaving", ct);
+            window.DismissAppNotificationBanner();
+        }
+        await Task.Delay(100, ct);
+        Assert.False(double.IsNaN(layer.Width));
+        window.NavigateToNotchView(NotchView.Timer);
+        await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.NotchBorder, FrameworkElement.HeightProperty), "notch opens", ct);
+        Assert.False(window.IsAppNotificationBannerActive);
+        Assert.Equal(Visibility.Collapsed, window.AppNotificationBanner.Visibility);
+        Assert.Equal(0, layer.Opacity);
+        Assert.True(double.IsNaN(layer.Width));
+        Assert.Equal(1, ((ScaleTransform)layer.RenderTransform).ScaleX);
+        Assert.Null(Get<object?>(window, "_appNotificationDismissTimer"));
+        Assert.DoesNotContain(window.NotchLiveContent.Children.Cast<UIElement>(), e => e is Image && Panel.GetZIndex(e) == 100);
+    });
+
+    [Fact]
+    public void DismissalScalesTheFinalLayoutBackWithTheShell() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.ShowAppNotification(Notification());
+        var layer = (FrameworkElement)window.AppNotificationBanner.Parent;
+        await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width), "banner fully presented", ct);
+        window.DismissAppNotificationBanner();
+        double width = layer.Width, height = layer.Height;
+        await Task.Delay(70, ct);
+        var scale = Assert.IsType<ScaleTransform>(layer.RenderTransform);
+        Assert.Equal(window.NotchBorder.Width / width, scale.ScaleX, 4);
+        Assert.Equal(window.NotchBorder.Height / height, scale.ScaleY, 4);
+        Assert.True(scale.ScaleY < 1);
+        Assert.Equal(1, window.AppNotificationBanner.Opacity);
+        await WpfFrameWaiter.UntilAsync(() => !window.IsAppNotificationBannerActive, "attached leave finishes", ct);
+        Assert.Equal(0, layer.Opacity);
+        Assert.True(double.IsNaN(layer.Width));
+    });
+
+    [Theory]
+    [InlineData("hidden")]
+    [InlineData("fullscreen")]
+    [InlineData("notch-hidden")]
+    public void DismissProgressStopsOffscreenAndResumesFromItsRemainingTime(string reason) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture(autoDismiss: true);
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.ShowAppNotification(Notification());
+        await WpfFrameWaiter.UntilAsync(() => window.AppNotificationProgressScale.ScaleX < .98, "dismiss progress running", ct);
+        if (reason == "hidden") host.Window.Hide();
+        else typeof(MainWindow).GetProperty(reason == "fullscreen" ? "_isHiddenByFullscreen" : "_isNotchVisible",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, reason == "fullscreen");
+        typeof(MainWindow).GetMethod("RefreshAmbientAnimations", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+        double progress = window.AppNotificationProgressScale.ScaleX;
+        int remaining = Get<int>(window, "_appNotificationRemainingMs");
+        Assert.False(window.AppNotificationProgressScale.HasAnimatedProperties);
+        Assert.Null(Get<object?>(window, "_appNotificationDismissTimer"));
+        await Task.Delay(120, ct);
+        Assert.Equal(progress, window.AppNotificationProgressScale.ScaleX);
+        if (reason == "hidden") host.Window.Show();
+        else typeof(MainWindow).GetProperty(reason == "fullscreen" ? "_isHiddenByFullscreen" : "_isNotchVisible",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, reason != "fullscreen");
+        typeof(MainWindow).GetMethod("RefreshAmbientAnimations", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+        Assert.NotNull(Get<object?>(window, "_appNotificationDismissTimer"));
+        Assert.InRange(Get<int>(window, "_appNotificationRemainingMs"), remaining - 10, remaining);
+        await WpfFrameWaiter.UntilAsync(() => window.AppNotificationProgressScale.ScaleX < progress - .01, "dismiss progress resumes", ct);
+    });
+
+    [Fact]
+    public void DragFollowsThePointerAndHandsItsVelocityToTheReturnWithoutJumpingOnRegrab() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.ShowAppNotification(Notification());
+        window.BeginAppNotificationInteraction(new Point(), 0);
+        window.UpdateAppNotificationInteraction(new Point(20, 0), 100);
+        Assert.Equal(20, window.AppNotificationShellTranslate.X);
+        window.UpdateAppNotificationInteraction(new Point(40, 0), 140);
+        Assert.False(window.EndAppNotificationInteraction(new Point(40, 0), 141));
+        Assert.Equal(40, window.AppNotificationShellTranslate.X, 4);
+        Assert.InRange(Motion.VelocityOf(window.AppNotificationShellTranslate, TranslateTransform.XProperty), 480, 510);
+        await Task.Delay(40, ct);
+        double position = window.AppNotificationShellTranslate.X;
+        window.BeginAppNotificationInteraction(new Point(), 200);
+        Assert.Equal(position, window.AppNotificationShellTranslate.X, 4);
+        window.UpdateAppNotificationInteraction(new Point(8, 0), 300);
+        Assert.Equal(position + 8, window.AppNotificationShellTranslate.X, 4);
+        window.EndAppNotificationInteraction(new Point(8, 0), 450);
+        await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.AppNotificationShellTranslate, TranslateTransform.XProperty), "drag returns", ct);
+        Assert.Equal(0, window.AppNotificationShellTranslate.X, 4);
+    });
+
+    [Fact]
+    public void ReducedMotionCanReuseAnAttachmentAfterItsAnimatedPresentationWasCancelled() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.ShowAppNotification(Notification());
+        await Task.Delay(100, ct);
+        window.CancelAppNotificationBannerImmediate();
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(true);
+        try
+        {
+            window.ShowAppNotification(Notification());
+            var layer = (FrameworkElement)window.AppNotificationBanner.Parent;
+            Assert.Equal(1, layer.Opacity);
+            Assert.True(double.IsNaN(layer.Width));
+            Assert.Equal(1, ((ScaleTransform)layer.RenderTransform).ScaleX);
+            Assert.False(Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty));
+            window.DismissAppNotificationBanner();
+            Assert.Equal(0, layer.Opacity);
+            Assert.False(window.IsAppNotificationBannerActive);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void ReplacementKeepsTheNewFaceReadableWhileTheOldContentLeaves() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.ShowAppNotification(Notification());
+        var layer = (FrameworkElement)window.AppNotificationBanner.Parent;
+        await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width) && window.AppNotificationBlurCover.Source == null,
+            "first message settles", ct);
+        host.Window.UpdateLayout();
+        window.ShowAppNotification(new AppNotificationInfo { AppName = "Files", Title = "Review completed", Body = "Ready to open." });
+        Assert.Equal(1, window.AppNotificationBanner.Opacity);
+        Assert.Equal(1, layer.Opacity);
+        var outgoing = Assert.Single(window.NotchLiveContent.Children.OfType<Image>());
+        Assert.True(outgoing.Width > 100);
+        Assert.True(outgoing.Height > 20);
+        var bitmap = Assert.IsAssignableFrom<System.Windows.Media.Imaging.BitmapSource>(outgoing.Source);
+        Assert.True(bitmap.IsFrozen);
+        byte[] pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+        bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
+        Assert.Contains(pixels.Where((_, i) => i % 4 == 3), alpha => alpha > 8);
+        await WpfFrameWaiter.UntilAsync(() => !window.NotchLiveContent.Children.Contains(outgoing), "old message retires", ct);
+        Assert.True(window.IsAppNotificationBannerActive);
+    });
+
     private static AppNotificationInfo Notification() => new()
         { AppName = "Test notification app", Title = "Your download is ready", Body = "Open the application to continue." };
     private static GreetingAcceptanceTests.MainWindowFixture CreateFixture(bool autoDismiss = false) => new("en", greeting: false,
@@ -238,6 +407,7 @@ public sealed class AppNotificationMotionTests
     {
         private readonly MainWindow _owner;
         private readonly Window _window;
+        internal Window Window => _window;
         internal RenderHost(MainWindow owner)
         {
             _owner = owner;

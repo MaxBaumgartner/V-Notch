@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System;
 using System.Threading.Tasks;
 using System.Windows;
@@ -71,6 +71,17 @@ public partial class MainWindow
     private void PrevButton_Click(object sender, MouseButtonEventArgs e) => MediaPlayback.PrevButton_Click(sender, e);
 
     private bool? _presentedInlinePlaying;
+    private static readonly DependencyProperty InlinePlaybackMorphProperty = DependencyProperty.Register(
+        "InlinePlaybackMorph", typeof(double), typeof(MainWindow), new PropertyMetadata(0d,
+            (target, args) => ((MainWindow)target).RenderInlinePlaybackMorph((double)args.NewValue)));
+
+    private void RenderInlinePlaybackMorph(double progress)
+    {
+        InlinePauseIconPath.Stretch = Stretch.None;
+        InlinePauseIconPath.Data = VNotch.Controls.MediaPlaybackView.PlaybackGeometry(progress, 16);
+        InlinePauseIcon.Visibility = Visibility.Visible;
+        InlinePlayIcon.Visibility = Visibility.Collapsed;
+    }
 
     private void OnViewModelPlayPauseToggled(object? sender, bool isPlaying)
     {
@@ -85,16 +96,9 @@ public partial class MainWindow
         MediaPlayback.PresentPlayback(_isPlaying);
         if (_presentedInlinePlaying == _isPlaying) return;
         _presentedInlinePlaying = _isPlaying;
-        var duration = TimeSpan.FromMilliseconds(180);
-
-        if (_isPlaying)
-        {
-            AnimateIconSwitch(InlinePlayIcon, InlinePauseIcon, duration, _easeQuadInOut);
-        }
-        else
-        {
-            AnimateIconSwitch(InlinePauseIcon, InlinePlayIcon, duration, _easeQuadInOut);
-        }
+        RenderInlinePlaybackMorph((double)GetValue(InlinePlaybackMorphProperty));
+        if (InlinePlayPauseButton.IsVisible) Motion.To(this, InlinePlaybackMorphProperty, _isPlaying ? 0 : 1, Motion.Glide);
+        else Motion.Stop(this, InlinePlaybackMorphProperty, _isPlaying ? 0 : 1);
     }
 
     private async void InlinePlayPauseButton_Click(object sender, MouseButtonEventArgs e)
@@ -319,8 +323,6 @@ public partial class MainWindow
     private Color _volumeHudMediaColor = Colors.White;
     private bool _hasVolumeHudMediaTint;
     private int _lastVolumeHudActiveTicks = -1;
-    private BlurEffect? _volumeIndicatorTransitionBlur;
-    private int _volumeIndicatorTransitionVersion;
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct VnVolumeHudLayoutOut
@@ -405,11 +407,6 @@ public partial class MainWindow
     private void ClearVolumeIndicatorTransitionEffects()
     {
         if (VolumeIndicatorContainer == null) return;
-        if (_volumeIndicatorTransitionBlur != null)
-        {
-            _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-            _volumeIndicatorTransitionBlur.Radius = 0;
-        }
         VolumeIndicatorContainer.Effect = null;
         VolumeIndicatorContainer.CacheMode = null;
     }
@@ -742,56 +739,40 @@ public partial class MainWindow
         if (Math.Abs(over.TranslateX) < 0.01) return;
 
         VolumeIndicatorContainer.RenderTransformOrigin = new Point(over.OriginX, 0.5);
-        int fps = AnimationConfig.TargetFps;
-        var durPeak = TimeSpan.FromMilliseconds(85);
-        var durSettle = TimeSpan.FromMilliseconds(420);
-
-        if (VolumeIndicatorContentScale != null)
+        if (_isDraggingVolumeIndicator)
         {
-            var sx = new DoubleAnimationUsingKeyFrames();
-            sx.KeyFrames.Add(new EasingDoubleKeyFrame(over.ScaleX, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-            sx.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durSettle), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(sx, fps);
-
-            var sy = new DoubleAnimationUsingKeyFrames();
-            sy.KeyFrames.Add(new EasingDoubleKeyFrame(over.ScaleY, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-            sy.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durSettle), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(sy, fps);
-
-            VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleXProperty, sx);
-            VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleYProperty, sy);
+            double width = Math.Max(1, VolumeIndicatorContainer.ActualWidth);
+            double offset = Math.Sign(stepDelta) * ShellRubber(Math.Abs(stepDelta) * width, 18);
+            SetVolumeIndicatorRubber(offset, DateTime.UtcNow);
+            return;
         }
-
-        if (VolumeIndicatorContentTranslate != null)
-        {
-            var tx = new DoubleAnimationUsingKeyFrames();
-            tx.KeyFrames.Add(new EasingDoubleKeyFrame(over.TranslateX, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-            tx.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(durSettle), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(tx, fps);
-            VolumeIndicatorContentTranslate.BeginAnimation(TranslateTransform.XProperty, tx);
-        }
-
-        if (NotchScale != null && NotchShadowScale != null)
-        {
-            double pillScaleX = 1.0 + (over.ScaleX - 1.0) * 0.55;
-            double pillScaleY = 1.0 + (over.ScaleY - 1.0) * 0.55;
-            var psx = new DoubleAnimationUsingKeyFrames();
-            psx.KeyFrames.Add(new EasingDoubleKeyFrame(pillScaleX, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-            psx.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durSettle), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(psx, fps);
-
-            var psy = new DoubleAnimationUsingKeyFrames();
-            psy.KeyFrames.Add(new EasingDoubleKeyFrame(pillScaleY, KeyTime.FromTimeSpan(durPeak), _easeQuadOut));
-            psy.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(durSettle), _easeSoftSpring));
-            Timeline.SetDesiredFrameRate(psy, fps);
-
-            NotchScale.BeginAnimation(ScaleTransform.ScaleXProperty, psx);
-            NotchScale.BeginAnimation(ScaleTransform.ScaleYProperty, psy);
-            NotchShadowScale.BeginAnimation(ScaleTransform.ScaleXProperty, psx);
-            NotchShadowScale.BeginAnimation(ScaleTransform.ScaleYProperty, psy);
-        }
+        // A wheel detent gives the small face an impulse; repeated detents inherit the moving spring.
+        Motion.To(VolumeIndicatorContentScale, ScaleTransform.ScaleXProperty, 1, Motion.Press,
+            velocity: Math.Clamp(Motion.VelocityOf(VolumeIndicatorContentScale, ScaleTransform.ScaleXProperty) + (over.ScaleX - 1) * 20, -4, 4));
+        Motion.To(VolumeIndicatorContentScale, ScaleTransform.ScaleYProperty, 1, Motion.Press,
+            velocity: Math.Clamp(Motion.VelocityOf(VolumeIndicatorContentScale, ScaleTransform.ScaleYProperty) + (over.ScaleY - 1) * 20, -4, 4));
+        Motion.To(VolumeIndicatorContentTranslate, TranslateTransform.XProperty, 0, Motion.Press,
+            velocity: Math.Clamp(Motion.VelocityOf(VolumeIndicatorContentTranslate, TranslateTransform.XProperty) + over.TranslateX * 20, -120, 120));
     }
 
+    private DateTime _volumeHudRubberAt;
+    private double _volumeHudRubberVelocity;
+
+    private void SetVolumeIndicatorRubber(double offset, DateTime now)
+    {
+        double dt = (now - _volumeHudRubberAt).TotalSeconds;
+        _volumeHudRubberVelocity = dt > 0 && dt < .1 ? (offset - VolumeIndicatorContentTranslate.X) / dt : 0;
+        _volumeHudRubberAt = now;
+        Motion.Stop(VolumeIndicatorContentTranslate, TranslateTransform.XProperty, offset);
+    }
+
+    private void ReleaseVolumeIndicatorRubber()
+    {
+        double velocity = (DateTime.UtcNow - _volumeHudRubberAt).TotalMilliseconds < 80 ? _volumeHudRubberVelocity : 0;
+        Motion.To(VolumeIndicatorContentTranslate, TranslateTransform.XProperty, 0, Motion.Press, velocity: velocity);
+        Motion.To(VolumeIndicatorContentScale, ScaleTransform.ScaleXProperty, 1, Motion.Press);
+        Motion.To(VolumeIndicatorContentScale, ScaleTransform.ScaleYProperty, 1, Motion.Press);
+    }
     private void VolumeIndicatorContainer_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         if (VolumeIndicatorScale != null)
@@ -902,6 +883,8 @@ public partial class MainWindow
 
     private void ShowVolumeIndicator(float volume) => ShowLevelIndicator(volume, LevelHudKind.AppVolume);
 
+    private VNotch.Presenters.CompactSurfaceAttachment? _levelHudAttachment;
+
     /// <summary>The scroll HUD for the player's volume, the system volume or the brightness.</summary>
     private void ShowLevelIndicator(float volume, LevelHudKind kind)
     {
@@ -944,7 +927,6 @@ public partial class MainWindow
         {
             _isVolumeIndicatorActive = true;
             ++_volumeIndicatorExitVersion;
-            int transitionVersion = ++_volumeIndicatorTransitionVersion;
             _isVolumeIndicatorExiting = false;
             VolumeIndicatorContainer.IsHitTestVisible = kind != LevelHudKind.MicMute;
             int presentationToken = _volumeIndicatorToken;
@@ -997,33 +979,16 @@ public partial class MainWindow
             double targetHeight = trans.TargetHeight;
             double targetWidth = LevelHudWidth(trans.TargetWidth);
             var morphDur = new Duration(TimeSpan.FromMilliseconds(trans.MorphDurationMs));
-            var fadeDur = new Duration(TimeSpan.FromMilliseconds(trans.FadeDurationMs));
 
-            double fallbackFromHeight = double.IsFinite(NotchBorder.Height) && NotchBorder.Height > 0 ? NotchBorder.Height : _collapsedHeight;
-            double fromHeight = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : fallbackFromHeight;
+
+            _notchShellPresenter?.CancelCurrentAnimation();
             if (_isCompactThumbnailHovered)
             {
                 _isCompactThumbnailHovered = false;
-
-                AnimateCompactWidth(targetWidth, _dur400, _easeExpOut6, _volumeIndicatorToken);
-                Motion.To(NotchBorder, HeightProperty, targetHeight, Motion.Pop,
-                    from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : fromHeight);
-
-                CompactHoverInfo.BeginAnimation(OpacityProperty, null);
-                var hoverFadeOut = MakeAnim(0.0, _dur200, _easeQuadOut);
-                hoverFadeOut.Completed += (s, e) => CompactHoverInfo.Visibility = Visibility.Collapsed;
-                CompactHoverInfo.BeginAnimation(OpacityProperty, hoverFadeOut);
-
-                AnimateCornerRadius(trans.TargetCornerRadius, TimeSpan.FromMilliseconds(400));
+                Motion.To(CompactHoverInfo, OpacityProperty, 0, Motion.Exit,
+                    done: () => CompactHoverInfo.Visibility = Visibility.Collapsed);
             }
-            else
-            {
-                AnimateCompactWidth(targetWidth, morphDur, _easeExpOut6, _volumeIndicatorToken);
-                Motion.To(NotchBorder, HeightProperty, targetHeight, Motion.Pop,
-                    from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : fromHeight);
-                AnimateCornerRadius(trans.TargetCornerRadius, morphDur.TimeSpan);
-            }
-
+            AnimateCornerRadius(trans.TargetCornerRadius, morphDur.TimeSpan);
             if (!_isMusicCompactMode)
             {
                 HideIdleUnderHud();
@@ -1067,67 +1032,19 @@ public partial class MainWindow
                 CompactThumbnailBorder.BeginAnimation(OpacityProperty, thumbOut);
             }
 
+            ClearVolumeIndicatorTransitionEffects();
+            Motion.Stop(VolumeIndicatorContentScale, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(VolumeIndicatorContentScale, ScaleTransform.ScaleYProperty, 1);
+            Motion.Stop(VolumeIndicatorContentTranslate, TranslateTransform.XProperty, 0);
+            Motion.Stop(VolumeIndicatorContentTranslate, TranslateTransform.YProperty, 0);
+            VolumeIndicatorContainer.RenderTransformOrigin = new Point(.5, .5);
+            _levelHudAttachment ??= new(NotchBorder, VolumeIndicatorContainer,
+                () => new Size(_collapsedWidth, _collapsedHeight));
+            Motion.Stop(VolumeIndicatorContainer, OpacityProperty, 1);
             VolumeIndicatorContainer.Visibility = Visibility.Visible;
-            VolumeIndicatorContainer.Opacity = 0;
-            VolumeIndicatorContainer.BeginAnimation(OpacityProperty, null);
-            var indicatorIn = MakeAnim(0.0, 1.0, fadeDur, _easeExpOut6);
-            VolumeIndicatorContainer.BeginAnimation(OpacityProperty, indicatorIn);
-
-            if (!AnimationConfig.ReduceMotion)
-            {
-                VolumeIndicatorContainer.RenderTransformOrigin = new Point(0.5, 0.5);
-                if (VolumeIndicatorContentScale != null)
-                {
-                    var scaleInX = MakeAnim(trans.HudFromScaleX, trans.HudToScaleX, morphDur, _easeSoftSpring);
-                    var scaleInY = MakeAnim(trans.HudFromScaleY, trans.HudToScaleY, morphDur, _easeSoftSpring);
-                    VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleInX);
-                    VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleInY);
-                }
-                if (VolumeIndicatorContentTranslate != null)
-                {
-                    VolumeIndicatorContentTranslate.BeginAnimation(TranslateTransform.XProperty, null);
-                    VolumeIndicatorContentTranslate.X = 0;
-                    var slideInY = MakeAnim(trans.HudFromTranslateY, trans.HudToTranslateY, morphDur, _easeExpOut6);
-                    VolumeIndicatorContentTranslate.BeginAnimation(TranslateTransform.YProperty, slideInY);
-                }
-                if (enableBlur && trans.HudFromBlur > 0.1)
-                {
-                    _volumeIndicatorTransitionBlur ??= new BlurEffect { RenderingBias = RenderingBias.Performance };
-                    _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-                    _volumeIndicatorTransitionBlur.Radius = trans.HudFromBlur;
-                    VolumeIndicatorContainer.Effect = _volumeIndicatorTransitionBlur;
-                    var blurIn = MakeAnim(trans.HudFromBlur, 0.0, _dur250, _easeExpOut6, VNotch.Services.AnimationConfig.TargetFps);
-                    blurIn.Completed += (_, _) =>
-                    {
-                        if (transitionVersion == _volumeIndicatorTransitionVersion)
-                        {
-                            ClearVolumeIndicatorTransitionEffects();
-                        }
-                    };
-                    _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, blurIn);
-                }
-                else
-                {
-                    ClearVolumeIndicatorTransitionEffects();
-                }
-
-                EnsureVolumeIndicatorTicks();
-                if (_volumeHudTickScales != null)
-                {
-                    for (int i = 0; i < VolumeHudTickCount; i++)
-                    {
-                        _volumeHudTickScales[i].BeginAnimation(ScaleTransform.ScaleYProperty, null);
-                        _volumeHudTickScales[i].ScaleY = 0.28;
-                    }
-                    animateFill = true;
-                }
-            }
-            else
-            {
-                ClearVolumeIndicatorTransitionEffects();
-            }
+            _levelHudAttachment.MoveTo(targetWidth, targetHeight, Motion.Pop, shown: true);
+            EnsureVolumeIndicatorTicks();
         }
-
         SetVolumeFill(VolumeIndicatorScale, volume, animate: animateFill);
 
         if (_volumeIndicatorHideTimer == null)
@@ -1155,7 +1072,6 @@ public partial class MainWindow
         ResetCompactVolumeWheelIntent();
         int token = _volumeIndicatorToken;
         int exitVersion = ++_volumeIndicatorExitVersion;
-        int transitionVersion = ++_volumeIndicatorTransitionVersion;
 
         _isVolumeIndicatorActive = false;
         _volumeSynced = false;
@@ -1209,72 +1125,18 @@ public partial class MainWindow
         }
 
         var morphDur = new Duration(TimeSpan.FromMilliseconds(trans.MorphDurationMs));
-        var fadeDur = new Duration(TimeSpan.FromMilliseconds(trans.FadeDurationMs));
 
-        AnimateCompactWidth(trans.TargetWidth, morphDur, _easeExpOut6, 0);
-        double fallbackFromHeight = double.IsFinite(NotchBorder.Height) && NotchBorder.Height > 0 ? NotchBorder.Height : _collapsedHeight + VolumeHudExtraHeight;
-        double fromHeight = NotchBorder.ActualHeight > 0 ? NotchBorder.ActualHeight : fallbackFromHeight;
-        double restHeight = trans.TargetHeight;
-        Motion.To(NotchBorder, HeightProperty, restHeight, Motion.PopBack,
-            from: Motion.IsRunning(NotchBorder, HeightProperty) ? null : fromHeight,
-            done: () => Motion.Stop(NotchBorder, HeightProperty, restHeight));
+
+        _notchShellPresenter?.CancelCurrentAnimation();
         AnimateCornerRadius(trans.TargetCornerRadius, morphDur.TimeSpan);
-
-        if (!AnimationConfig.ReduceMotion)
+        _levelHudAttachment!.MoveTo(trans.TargetWidth, trans.TargetHeight, Motion.PopBack, shown: false, done: () =>
         {
-            VolumeIndicatorContainer.RenderTransformOrigin = new Point(0.5, 0.5);
-            if (VolumeIndicatorContentScale != null)
-            {
-                var outSx = MakeAnim(trans.HudFromScaleX, trans.HudToScaleX, fadeDur, _easeQuadOut);
-                var outSy = MakeAnim(trans.HudFromScaleY, trans.HudToScaleY, fadeDur, _easeQuadOut);
-                VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleXProperty, outSx);
-                VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleYProperty, outSy);
-            }
-            if (VolumeIndicatorContentTranslate != null)
-            {
-                var outTy = MakeAnim(trans.HudFromTranslateY, trans.HudToTranslateY, fadeDur, _easeQuadOut);
-                VolumeIndicatorContentTranslate.BeginAnimation(TranslateTransform.YProperty, outTy);
-            }
-            if (enableBlur && trans.HudToBlur > 0.1)
-            {
-                _volumeIndicatorTransitionBlur ??= new BlurEffect { RenderingBias = RenderingBias.Performance };
-                _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-                _volumeIndicatorTransitionBlur.Radius = 0.0;
-                VolumeIndicatorContainer.Effect = _volumeIndicatorTransitionBlur;
-                var blurOut = MakeAnim(0.0, trans.HudToBlur, fadeDur, _easeQuadOut, VNotch.Services.AnimationConfig.TargetFps);
-                _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, blurOut);
-            }
-        }
-
-        VolumeIndicatorContainer.BeginAnimation(OpacityProperty, null);
-        var fadeOut = MakeAnim(1.0, 0.0, fadeDur, _easeQuadOut);
-        fadeOut.Completed += (s, e) =>
-        {
-            if (exitVersion != _volumeIndicatorExitVersion) return;
+            if (exitVersion != _volumeIndicatorExitVersion || _isVolumeIndicatorActive) return;
             _isVolumeIndicatorExiting = false;
-            if (!_isVolumeIndicatorActive)
-            {
-                if (transitionVersion == _volumeIndicatorTransitionVersion)
-                {
-                    ClearVolumeIndicatorTransitionEffects();
-                }
-                VolumeIndicatorContainer.Visibility = Visibility.Collapsed;
-                VolumeIndicatorContainer.IsHitTestVisible = true;
-                if (VolumeIndicatorContentScale != null)
-                {
-                    VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-                    VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-                    VolumeIndicatorContentScale.ScaleX = VolumeIndicatorContentScale.ScaleY = 1.0;
-                }
-                if (VolumeIndicatorContentTranslate != null)
-                {
-                    VolumeIndicatorContentTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-                    VolumeIndicatorContentTranslate.Y = 0;
-                }
-            }
-        };
-        VolumeIndicatorContainer.BeginAnimation(OpacityProperty, fadeOut);
-
+            ClearVolumeIndicatorTransitionEffects();
+            VolumeIndicatorContainer.Visibility = Visibility.Collapsed;
+            VolumeIndicatorContainer.IsHitTestVisible = true;
+        });
         // Without music the resting content (time, weather, Claude) comes back instead of cover and bars.
         if (_levelHudOverIdle || !_isMusicCompactMode)
         {
@@ -1325,91 +1187,36 @@ public partial class MainWindow
     private void DismissVolumeIndicatorImmediate(bool restoreMedia = false, bool animateExit = false)
     {
         CancelMicDive();
-        int exitVersion = ++_volumeIndicatorExitVersion;
-        int transitionVersion = ++_volumeIndicatorTransitionVersion;
-        _isVolumeIndicatorExiting = animateExit;
+        ++_volumeIndicatorExitVersion;
         _volumeIndicatorHideTimer?.Stop();
         ResetCompactVolumeWheelIntent();
+        // The next shell owns geometry; freeze the squeezed face before releasing its layout layer.
+        if (animateExit) KeepCompactDeparture(VolumeIndicatorContainer);
         int token = _volumeIndicatorToken;
-
         _isVolumeIndicatorActive = false;
+        _isVolumeIndicatorExiting = false;
         _volumeSynced = false;
         _isDraggingVolumeIndicator = false;
         _compactPillArbiter.Release(token);
         _volumeIndicatorToken = 0;
-
-        if (!_isExpanded && !_isAnimating && NotchBorder != null)
-        {
-            NotchBorder.BeginAnimation(HeightProperty, null);
-            NotchBorder.Height = _collapsedHeight;
-        }
-
-        if (VolumeIndicatorContainer != null)
-        {
-            VolumeIndicatorContainer.ReleaseMouseCapture();
-            double liveOpacity = VolumeIndicatorContainer.Opacity;
-            VolumeIndicatorContainer.BeginAnimation(OpacityProperty, null);
-            VolumeIndicatorContainer.Opacity = 0;
-            if (animateExit && VolumeIndicatorContainer.Visibility == Visibility.Visible)
-            {
-                VolumeIndicatorContainer.IsHitTestVisible = false;
-                if (!AnimationConfig.ReduceMotion)
-                {
-                    if (VolumeIndicatorContentScale != null)
-                    {
-                        var outSx = MakeAnim(1.0, 0.88, _dur200, _easeQuadOut);
-                        var outSy = MakeAnim(1.0, 0.76, _dur200, _easeQuadOut);
-                        VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleXProperty, outSx);
-                        VolumeIndicatorContentScale.BeginAnimation(ScaleTransform.ScaleYProperty, outSy);
-                    }
-                    if (_settings.EnableBlurEffects)
-                    {
-                        _volumeIndicatorTransitionBlur ??= new BlurEffect { RenderingBias = RenderingBias.Performance };
-                        _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-                        _volumeIndicatorTransitionBlur.Radius = 0.0;
-                        VolumeIndicatorContainer.Effect = _volumeIndicatorTransitionBlur;
-                        var blurOut = MakeAnim(0.0, 8.0, _dur200, _easeQuadOut, VNotch.Services.AnimationConfig.TargetFps);
-                        _volumeIndicatorTransitionBlur.BeginAnimation(BlurEffect.RadiusProperty, blurOut);
-                    }
-                }
-                var fadeOut = MakeAnim(liveOpacity, 0.0, _dur250, _easeQuadOut);
-                fadeOut.Completed += (_, _) =>
-                {
-                    if (exitVersion != _volumeIndicatorExitVersion) return;
-                    _isVolumeIndicatorExiting = false;
-                    if (transitionVersion == _volumeIndicatorTransitionVersion)
-                    {
-                        ClearVolumeIndicatorTransitionEffects();
-                    }
-                    VolumeIndicatorContainer.Visibility = Visibility.Collapsed;
-                    VolumeIndicatorContainer.BeginAnimation(OpacityProperty, null);
-                    VolumeIndicatorContainer.IsHitTestVisible = true;
-                };
-                VolumeIndicatorContainer.BeginAnimation(OpacityProperty, fadeOut);
-            }
-            else
-            {
-                _isVolumeIndicatorExiting = false;
-                ClearVolumeIndicatorTransitionEffects();
-                VolumeIndicatorContainer.Visibility = Visibility.Collapsed;
-                VolumeIndicatorContainer.IsHitTestVisible = true;
-            }
-        }
-
-        if (CompactThumbnailBorder != null)
-        {
-            CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
-        }
-        if (MusicViz != null)
-        {
-            MusicViz.BeginAnimation(OpacityProperty, null);
-        }
-
+        if (!animateExit && !_isExpanded && !_isAnimating)
+            Motion.Stop(NotchBorder, HeightProperty, _collapsedHeight);
+        _levelHudAttachment?.Detach(false);
+        VolumeIndicatorContainer.ReleaseMouseCapture();
+        ClearVolumeIndicatorTransitionEffects();
+        Motion.Stop(VolumeIndicatorContainer, OpacityProperty, 0);
+        Motion.Stop(VolumeIndicatorContentScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(VolumeIndicatorContentScale, ScaleTransform.ScaleYProperty, 1);
+        Motion.Stop(VolumeIndicatorContentTranslate, TranslateTransform.XProperty, 0);
+        Motion.Stop(VolumeIndicatorContentTranslate, TranslateTransform.YProperty, 0);
+        VolumeIndicatorContainer.Visibility = Visibility.Collapsed;
+        VolumeIndicatorContainer.IsHitTestVisible = true;
+        CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
+        MusicViz.BeginAnimation(OpacityProperty, null);
         RestorePrivacyDotVisibility();
         ReleaseIdleUnderHud();
         if (restoreMedia) RestoreCompactMediaPresentation();
     }
-
     #region Volume Indicator Drag
 
     private bool _isDraggingVolumeIndicator = false;
@@ -1419,6 +1226,7 @@ public partial class MainWindow
         if (_levelHudKind == LevelHudKind.MicMute) return;
         e.Handled = true;
         _isDraggingVolumeIndicator = true;
+        _volumeHudRubberAt = DateTime.MinValue;
         VolumeIndicatorContainer.CaptureMouse();
         SetVolumeFromIndicatorPosition(e);
 
@@ -1438,7 +1246,17 @@ public partial class MainWindow
         e.Handled = true;
         _isDraggingVolumeIndicator = false;
         VolumeIndicatorContainer.ReleaseMouseCapture();
+        ReleaseVolumeIndicatorRubber();
 
+        _volumeIndicatorHideTimer?.Stop();
+        _volumeIndicatorHideTimer?.Start();
+    }
+
+    private void VolumeIndicator_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (!_isDraggingVolumeIndicator || !ReferenceEquals(e.OriginalSource, VolumeIndicatorContainer)) return;
+        _isDraggingVolumeIndicator = false;
+        ReleaseVolumeIndicatorRubber();
         _volumeIndicatorHideTimer?.Stop();
         _volumeIndicatorHideTimer?.Start();
     }
@@ -1457,6 +1275,7 @@ public partial class MainWindow
         {
             PlayVolumeOverscrollSpring(Math.Clamp(rawRatio, 0.0, 1.0), rawRatio > 1.0 ? (rawRatio - 1.0) : rawRatio);
         }
+        else SetVolumeIndicatorRubber(0, DateTime.UtcNow);
         float newVolume = (float)Math.Clamp(rawRatio, 0.0, 1.0);
         // The power mode has four steps: the bar snaps to the one under the finger.
         if (_levelHudKind == LevelHudKind.PowerMode) newVolume = PowerModeStep(newVolume) / (float)PowerModeSteps;

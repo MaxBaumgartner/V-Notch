@@ -163,6 +163,8 @@ public partial class MainWindow
         if (result.Action == MediaDisplayAction.Ignore)
             return;
 
+        PresentMusicTrack(info, result.IsNewTrack);
+
         // Browser session/title changes also publish empty and stopped states.
         // Only active media should reveal the idle notch; artwork is a refresh.
         if (!isThumbnailOnlyUpdate && info.IsAnyMediaPlaying)
@@ -185,7 +187,7 @@ public partial class MainWindow
         {
             if (result.IsNewTrack)
             {
-                MediaPlayback.TransitionTrackText(result.DisplayText.Title, result.DisplayText.Artist);
+                MediaPlayback.TransitionTrackText(result.DisplayText.Title, result.DisplayText.Artist, _musicDirection);
             }
             else
             {
@@ -395,12 +397,20 @@ public partial class MainWindow
 
         MusicViz.TrackId = info?.GetSignature() ?? "";
         MusicViz.IsPlaying = info?.IsPlaying ?? false;
+        if (!result.HasRealTrack && !info!.IsAnyMediaPlaying) ResetMusicMotion();
+        else RestoreMusicCanonicalCover();
     }
 #pragma warning restore S3776
 
 #pragma warning disable S3776 // Complex thumbnail morph animation with multiple easing phases and fallback paths
     private void AnimateThumbnailSwitchOnly(ImageSource newThumb, bool force = false)
     {
+        if (AnimationConfig.ReduceMotion && CanSwipeMusic)
+        {
+            _pendingFlipThumbnail = null;
+            CancelThumbnailSwitchAnimations(newThumb);
+            return;
+        }
         if (IsCountdownCompletionVisualActive)
         {
             ThumbnailImage.Source = newThumb;
@@ -571,6 +581,8 @@ public partial class MainWindow
             ThumbnailNextBlur.Radius = 0.0;
             CompactThumbnailOutBlur.Radius = 0.0;
             CompactThumbnailNextBlur.Radius = 0.0;
+
+            RestoreMusicCanonicalCover();
 
             if (_isMusicCompactMode && _currentMediaInfo?.IsPlaying == true
                 && !_isClipboardPeekActive && !_isVolumeIndicatorActive)
@@ -1209,7 +1221,7 @@ public partial class MainWindow
         if (!_isShimmerActive) return;
         _isShimmerActive = false;
 
-        _titleShimmerStoryboard?.Stop(this);
+        _titleShimmerStoryboard?.Remove(this);
         _titleShimmerStoryboard = null;
 
         if (TryFindResource("TrackTitleGradient") is Brush normalBrush)

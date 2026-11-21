@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Windows;
 
@@ -13,24 +14,69 @@ public sealed partial class GestureController
     private DateTime _lastSwipeTime = DateTime.MinValue;
     private DateTime _lastTapTime = DateTime.MinValue;
     private bool _gestureTriggered;
+    private bool _allowShellDrag, _expanded, _allowMediaGestures;
+    private readonly Queue<(DateTime At, double Y)> _verticalSamples = new();
+    private readonly Queue<(DateTime At, double X)> _horizontalSamples = new();
+    private int _axis;
+    public bool IsVerticalDrag => _axis == 2;
+    public bool HasDragAxis => _axis != 0;
+    public double VerticalVelocity { get; private set; }
+    public double HorizontalVelocity { get; private set; }
+
+    public bool ShouldSkipTrack => _expanded && _axis == 1 && _allowMediaGestures &&
+        (Math.Abs(_accumulatedX) > 55 || Math.Abs(HorizontalVelocity) > 450 &&
+            Math.Sign(HorizontalVelocity) == Math.Sign(_accumulatedX));
 
     public event Action? SwipeLeft;
     public event Action? SwipeRight;
     public event Action? SwipeDown;
     public event Action? DoubleTap;
 
-    public void BeginTracking(Point position)
+    public void BeginTracking(Point position, bool allowShellDrag = false, bool expanded = false,
+        DateTime? timestamp = null, bool allowMediaGestures = true)
     {
         _isTracking = true;
         _startPoint = position;
         _accumulatedX = 0;
         _accumulatedY = 0;
         _gestureTriggered = false;
+        _allowShellDrag = allowShellDrag;
+        _expanded = expanded;
+        _allowMediaGestures = allowMediaGestures;
+        _axis = 0;
+        VerticalVelocity = 0;
+        HorizontalVelocity = 0;
+        _horizontalSamples.Clear();
+        _horizontalSamples.Enqueue((timestamp ?? DateTime.UtcNow, position.X));
+        _verticalSamples.Clear();
+        _verticalSamples.Enqueue((timestamp ?? DateTime.UtcNow, position.Y));
     }
 
-    public bool UpdateTracking(Point currentPosition)
+    public bool UpdateTracking(Point currentPosition, DateTime? timestamp = null)
     {
         if (!_isTracking || _gestureTriggered) return false;
+
+        if (_allowShellDrag)
+        {
+            _accumulatedX = currentPosition.X - _startPoint.X;
+            _accumulatedY = currentPosition.Y - _startPoint.Y;
+            if (_axis == 0 && Math.Sqrt(_accumulatedX * _accumulatedX + _accumulatedY * _accumulatedY) >= 6)
+                _axis = Math.Abs(_accumulatedY) > Math.Abs(_accumulatedX) && (_expanded || _accumulatedY > 0) ? 2 : 1;
+            var now = timestamp ?? DateTime.UtcNow;
+            _verticalSamples.Enqueue((now, currentPosition.Y));
+            while (_verticalSamples.Count > 2 && (now - _verticalSamples.Peek().At).TotalMilliseconds > 90)
+                _verticalSamples.Dequeue();
+            var first = _verticalSamples.Peek();
+            double seconds = (now - first.At).TotalSeconds;
+            VerticalVelocity = seconds > 0 ? (currentPosition.Y - first.Y) / seconds : 0;
+            _horizontalSamples.Enqueue((now, currentPosition.X));
+            while (_horizontalSamples.Count > 2 && (now - _horizontalSamples.Peek().At).TotalMilliseconds > 90)
+                _horizontalSamples.Dequeue();
+            var horizontalFirst = _horizontalSamples.Peek();
+            double horizontalSeconds = (now - horizontalFirst.At).TotalSeconds;
+            HorizontalVelocity = horizontalSeconds > 0 ? (currentPosition.X - horizontalFirst.X) / horizontalSeconds : 0;
+            if (IsVerticalDrag || _expanded || !_allowMediaGestures) return false;
+        }
 
         double elapsedMs = (DateTime.UtcNow - _lastSwipeTime).TotalMilliseconds;
         vn_gesture_evaluate_move(
@@ -40,7 +86,7 @@ public sealed partial class GestureController
             out _accumulatedX, out _accumulatedY,
             out int gestureKind);
 
-        if (gestureKind == 0) return false;
+        if (gestureKind == 0 || (_allowShellDrag && gestureKind == 3)) return false;
 
         _gestureTriggered = true;
         _lastSwipeTime = DateTime.UtcNow;
@@ -64,6 +110,8 @@ public sealed partial class GestureController
     {
         if (!_isTracking) return false;
         _isTracking = false;
+
+        if (IsVerticalDrag || !_allowMediaGestures) return false;
 
         if (_gestureTriggered) return false;
 

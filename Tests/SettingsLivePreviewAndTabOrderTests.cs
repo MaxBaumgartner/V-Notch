@@ -19,7 +19,7 @@ public sealed class SettingsLivePreviewAndTabOrderTests
 
         List<string> resolved = SettingsWindow.ResolveFullNavTabOrder(legacyOrder);
 
-        Assert.Equal(new[] { "Media", "Secondary", "Timer", "AudioMixer", "Camera", "Claude", "Pi", "School", "Weather" }, resolved);
+        Assert.Equal(new[] { "Media", "Secondary", "Timer", "AudioMixer", "Camera", "Claude", "Pi", "School" }, resolved);
     }
 
     [Fact]
@@ -38,18 +38,18 @@ public sealed class SettingsLivePreviewAndTabOrderTests
         orderTokens.Insert(targetSlot, movedToken);
         string updatedOrder = string.Join(",", orderTokens);
 
-        Assert.Equal("Media,Camera,Secondary,Timer,AudioMixer,Claude,Pi,School,Weather", updatedOrder);
+        Assert.Equal("Media,Camera,Secondary,Timer,AudioMixer,Claude,Pi,School", updatedOrder);
     }
 
     [Fact]
     public void ResolveFullNavTabOrder_DeduplicatesCaseInsensitivelyAndHandlesNull()
     {
         List<string> fromNull = SettingsWindow.ResolveFullNavTabOrder(null);
-        Assert.Equal(9, fromNull.Count);
+        Assert.Equal(8, fromNull.Count);
         Assert.Contains("Camera", fromNull, StringComparer.OrdinalIgnoreCase);
 
         List<string> deduplicated = SettingsWindow.ResolveFullNavTabOrder("Media,camera,Timer,CAMERA,Secondary");
-        Assert.Equal(new[] { "Media", "camera", "Timer", "Secondary", "AudioMixer", "Claude", "Pi", "School", "Weather" }, deduplicated);
+        Assert.Equal(new[] { "Media", "camera", "Timer", "Secondary", "AudioMixer", "Claude", "Pi", "School" }, deduplicated);
     }
 
     [Fact]

@@ -31,6 +31,39 @@ public partial class MainWindow
     private int _dragTargetSlot = -1;
     private readonly Dictionary<FrameworkElement, double> _neighborTargetOffsets = new();
     private readonly List<FrameworkElement> _visibleNavChildrenBuffer = new(8);
+    private Border? _navSelectionIndicator;
+    private readonly TranslateTransform _navSelectionTranslate = new();
+    private NotchView? _navSelectionView;
+
+    private void UpdateNavSelection(NotchView target, bool animate)
+    {
+        if (target == NotchView.Compact) return;
+        var visible = CollectVisibleNavChildren();
+        int slot = visible.FindIndex(item => item.Tag is string tag && tag == target.ToString());
+        if (slot < 0) return;
+        bool first = _navSelectionIndicator == null;
+        if (first)
+        {
+            _navSelectionIndicator = new Border
+            {
+                Width = 22, Height = 22, CornerRadius = new CornerRadius(7),
+                Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+                Margin = NavTabsStackPanel.Margin, IsHitTestVisible = false, RenderTransform = _navSelectionTranslate
+            };
+            NavIconsPanel.Children.Insert(0, _navSelectionIndicator);
+        }
+        if (animate && !first)
+            Motion.To(_navSelectionTranslate, TranslateTransform.XProperty, slot * NavTabSlotWidth, Motion.Shift);
+        else Motion.Stop(_navSelectionTranslate, TranslateTransform.XProperty, slot * NavTabSlotWidth);
+        if (_navSelectionView != target && animate && _navSelectionView != null &&
+            visible[slot].RenderTransform is TransformGroup group && FindScaleTransform(group) is { } scale)
+        {
+            Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, from: .8);
+            Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, from: .8);
+        }
+        _navSelectionView = target;
+    }
 
     [LibraryImport("VNotch.Native")]
     private static partial int vn_nav_tabs_calculate_target_slot_hysteresis(
@@ -406,8 +439,7 @@ public partial class MainWindow
             (_isClaudeView && item == ClaudeIconButton) ||
             (_isPiView && item == PiIconButton) ||
             (_isSchoolView && item == SchoolIconButton) ||
-            (_isWeatherView && item == WeatherIconButton) ||
-            (!_isAudioView && !_isTimerView && !_isSecondaryView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isWeatherView && item == HomeIconButton))
+            (!_isAudioView && !_isTimerView && !_isSecondaryView && !_isClaudeView && !_isPiView && !_isSchoolView && item == HomeIconButton))
         {
             targetOpacity = 1.0;
         }
@@ -577,8 +609,7 @@ public partial class MainWindow
             (_isSecondaryView && !visibleTokens.Contains("Secondary")) || (_isCameraView && !visibleTokens.Contains("Camera")) ||
             (_isClaudeView && !visibleTokens.Contains("Claude")) ||
             (_isPiView && !visibleTokens.Contains("Pi")) ||
-            (_isSchoolView && !visibleTokens.Contains("School")) ||
-            (_isWeatherView && !visibleTokens.Contains("Weather")))
+            (_isSchoolView && !visibleTokens.Contains("School")))
         {
             NavigateToNotchView(NotchView.Media);
         }

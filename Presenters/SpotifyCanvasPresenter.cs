@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using VNotch.Services;
@@ -16,7 +17,9 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
     private readonly UiScheduledTimer _loopTimer;
     private readonly UiScheduledTimer _crossfadeTimer;
 
-    private MediaElement _activeVideo;
+    private MediaElement? _primaryVideo;
+    private MediaElement? _alternateVideo;
+    private MediaElement? _activeVideo;
     private MediaElement? _standbyVideo;
 
     private bool _isMediaOpen;
@@ -49,9 +52,6 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
         _refs = refs ?? throw new ArgumentNullException(nameof(refs));
         ArgumentNullException.ThrowIfNull(dispatcher);
 
-        _activeVideo = _refs.Video;
-        _standbyVideo = _refs.VideoAlt;
-
         _loopTimer = new UiScheduledTimer(DispatcherPriority.Normal, dispatcher)
         {
             Interval = TimeSpan.FromMilliseconds(100)
@@ -65,11 +65,36 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
         _crossfadeTimer.Tick += OnCrossfadeTimerTick;
 
         _refs.Background.SizeChanged += OnBackgroundSizeChanged;
-        HookVideoEvents(_refs.Video);
-        if (_refs.VideoAlt != null)
+        if (refs.Video != null) AttachPlayers(refs.Video, refs.VideoAlt);
+    }
+
+    private MediaElement AttachPlayers(MediaElement primary, MediaElement? alternate)
+    {
+        _primaryVideo = _activeVideo = primary;
+        _alternateVideo = _standbyVideo = alternate;
+        HookVideoEvents(primary);
+        if (alternate != null) HookVideoEvents(alternate);
+        return primary;
+    }
+
+    private MediaElement CreatePlayer(double opacity)
+    {
+        var video = new MediaElement
         {
-            HookVideoEvents(_refs.VideoAlt);
-        }
+            LoadedBehavior = MediaState.Manual,
+            UnloadedBehavior = MediaState.Manual,
+            Stretch = Stretch.UniformToFill,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsMuted = true,
+            ScrubbingEnabled = true,
+            Opacity = opacity
+        };
+        // Under the brightness overlay and the edge fades, where the XAML players used to sit.
+        int below = 0;
+        foreach (var child in _refs.Viewport.Children) if (child is MediaElement) below++;
+        _refs.Viewport.Children.Insert(below, video);
+        return video;
     }
 
     private void StopLoopMonitoring()
@@ -99,7 +124,7 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
     {
         if (_disposed) return;
         _shouldPlay = isPlaying;
-        if (!_isMediaOpen || _refs.Background.Visibility != Visibility.Visible || _activeVideo.Source == null)
+        if (!_isMediaOpen || _refs.Background.Visibility != Visibility.Visible || _activeVideo?.Source == null)
             return;
 
         try
@@ -141,7 +166,7 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
 
             // Preserve current frame and fade on repeated Canvas requests instead of
             // blanking and restarting playback on every update.
-            if (_currentUri == uri && (_refs.Video.Source == uri || (_refs.VideoAlt != null && _refs.VideoAlt.Source == uri)) && _refs.Background.Visibility == Visibility.Visible)
+            if (_currentUri == uri && (_primaryVideo?.Source == uri || _alternateVideo?.Source == uri) && _refs.Background.Visibility == Visibility.Visible)
             {
                 SetPlaybackState(autoPlay);
                 if (_isMediaOpen) FadeInBackgroundIfReady();
@@ -159,9 +184,9 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
             _currentUri = uri;
             _isMediaOpen = false;
 
-            // Reset roles: Primary Video is active, VideoAlt is standby
-            _activeVideo = _refs.Video;
-            _standbyVideo = _refs.VideoAlt;
+            // Loading the media stack can wait until a track actually has a Canvas.
+            _activeVideo = _primaryVideo ?? AttachPlayers(CreatePlayer(1), CreatePlayer(0));
+            _standbyVideo = _alternateVideo;
 
             Panel.SetZIndex(_activeVideo, 2);
             _activeVideo.BeginAnimation(UIElement.OpacityProperty, null);
@@ -203,8 +228,11 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
         if (_disposed) return;
         _options = options;
 
-        _activeVideo.BeginAnimation(UIElement.OpacityProperty, null);
-        _activeVideo.Opacity = 1.0;
+        if (_activeVideo != null)
+        {
+            _activeVideo.BeginAnimation(UIElement.OpacityProperty, null);
+            _activeVideo.Opacity = 1.0;
+        }
 
         if (_standbyVideo != null && !_isSwapping)
         {
@@ -270,11 +298,8 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
             }
             else
             {
-                _refs.Video.Stop();
-                if (_refs.VideoAlt != null)
-                {
-                    _refs.VideoAlt.Stop();
-                }
+                _primaryVideo?.Stop();
+                _alternateVideo?.Stop();
             }
         }
         catch
@@ -298,14 +323,11 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
         _fadeInProgress = false;
         _currentUri = null;
 
-        ReleaseVideo(_refs.Video);
-        if (_refs.VideoAlt != null)
-        {
-            ReleaseVideo(_refs.VideoAlt);
-        }
+        if (_primaryVideo != null) ReleaseVideo(_primaryVideo);
+        if (_alternateVideo != null) ReleaseVideo(_alternateVideo);
 
-        _activeVideo = _refs.Video;
-        _standbyVideo = _refs.VideoAlt;
+        _activeVideo = _primaryVideo;
+        _standbyVideo = _alternateVideo;
     }
 
     private static void ReleaseVideo(MediaElement video)
@@ -384,7 +406,7 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
             _fadeInProgress = false;
             _refs.Background.Opacity = 1;
             _refs.Background.BeginAnimation(UIElement.OpacityProperty, null);
-            if (_isMediaOpen && (_options?.CanFadeIn ?? true) && _activeVideo.Source == canvasUri && _sourceVersion == sourceVersion)
+            if (_isMediaOpen && (_options?.CanFadeIn ?? true) && _activeVideo?.Source == canvasUri && _sourceVersion == sourceVersion)
             {
                 HideBlurFallback(animate: false);
             }
@@ -400,17 +422,17 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
         double viewportWidth = _refs.Viewport.ActualWidth;
         double viewportHeight = _refs.Viewport.ActualHeight;
 
-        if (viewportWidth <= 0 || viewportHeight <= 0)
+        if (_primaryVideo == null || viewportWidth <= 0 || viewportHeight <= 0)
             return;
 
-        UpdateVideoCrop(_refs.Video, viewportWidth, viewportHeight);
-        if (_refs.VideoAlt != null)
+        UpdateVideoCrop(_primaryVideo, viewportWidth, viewportHeight);
+        if (_alternateVideo != null)
         {
-            UpdateVideoCrop(_refs.VideoAlt, viewportWidth, viewportHeight);
-            if (double.IsNaN(_refs.VideoAlt.Width) && !double.IsNaN(_refs.Video.Width))
+            UpdateVideoCrop(_alternateVideo, viewportWidth, viewportHeight);
+            if (double.IsNaN(_alternateVideo.Width) && !double.IsNaN(_primaryVideo.Width))
             {
-                _refs.VideoAlt.Width = _refs.Video.Width;
-                _refs.VideoAlt.Height = _refs.Video.Height;
+                _alternateVideo.Width = _primaryVideo.Width;
+                _alternateVideo.Height = _primaryVideo.Height;
             }
         }
     }
@@ -562,7 +584,7 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
 
     private void OnLoopTimerTick(object? sender, EventArgs e)
     {
-        if (_disposed || !_shouldPlay || !_isMediaOpen || _isSwapping)
+        if (_disposed || !_shouldPlay || !_isMediaOpen || _isSwapping || _activeVideo == null)
             return;
 
         // Check if active video is within 300ms of the end; if so, pre-roll the standby video
@@ -606,7 +628,7 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
 
     private void StartPreRollLoop()
     {
-        if (_disposed || _currentUri == null || _isSwapping)
+        if (_disposed || _currentUri == null || _isSwapping || _activeVideo == null)
             return;
 
         if (_standbyVideo == null || _standbyVideo.Source != _currentUri)
@@ -650,7 +672,7 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
     private void OnCrossfadeTimerTick(object? sender, EventArgs e)
     {
         _crossfadeTimer.Stop();
-        if (_disposed || !_isSwapping || _standbyVideo == null) return;
+        if (_disposed || !_isSwapping || _standbyVideo == null || _activeVideo == null) return;
 
         var outgoing = _activeVideo;
         var incoming = _standbyVideo;
@@ -772,11 +794,13 @@ public sealed class SpotifyCanvasPresenter : ISpotifyCanvasPresenter
         _crossfadeTimer.Dispose();
 
         _refs.Background.SizeChanged -= OnBackgroundSizeChanged;
-        UnhookVideoEvents(_refs.Video);
-        if (_refs.VideoAlt != null)
-        {
-            UnhookVideoEvents(_refs.VideoAlt);
-        }
+        if (_primaryVideo != null) UnhookVideoEvents(_primaryVideo);
+        if (_alternateVideo != null) UnhookVideoEvents(_alternateVideo);
         Release();
+        if (_refs.Video == null && _primaryVideo != null && _alternateVideo != null)
+        {
+            _refs.Viewport.Children.Remove(_primaryVideo);
+            _refs.Viewport.Children.Remove(_alternateVideo);
+        }
     }
 }

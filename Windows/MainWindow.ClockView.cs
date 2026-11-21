@@ -12,8 +12,8 @@ public partial class MainWindow : IClockWidgetHost
 {
     #region Clock View geometry constants (read by MainWindow.Timer.cs)
 
-    private const double _clockViewWidth = 720;
-    private const double _clockViewHeight = 378;
+    private const double _clockViewWidth = 600;
+    private double _clockViewHeight => MeasureSystemViewHeight();
 
     #endregion
 
@@ -86,7 +86,12 @@ public partial class MainWindow : IClockWidgetHost
 
     private void UpdateClockViewCalendar(DateTime now) => _clockWidgetPresenter?.UpdateClockViewCalendar(now);
 
-    private void PrepareClockViewContentSize() => EnsureClockWidgetPresenterLoaded().PrepareClockViewContentSize();
+    private void PrepareClockViewContentSize()
+    {
+        EnsureClockWidgetPresenterLoaded().PrepareClockViewContentSize();
+        TimerContent.Width = _clockViewWidth - TimerContent.Margin.Left - TimerContent.Margin.Right;
+        TimerContent.Height = Math.Max(0, MeasureSystemViewHeight() - TimerContent.Margin.Top - TimerContent.Margin.Bottom);
+    }
 
     private void ApplyClockViewWindowSize() => EnsureClockWidgetPresenterLoaded().ApplyClockViewWindowSize();
 

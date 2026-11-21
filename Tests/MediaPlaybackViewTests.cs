@@ -12,6 +12,43 @@ namespace VNotch.Tests;
 public sealed class MediaPlaybackViewTests
 {
     [Fact]
+    public void TrackUpdatesWhileHiddenSettleOnTheLatestTextWithoutClocks() => SharedStaTestRunner.Run(() =>
+    {
+        using var view = new MediaPlaybackView();
+        view.TransitionTrackText("First", "First artist");
+        view.TransitionTrackText("Latest", "Latest artist", -1);
+        view.UpdateArtistText("Corrected artist");
+        Assert.Equal("Latest", view.TrackTitle.Text);
+        Assert.Equal("Corrected artist", view.TrackArtist.Text);
+        Assert.False(view.TitleMorphTranslate.HasAnimatedProperties);
+        Assert.False(view.TitleMarqueeTranslate.HasAnimatedProperties);
+        Assert.False(view.TrackTitleLayer.HasAnimatedProperties);
+    });
+
+    [Fact]
+    public void PlaybackMorphReversesFromItsCurrentShapeAndHidingStopsItsClock() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        using var view = new MediaPlaybackView();
+        var host = new Window { Content = view, Width = 400, Height = 200, Left = -20000, Top = -20000, ShowInTaskbar = false };
+        try
+        {
+            host.Show();
+            view.PresentPlayback(true);
+            view.PresentPlayback(false);
+            await WpfFrameWaiter.UntilAsync(() => (double)view.GetValue(MediaPlaybackView.PlaybackMorphProperty) > .1, "bars start folding", ct);
+            double shape = (double)view.GetValue(MediaPlaybackView.PlaybackMorphProperty);
+            view.PresentPlayback(true);
+            Assert.Equal(shape, (double)view.GetValue(MediaPlaybackView.PlaybackMorphProperty), 4);
+            Assert.Equal(Visibility.Collapsed, view.PlayIcon.Visibility);
+            Assert.Equal(Visibility.Visible, view.PauseIcon.Visibility);
+            view.Visibility = Visibility.Collapsed;
+            Assert.False(Motion.IsRunning(view, MediaPlaybackView.PlaybackMorphProperty));
+            Assert.Equal(0d, view.GetValue(MediaPlaybackView.PlaybackMorphProperty));
+        }
+        finally { host.Close(); }
+    });
+
+    [Fact]
     public void HidingCancelsRewindAndItsAnimationClock() => SharedStaTestRunner.RunAsync(async ct =>
     {
         using var view = new MediaPlaybackView();

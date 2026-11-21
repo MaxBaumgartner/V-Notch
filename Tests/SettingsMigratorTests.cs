@@ -57,9 +57,9 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Weather,Legion,AudioMixer,Camera")]
-    [InlineData("AudioMixer,Media", "AudioMixer,Media,Claude,Pi,School,Weather,Legion")]
-    [InlineData("Media,Claude,Timer", "Media,Claude,Pi,School,Weather,Legion,Timer")]
+    [InlineData("Media,Secondary,Timer,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Legion,AudioMixer,Camera")]
+    [InlineData("AudioMixer,Media", "AudioMixer,Media,Claude,Pi,School,Legion")]
+    [InlineData("Media,Claude,Timer", "Media,Claude,Pi,School,Legion,Timer")]
     public void Migrate_Version14_AddsTheClaudeTabNextToTheControls(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 14, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
@@ -70,9 +70,9 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,Claude,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Weather,Legion,AudioMixer,Camera")]
-    [InlineData("Media,AudioMixer", "Media,AudioMixer,Pi,School,Weather,Legion")]
-    [InlineData("Pi,Media,Claude", "Pi,School,Weather,Legion,Media,Claude")]
+    [InlineData("Media,Secondary,Timer,Claude,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Legion,AudioMixer,Camera")]
+    [InlineData("Media,AudioMixer", "Media,AudioMixer,Pi,School,Legion")]
+    [InlineData("Pi,Media,Claude", "Pi,School,Legion,Media,Claude")]
     public void Migrate_Version15_AddsThePiTabNextToClaude(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 15, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
@@ -83,10 +83,10 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,Claude,Pi,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Weather,Legion,AudioMixer,Camera")]
-    [InlineData("Media,AudioMixer", "Media,AudioMixer,Weather,Legion,School")]
-    [InlineData("Weather,Media,Pi", "Weather,Legion,Media,Pi,School")]
-    public void Migrate_Version16_AddsTheWeatherTabNextToPi(string saved, string expected)
+    [InlineData("Media,Secondary,Timer,Claude,Pi,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Legion,AudioMixer,Camera")]
+    [InlineData("Media,AudioMixer", "Media,AudioMixer,Legion,School")]
+    [InlineData("Weather,Media,Pi", "Legion,Media,Pi,School")]
+    public void Migrate_Version16_RemovesTheFormerWeatherTab(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 16, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
@@ -96,9 +96,9 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Weather,Legion,AudioMixer,Camera")]
+    [InlineData("Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Legion,AudioMixer,Camera")]
     [InlineData("Media,AudioMixer", "Media,AudioMixer,Legion,School")]
-    [InlineData("Legion,Media,Weather", "Legion,Media,Weather,School")]
+    [InlineData("Legion,Media,Weather", "Legion,Media,School")]
     public void Migrate_Version17_AddsTheLegionTabNextToWeather(string saved, string expected)
     {
         string json = $$"""{ "SettingsVersion": 17, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
@@ -109,7 +109,7 @@ public class SettingsMigratorTests
     }
 
     [Theory]
-    [InlineData("Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Weather,Legion,AudioMixer,Camera")]
+    [InlineData("Media,Secondary,Timer,Claude,Pi,Weather,Legion,AudioMixer,Camera", "Media,Secondary,Timer,Claude,Pi,School,Legion,AudioMixer,Camera")]
     [InlineData("Media,AudioMixer", "Media,AudioMixer,School")]
     [InlineData("School,Media,Pi", "School,Media,Pi")]
     public void Migrate_Version18_AddsTheSchoolTabNextToHome(string saved, string expected)
@@ -119,6 +119,16 @@ public class SettingsMigratorTests
         Assert.True(migrated);
         Assert.Equal(expected, settings.NavTabOrder);
         Assert.Equal(expected, settings.VisibleNavTabs);
+    }
+
+    [Fact]
+    public void MigrationDropsWeatherFromBothSavedTabLists()
+    {
+        const string json = """{ "SettingsVersion": 19, "NavTabOrder": " Weather,Media,wEATHER,Pi ", "VisibleNavTabs": "Media,weather" }""";
+        var (settings, migrated) = SettingsMigrator.Migrate(json);
+        Assert.True(migrated);
+        Assert.Equal("Media,Pi", settings.NavTabOrder);
+        Assert.Equal("Media", settings.VisibleNavTabs);
     }
 
     [Fact]

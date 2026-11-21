@@ -95,9 +95,8 @@ public sealed class MainWindowVolumeInteractionTests
         Assert.True(Get<bool>(window, "_isVolumeIndicatorActive"));
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.VolumeIndicatorContainer.Opacity - 1) < 1e-6, "volume indicator entrance", ct);
         Invoke(window, "DismissVolumeIndicatorImmediate", true, true);
-        Assert.True(Get<bool>(window, "_isVolumeIndicatorExiting"));
-        Assert.False(window.VolumeIndicatorContainer.IsHitTestVisible);
-        await WpfFrameWaiter.UntilAsync(() => !Get<bool>(window, "_isVolumeIndicatorExiting"), "volume indicator exit", ct);
+        // The outgoing snapshot owns departure, so the live HUD releases input and layout immediately.
+        Assert.False(Get<bool>(window, "_isVolumeIndicatorExiting"));
         Assert.Equal(Visibility.Collapsed, window.VolumeIndicatorContainer.Visibility);
         Assert.True(window.VolumeIndicatorContainer.IsHitTestVisible);
     });
@@ -338,6 +337,8 @@ public sealed class MainWindowVolumeInteractionTests
         Assert.Equal("0%", window.VolumeIndicatorPercentText.Text);
         Assert.Equal("", window.VolumeIndicatorIcon.Text);
         Assert.Equal(Visibility.Visible, window.VolumeIndicatorMuteSlash.Visibility);
+        await WpfFrameWaiter.UntilAsync(() => window.VolumeIndicatorWave1.Opacity < .00005 &&
+            window.VolumeIndicatorWave2.Opacity < .00005, "speaker waves leave on mute", ct);
         Assert.Equal(0.0, window.VolumeIndicatorWave1.Opacity, 4);
         Assert.Equal(0.0, window.VolumeIndicatorWave2.Opacity, 4);
         Assert.Null(window.VolumeIndicatorPercentText.Effect);
@@ -354,11 +355,14 @@ public sealed class MainWindowVolumeInteractionTests
         Assert.Equal(collapsedHeight, window.NotchBorder.Height, 3);
         Assert.Null(window.VolumeIndicatorContainer.Effect);
 
-        // Verify full entrance + exit morph & transient blur cleanup
+        // The face has its final layout; its parent follows the shell without a separate blur timeline.
         Invoke(window, "ShowVolumeIndicator", .65f);
+        var attachedFace = Assert.IsAssignableFrom<FrameworkElement>(window.VolumeIndicatorContainer.Parent);
+        Assert.Equal(new Point(.5, 0), attachedFace.RenderTransformOrigin);
+        Assert.True(attachedFace.Width > collapsedHeight);
         await WpfFrameWaiter.UntilAsync(
-            () => Math.Abs(window.VolumeIndicatorContainer.Opacity - 1.0) < 0.01 && window.VolumeIndicatorContainer.Effect == null,
-            "volume HUD entrance morph + blur cleanup",
+            () => double.IsNaN(attachedFace.Width) && window.VolumeIndicatorContainer.Effect == null,
+            "volume HUD detaches when the shell has settled",
             ct);
         Assert.Equal(1.0, window.VolumeIndicatorContentScale.ScaleX, 2);
         Assert.Equal(1.0, window.VolumeIndicatorContentScale.ScaleY, 2);

@@ -239,8 +239,8 @@ public sealed class SettingsWindowControlTests
             Assert.True(window.TranslationPulseOffset.HasAnimatedProperties);
             window.ShowTranslationDownloadProgress(new(TranslationDownloadStage.Downloading, 1_000_000_000, 2_500_000_000, 10_000_000));
             Assert.Equal("40%", window.TranslationProgressPercent.Text);
-            Assert.Contains("1.00 GB / 2.50 GB", window.TranslationProgressDetail.Text);
-            Assert.Contains("10.0 MB/s", window.TranslationProgressDetail.Text);
+            Assert.Contains($"{1:F2} GB / {2.5:F2} GB", window.TranslationProgressDetail.Text);
+            Assert.Contains($"{10:F1} MB/s", window.TranslationProgressDetail.Text);
             Assert.Equal(Visibility.Collapsed, window.TranslationProgressPulse.Visibility);
             await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.TranslationModelProgress.Value - 40) < .01, "animated download percentage", ct);
             window.TranslationModelProgress.ApplyTemplate();
@@ -1281,6 +1281,29 @@ public sealed class SettingsWindowControlTests
         Assert.NotEqual(indexedText, textProperty.GetValue(entry));
         Invoke(window, "ExecuteSearch", "perfcachealpha");
         Assert.DoesNotContain(row, window.SearchResultsStack.Children.Cast<UIElement>());
+    });
+
+    [Fact]
+    public void SettingsSearchReleasesReplacedDropdownItemsWhileTheWindowIsOpen() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        using var fixture = new Fixture();
+        var window = fixture.Window;
+        Invoke(window, "ExecuteSearch", "clock");
+        var combo = window.WidgetCombo;
+        var retired = combo.Items.Cast<ComboBoxItem>().Select(item => new WeakReference(item)).ToArray();
+        Assert.NotEmpty(retired);
+        Invoke(window, "RepopulateWidgetComboPreservingSelection");
+        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Assert.All(retired, item => Assert.False(item.IsAlive));
+
+        Invoke(window, "ExecuteSearch", "newwidgetlabel");
+        Assert.Empty(window.SearchResultsStack.Children);
+        ((ComboBoxItem)combo.Items[0]).Content = "newwidgetlabel";
+        Invoke(window, "ExecuteSearch", "newwidgetlabel");
+        Assert.NotEmpty(window.SearchResultsStack.Children);
     });
 
     [Fact]

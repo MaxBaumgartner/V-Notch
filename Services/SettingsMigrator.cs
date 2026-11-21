@@ -37,7 +37,7 @@ public static partial class SettingsMigrator
         int consentVersion,
         out byte outRevoke);
 
-    public const int CurrentVersion = 19;
+    public const int CurrentVersion = 20;
 
     private static readonly IReadOnlyDictionary<int, Func<JsonObject, JsonObject>> _migrations =
         new Dictionary<int, Func<JsonObject, JsonObject>>
@@ -61,6 +61,7 @@ public static partial class SettingsMigrator
             [16] = MigrateV16,
             [17] = MigrateV17,
             [18] = MigrateV18,
+            [19] = MigrateV19,
         };
 
     private static void EnsureProperty(JsonObject root, string propertyName, JsonNode? defaultValue)
@@ -226,6 +227,18 @@ public static partial class SettingsMigrator
         return root;
     }
 
+    private static JsonObject MigrateV19(JsonObject root)
+    {
+        foreach (string key in new[] { nameof(NotchSettings.NavTabOrder), nameof(NotchSettings.VisibleNavTabs) })
+        {
+            if (root[key] is not JsonValue value || !value.TryGetValue(out string? list) || list == null) continue;
+            var tabs = new List<string>(list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            tabs.RemoveAll(tab => string.Equals(tab, "Weather", StringComparison.OrdinalIgnoreCase));
+            root[key] = string.Join(",", tabs);
+        }
+        return root;
+    }
+
     private static void AddNavTab(JsonObject root, string propertyName, string newTab, string after)
     {
         if (root[propertyName] is not JsonValue value || !value.TryGetValue(out string? list)) return;
@@ -280,7 +293,7 @@ public static partial class SettingsMigrator
             currentVersion++;
         }
 
-        root[nameof(NotchSettings.SettingsVersion)] = CurrentVersion;
+        root[nameof(NotchSettings.SettingsVersion)] = currentVersion;
 
         // Inspect all files for legacy plaintext keys regardless of reported version;
         // callers must preserve the old file if protection fails.
@@ -308,7 +321,6 @@ public static partial class SettingsMigrator
 
         var normalizedJson = root.ToJsonString();
         var settings = JsonSerializer.Deserialize<NotchSettings>(normalizedJson) ?? new NotchSettings();
-        settings.SettingsVersion = CurrentVersion;
 
         bool hasAccepted = SpotifyCanvasConsent.HasAccepted(settings);
         byte acceptedFlag = hasAccepted ? (byte)1 : (byte)0;
@@ -334,6 +346,6 @@ public static partial class SettingsMigrator
             migrated = true;
         }
 
-        return (settings, migrated);
+        return (settings, startVersion <= CurrentVersion && migrated);
     }
 }

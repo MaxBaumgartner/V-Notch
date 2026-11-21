@@ -17,12 +17,12 @@ public sealed class NotchContentViewRefs
     public FrameworkElement? ClaudeContent { get; init; }
     public FrameworkElement? PiContent { get; init; }
     public FrameworkElement? SchoolContent { get; init; }
-    public FrameworkElement? WeatherContent { get; init; }
     public FrameworkElement? TimerContent { get; init; }
     public FrameworkElement? AudioContent { get; init; }
     public FrameworkElement? AudioScrollViewer { get; init; }
     public FrameworkElement? SecondaryContent { get; init; }
     public Func<long, bool>? IsSessionCurrent { get; init; }
+    internal NotchShellAttachment? ShellAttachment { get; init; }
 }
 
 public sealed class NotchContentTransitionPresenter : IDisposable
@@ -33,7 +33,8 @@ public sealed class NotchContentTransitionPresenter : IDisposable
     private long _activeSessionId;
     private long _animationVersion;
     private bool _disposed;
-    private sealed record PageOffset(Transform Original, TransformGroup Wrapper, ScaleTransform Scale, TranslateTransform Offset);
+    private sealed record PageOffset(Transform Original, TransformGroup Wrapper, ScaleTransform Scale,
+        TranslateTransform Offset, Effect? OriginalEffect, BlurEffect Blur);
     private readonly Dictionary<FrameworkElement, PageOffset> _pageOffsets = new();
     private readonly Dictionary<(DependencyObject Target, DependencyProperty Property), double> _canceledVelocities = new();
 
@@ -57,6 +58,14 @@ public sealed class NotchContentTransitionPresenter : IDisposable
 
         var targetElement = GetElementForView(plan.TargetView);
         var allElements = GetAllElements();
+
+        if (_refs.ShellAttachment != null && (plan.FromView == NotchView.Compact || plan.TargetView == NotchView.Compact))
+        {
+            // Shell progress owns opacity and scale until both dimensions rest. Closing keeps the page laid out.
+            if (plan.TargetView != NotchView.Compact) SnapToView(plan.TargetView);
+            onCompleted(new TransitionExecutionResult(sessionId, TransitionExecutionStatus.Completed));
+            return;
+        }
 
         // Collapse all pages only after their exit has finished.
         if (plan.TargetView == NotchView.Compact || targetElement == null)
@@ -112,11 +121,10 @@ public sealed class NotchContentTransitionPresenter : IDisposable
         bool switchingExpandedView = plan.FromView != NotchView.Compact;
         bool targetWasVisible = targetElement.Visibility == Visibility.Visible;
         var targetLayer = GetPageOffset(targetElement,
-            switchingExpandedView ? 22 * plan.NavigationDirection : 0,
-            targetWasVisible ? 1 : Motion.TileFromScale);
+            switchingExpandedView ? 8 * plan.NavigationDirection : 0, 1);
         targetElement.Visibility = Visibility.Visible;
         targetElement.IsHitTestVisible = false;
-        int arriving = 4;
+        int arriving = 3;
         void Arrived()
         {
             if (--arriving != 0 || !IsCurrent(sessionId, version)) return;
@@ -128,11 +136,15 @@ public sealed class NotchContentTransitionPresenter : IDisposable
                 ResetElementVisualState(_refs.AudioScrollViewer);
             onCompleted(new TransitionExecutionResult(sessionId, TransitionExecutionStatus.Completed));
         }
-        SpringTo(targetElement, UIElement.OpacityProperty, 1, Motion.Tile,
-            from: targetWasVisible ? null : 0, fps: fps, done: Arrived);
-        SpringTo(targetLayer.Offset, TranslateTransform.XProperty, 0, Motion.Glide, fps: fps, done: Arrived);
-        SpringTo(targetLayer.Scale, ScaleTransform.ScaleXProperty, 1, Motion.Tile, fps: fps, done: Arrived);
-        SpringTo(targetLayer.Scale, ScaleTransform.ScaleYProperty, 1, Motion.Tile, fps: fps, done: Arrived);
+        // One motion instead of two pages on top of each other: the old page is gone within 90 ms, the new one
+        // follows a beat later. When the shell shrinks it waits longer, so it lands with the shell instead of
+        // sitting over a tall black gap. A page that is still on screen (a quick switch back) returns at once.
+        bool shrinking = double.IsFinite(plan.FromHeight) && plan.FromHeight - plan.TargetHeight > 40;
+        int beat = !switchingExpandedView || targetWasVisible ? 0 : shrinking ? ShrinkBeatMs : SwitchBeatMs;
+        EaseTo(targetElement, UIElement.OpacityProperty, 1, ArriveMs,
+            from: targetWasVisible ? null : 0, fps: fps, done: Arrived, delayMs: beat);
+        EaseTo(targetLayer.Offset, TranslateTransform.XProperty, 0, ArriveMs, fps: fps, done: Arrived, delayMs: beat);
+        EaseTo(targetLayer.Blur, BlurEffect.RadiusProperty, 0, ArriveMs, fps: fps, done: Arrived, delayMs: beat);
 
         foreach (var element in allElements)
         {
@@ -144,11 +156,9 @@ public sealed class NotchContentTransitionPresenter : IDisposable
             }
             var layer = GetPageOffset(element, 0, 1);
             element.IsHitTestVisible = false;
-            SpringTo(layer.Offset, TranslateTransform.XProperty,
-                switchingExpandedView ? -14 * plan.NavigationDirection : 0, Motion.Exit, fps: fps);
-            SpringTo(layer.Scale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit, fps: fps);
-            SpringTo(layer.Scale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit, fps: fps);
-            SpringTo(element, UIElement.OpacityProperty, 0, Motion.Exit, fps: fps, done: () =>
+            EaseTo(layer.Offset, TranslateTransform.XProperty,
+                switchingExpandedView ? -6 * plan.NavigationDirection : 0, LeaveMs, fps: fps);
+            EaseTo(element, UIElement.OpacityProperty, 0, LeaveMs, fps: fps, done: () =>
             {
                 if (!IsCurrent(sessionId, version)) return;
                 ResetContentVisualState(element);
@@ -170,9 +180,11 @@ public sealed class NotchContentTransitionPresenter : IDisposable
         wrapper.Children.Add(original);
         wrapper.Children.Add(scale);
         wrapper.Children.Add(offset);
-        layer = new PageOffset(original, wrapper, scale, offset);
+        var blur = new BlurEffect { Radius = initialX == 0 ? 0 : 2, RenderingBias = RenderingBias.Performance };
+        layer = new PageOffset(original, wrapper, scale, offset, element.Effect, blur);
         _pageOffsets[element] = layer;
         element.RenderTransform = wrapper;
+        element.Effect = blur;
         return layer;
     }
     private void ReleasePageOffset(FrameworkElement element)
@@ -185,6 +197,8 @@ public sealed class NotchContentTransitionPresenter : IDisposable
         Motion.Stop(layer.Scale, ScaleTransform.ScaleXProperty);
         Motion.Stop(layer.Scale, ScaleTransform.ScaleYProperty);
         if (ReferenceEquals(element.RenderTransform, layer.Wrapper)) element.RenderTransform = layer.Original;
+        Motion.Stop(layer.Blur, BlurEffect.RadiusProperty, 0);
+        if (ReferenceEquals(element.Effect, layer.Blur)) element.Effect = layer.OriginalEffect;
     }
 
     private void ResetContentVisualState(FrameworkElement element)
@@ -238,6 +252,32 @@ public sealed class NotchContentTransitionPresenter : IDisposable
     {
         double? velocity = _canceledVelocities.Remove((target, property), out var held) ? held : null;
         Motion.To(target, property, to, spring, from: from, fps: fps, done: done, velocity: velocity);
+    }
+
+    // Tab switch timing: the old page leaves, a beat of shell alone, the new page arrives.
+    private const int LeaveMs = 90;
+    private const int SwitchBeatMs = 60;
+    private const int ShrinkBeatMs = 140;
+    private const int ArriveMs = 200;
+
+    private static void EaseTo(DependencyObject target, DependencyProperty property, double to, int milliseconds,
+        double? from = null, int? fps = null, Action? done = null, int delayMs = 0)
+    {
+        double start = from ?? (double)target.GetValue(property);
+        Motion.Stop(target, property, start);
+        if (AnimationConfig.ReduceMotion || Math.Abs(start - to) < .0001)
+        {
+            target.SetValue(property, to);
+            done?.Invoke();
+            return;
+        }
+        var animation = new DoubleAnimation(start, to, TimeSpan.FromMilliseconds(milliseconds))
+        { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
+        // Waiting at its start value (set just above), so the page never flashes in before its turn.
+        if (delayMs > 0) animation.BeginTime = TimeSpan.FromMilliseconds(delayMs);
+        Timeline.SetDesiredFrameRate(animation, fps ?? AnimationConfig.TargetFps);
+        animation.Completed += (_, _) => done?.Invoke();
+        ((IAnimatable)target).BeginAnimation(property, animation);
     }
 
     private static void HoldCurrentTransformAndEffect(FrameworkElement element)
@@ -454,7 +494,6 @@ public sealed class NotchContentTransitionPresenter : IDisposable
             NotchView.Claude => _refs.ClaudeContent,
             NotchView.Pi => _refs.PiContent,
             NotchView.School => _refs.SchoolContent,
-            NotchView.Weather => _refs.WeatherContent,
             NotchView.Secondary => _refs.SecondaryContent,
             _ => null
         };
@@ -467,7 +506,6 @@ public sealed class NotchContentTransitionPresenter : IDisposable
         if (_refs.ClaudeContent != null) list.Add(_refs.ClaudeContent);
         if (_refs.PiContent != null) list.Add(_refs.PiContent);
         if (_refs.SchoolContent != null) list.Add(_refs.SchoolContent);
-        if (_refs.WeatherContent != null) list.Add(_refs.WeatherContent);
         if (_refs.TimerContent != null) list.Add(_refs.TimerContent);
         if (_refs.AudioContent != null) list.Add(_refs.AudioContent);
         else if (_refs.AudioScrollViewer != null) list.Add(_refs.AudioScrollViewer);

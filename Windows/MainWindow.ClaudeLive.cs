@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -81,7 +82,8 @@ public partial class MainWindow
         var session = _claudeLiveSession;
         if (session == null) return;
         if (_bubbleOpen && _bubbleActivity == LiveActivity.Claude) UpdateBubbleContent();
-        CrossFadeText(ClaudeLiveText, ControlCenterView.FormatElapsed(DateTime.UtcNow - (session.TurnStartedUtc ?? DateTime.UtcNow)));
+        // A ticking clock changes in place; a cross-fade would blank it for a moment every second.
+        ClaudeLiveText.Text = ControlCenterView.FormatElapsed(DateTime.UtcNow - (session.TurnStartedUtc ?? DateTime.UtcNow));
     }
 
     /// <summary>One word for what the session is at, like Claude Code's own spinner: the tool decides it.</summary>
@@ -143,11 +145,106 @@ public partial class MainWindow
     {
         _claudeLiveStatusTimer?.Stop();
         if (_claudeLiveStatusNext is not { } word || _cleanedUp) return;
-        CrossFadeText(ClaudeLiveStatus, word);
+        RollClaudeLiveStatus(word);
         _claudeLiveStatusShownUtc = DateTime.UtcNow;
     }
 
-    private void ClaudeLive_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => ApplyClaudeLiveMotion();
+    // The word change rolls like a counter: the old word lifts out and blurs while the new one rises in and sharpens.
+    // Both overlap, centred on the same spot, so there is never an empty pill and nothing jumps sideways.
+    private const double ClaudeStatusRise = 7;
+    private const double ClaudeStatusBlur = 3;
+    private TextBlock? _claudeStatusGhost;
+    private TranslateTransform? _claudeStatusShift, _claudeStatusGhostShift;
+    private System.Windows.Media.Effects.BlurEffect? _claudeStatusBlur, _claudeStatusGhostBlur;
+    private int _claudeStatusRoll;
+
+    private void RollClaudeLiveStatus(string word)
+    {
+        string old = ClaudeLiveStatus.Text;
+        if (old == word) return;
+        if (AnimationConfig.ReduceMotion || old.Length == 0 || !ClaudeLiveStatus.IsVisible)
+        {
+            SettleClaudeLiveStatus();
+            ClaudeLiveStatus.Text = word;
+            return;
+        }
+        int roll = ++_claudeStatusRoll;
+        var ghost = EnsureClaudeStatusGhost();
+        ghost.Text = old;
+        ghost.Foreground = ClaudeLiveStatus.Foreground;
+        ghost.Effect = _claudeStatusGhostBlur;
+        ghost.Visibility = Visibility.Visible;
+        double from = _claudeStatusShift!.Y;
+        Motion.To(_claudeStatusGhostShift!, TranslateTransform.YProperty, -ClaudeStatusRise, Motion.Exit, from: from);
+        Motion.To(_claudeStatusGhostBlur!, System.Windows.Media.Effects.BlurEffect.RadiusProperty, ClaudeStatusBlur, Motion.Exit, from: 0);
+        Motion.To(ghost, OpacityProperty, 0, Motion.Exit, from: ClaudeLiveStatus.Opacity, done: () =>
+        {
+            if (roll != _claudeStatusRoll) return;
+            ghost.Visibility = Visibility.Collapsed;
+            ghost.Effect = null;
+        });
+
+        ClaudeLiveStatus.Text = word;
+        ClaudeLiveStatus.Effect = _claudeStatusBlur;
+        Motion.To(_claudeStatusShift, TranslateTransform.YProperty, 0, Motion.Glide, from: ClaudeStatusRise);
+        Motion.To(_claudeStatusBlur!, System.Windows.Media.Effects.BlurEffect.RadiusProperty, 0, Motion.Glide, from: ClaudeStatusBlur);
+        Motion.To(ClaudeLiveStatus, OpacityProperty, 1, Motion.Tile, from: 0, delay: TimeSpan.FromMilliseconds(40), done: () =>
+        {
+            // A blur left on, even at radius 0, keeps an extra render pass alive.
+            if (roll == _claudeStatusRoll) ClaudeLiveStatus.Effect = null;
+        });
+    }
+
+    private TextBlock EnsureClaudeStatusGhost()
+    {
+        if (_claudeStatusGhost != null) return _claudeStatusGhost;
+        _claudeStatusShift = new TranslateTransform();
+        _claudeStatusGhostShift = new TranslateTransform();
+        _claudeStatusBlur = new System.Windows.Media.Effects.BlurEffect { Radius = 0, RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance };
+        _claudeStatusGhostBlur = new System.Windows.Media.Effects.BlurEffect { Radius = 0, RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance };
+        ClaudeLiveStatus.RenderTransform = _claudeStatusShift;
+        _claudeStatusGhost = new TextBlock
+        {
+            FontSize = ClaudeLiveStatus.FontSize,
+            FontWeight = ClaudeLiveStatus.FontWeight,
+            FontFamily = ClaudeLiveStatus.FontFamily,
+            HorizontalAlignment = ClaudeLiveStatus.HorizontalAlignment,
+            VerticalAlignment = ClaudeLiveStatus.VerticalAlignment,
+            TextTrimming = ClaudeLiveStatus.TextTrimming,
+            Margin = ClaudeLiveStatus.Margin,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+            RenderTransform = _claudeStatusGhostShift
+        };
+        var host = (System.Windows.Controls.Panel)ClaudeLiveStatus.Parent;
+        host.Children.Insert(host.Children.IndexOf(ClaudeLiveStatus), _claudeStatusGhost);
+        System.Windows.Controls.Grid.SetRow(_claudeStatusGhost, System.Windows.Controls.Grid.GetRow(ClaudeLiveStatus));
+        System.Windows.Controls.Grid.SetColumn(_claudeStatusGhost, System.Windows.Controls.Grid.GetColumn(ClaudeLiveStatus));
+        System.Windows.Controls.Grid.SetColumnSpan(_claudeStatusGhost, System.Windows.Controls.Grid.GetColumnSpan(ClaudeLiveStatus));
+        return _claudeStatusGhost;
+    }
+
+    /// <summary>Hidden or reduced motion: the word just sits there, no half-finished roll left behind.</summary>
+    private void SettleClaudeLiveStatus()
+    {
+        _claudeStatusRoll++;
+        if (_claudeStatusGhost != null)
+        {
+            Motion.Stop(_claudeStatusGhost, OpacityProperty, 0);
+            _claudeStatusGhost.Visibility = Visibility.Collapsed;
+            _claudeStatusGhost.Effect = null;
+        }
+        if (_claudeStatusShift != null) Motion.Stop(_claudeStatusShift, TranslateTransform.YProperty, 0);
+        if (_claudeStatusBlur != null) Motion.Stop(_claudeStatusBlur, System.Windows.Media.Effects.BlurEffect.RadiusProperty, 0);
+        Motion.Stop(ClaudeLiveStatus, OpacityProperty, 1);
+        ClaudeLiveStatus.Effect = null;
+    }
+
+    private void ClaudeLive_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!ClaudeLive.IsVisible) SettleClaudeLiveStatus();
+        ApplyClaudeLiveMotion();
+    }
 
     /// <summary>
     /// Turns a star while its session works and pulses it while it waits, but only while that star is on screen:

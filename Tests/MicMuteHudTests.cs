@@ -60,9 +60,10 @@ public sealed class MicMuteHudTests
         Invoke(window, "OnMicMuteChanged", false);
         // Wait for the dive to settle rather than a fixed time: under load the last frames can land late.
         await WpfFrameWaiter.UntilAsync(() =>
-            Math.Abs(Element<Canvas>(window, "VolumeIndicatorMic").Opacity - 1) < 0.001 &&
-            Math.Abs(Get<ScaleTransform>(window, "VolumeIndicatorMicSquash").ScaleY - 1) < 0.001 &&
-            Math.Abs(Get<TranslateTransform>(window, "VolumeIndicatorMicShift").Y) < 0.001, "mic dive settled", ct);
+            Math.Abs(Element<Canvas>(window, "VolumeIndicatorMic").Opacity - 1) < 0.0004 &&
+            Math.Abs(Element<TextBlock>(window, "VolumeIndicatorMicWord").Opacity - 1) < 0.0004 &&
+            Math.Abs(Get<ScaleTransform>(window, "VolumeIndicatorMicSquash").ScaleY - 1) < 0.0004 &&
+            Math.Abs(Get<TranslateTransform>(window, "VolumeIndicatorMicShift").Y) < 0.0004, "mic dive settled", ct);
         Assert.Equal(Visibility.Collapsed, Element<Path>(window, "VolumeIndicatorMicSlash").Visibility);
         Assert.Equal(Loc.Get("levelHud.micOn"), Element<TextBlock>(window, "VolumeIndicatorMicWord").Text);
         AssertRest(window);
@@ -128,7 +129,11 @@ public sealed class MicMuteHudTests
         Assert.Equal(y, shift.Y);
         Assert.True(shift.HasAnimatedProperties);
         Assert.Equal(Loc.Get("levelHud.micOn"), Element<TextBlock>(window, "VolumeIndicatorMicWord").Text);
-        await WpfFrameWaiter.UntilAsync(() => !shift.HasAnimatedProperties, "mic dive settles after tint refresh", ct);
+        await WpfFrameWaiter.UntilAsync(() => !shift.HasAnimatedProperties &&
+            Math.Abs(Element<Canvas>(window, "VolumeIndicatorMic").Opacity - 1) < .0004 &&
+            Math.Abs(Element<TextBlock>(window, "VolumeIndicatorMicWord").Opacity - 1) < .0004 &&
+            Math.Abs(Get<ScaleTransform>(window, "VolumeIndicatorMicSquash").ScaleY - 1) < .0004,
+            "mic and word settle after tint refresh", ct);
         Assert.Equal(Loc.Get("levelHud.micMuted"), Element<TextBlock>(window, "VolumeIndicatorMicWord").Text);
         AssertRest(window);
     });

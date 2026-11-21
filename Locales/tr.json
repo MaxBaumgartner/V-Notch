@@ -1349,6 +1349,7 @@
   "home.piOk": "her şey yeşil",
   "home.fix": "Düzelt",
   "school.deadlines": "Teslimler",
+  "school.until": "son: {0}",
   "school.exams": "Sınavlar ve yazılılar",
   "school.nothingDue": "Bekleyen bir şey yok",
   "school.days": "gün",

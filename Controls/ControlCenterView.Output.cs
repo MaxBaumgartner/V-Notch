@@ -47,6 +47,7 @@ public partial class ControlCenterView
     private List<OutputDevice> _outputs = new();
     private string _outputKey = "";
     private string _appsKey = "";
+    private string? _retainedSystemOutputId;
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<FrameworkElement, WeatherTween> HeightTweens = new();
 
     private static void GlideHeight(FrameworkElement element, double to, Action? done = null, double? from = null)
@@ -98,7 +99,11 @@ public partial class ControlCenterView
     /// <summary>Background part of the snapshot: speakers and the apps playing sound.</summary>
     private void ReadSound(Snapshot s)
     {
-        s.Outputs = OutputDevices.List(s.Devices.Select(d => d.Name));
+        s.Outputs = OutputDevices.List(s.Devices.Select(d => d.Name), _retainedSystemOutputId);
+        // Keep the user's virtual Wave route available after cycling to physical headphones.
+        if (s.Outputs.FirstOrDefault(o => o.IsDefault && OutputDevices.IsVirtual(o.FriendlyName)) is { } route)
+            _retainedSystemOutputId = route.Id;
+        s.WaveXlr = WaveXlrControl.ReadAsync().GetAwaiter().GetResult();
         try
         {
             s.Apps = _mixer?.Invoke()?.GetSessions(includeIcons: false)
@@ -211,6 +216,7 @@ public partial class ControlCenterView
 
     private void ShowOutputLevel(float volume, bool muted)
     {
+        ShowCompactVolume(volume, muted);
         if (_outputTile is { } tile) SetOutputLevel(tile, volume, muted, animate: IsVisible);
     }
 

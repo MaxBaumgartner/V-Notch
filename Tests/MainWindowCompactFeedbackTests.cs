@@ -16,6 +16,32 @@ public sealed class MainWindowCompactFeedbackTests
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OpeningDuringAChargingGlanceReleasesItsAttachmentAndOldCompletion(bool leaving) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        using var host = new ChargeOrbCalmMotionTests.RenderHost(window);
+        object kind = Enum.Parse(typeof(MainWindow).GetNestedType("ChargingGlanceKind", BindingFlags.NonPublic)!, "PluggedIn");
+        var battery = new BatteryInfo { Percentage = 48, IsPluggedIn = true, IsCharging = true };
+        Invoke(window, "ShowChargingGlance", battery, kind);
+        await Task.Delay(100, ct);
+        if (leaving) { Invoke(window, "DismissChargingNotification"); await Task.Delay(100, ct); }
+        window.NavigateToNotchView(NotchView.Timer);
+        await WpfFrameWaiter.UntilAsync(() => !Field<bool>(window, "_isAnimating"), "system tab opens", ct);
+        var layer = (FrameworkElement)window.ChargingNotification.Parent;
+        Assert.False(Field<bool>(window, "_isChargingNotificationVisible"));
+        Assert.Equal(0, Field<int>(window, "_chargingGlanceToken"));
+        Assert.Null(Field<UiScheduledTimer?>(window, "_chargingNotificationDismissTimer"));
+        Assert.True(double.IsNaN(layer.Width));
+        Assert.Equal(0, layer.Opacity);
+        Assert.Equal(Visibility.Collapsed, window.CollapsedContent.Visibility);
+        Assert.Equal(600, window.NotchBorder.Width, 1);
+        Assert.Equal(VNotch.Controllers.CompactPillSlot.None, Field<VNotch.Controllers.CompactPillArbiter>(window, "_compactPillArbiter").ActiveSlot);
+    });
+
+    [Theory]
     [InlineData(true, 50, 25, "battery.charging", "25 W")]
     [InlineData(true, 100, 5.5, "battery.fullyCharged", "5.5 W")]
     [InlineData(false, 20, -7.5, "battery.onBattery", "7.5 W")]
@@ -32,12 +58,14 @@ public sealed class MainWindowCompactFeedbackTests
         Assert.True(Field<bool>(window, "_isChargingNotificationVisible"));
         Assert.Equal($"{percent}%", window.ChargingPercentText.Text);
         Assert.Equal(Loc.Get(statusKey), window.ChargingStatusText.Text);
-        Assert.Equal(formattedWatts, window.ChargingWattText.Text);
+        Assert.Equal(formattedWatts.Replace(".", System.Globalization.CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator), window.ChargingWattText.Text);
         Assert.Equal(watts == 0 ? Visibility.Collapsed : Visibility.Visible, window.ChargingWattText.Visibility);
         Assert.Equal(percent / 100d, window.ChargingBatteryFillScale.ScaleX);
         await WpfFrameWaiter.UntilAsync(() => window.CollapsedContent.Visibility == Visibility.Collapsed,
             "clock leaves for charging glance", ct);
-        Assert.Equal(pluggedIn ? Color.FromRgb(0x30, 0xD1, 0x58) : Color.FromRgb(0xFF, 0x95, 0), ((SolidColorBrush)window.ChargingPercentText.Foreground).Color);
+        Assert.Equal(UiPalette.PrimaryColor, ((SolidColorBrush)window.ChargingPercentText.Foreground).Color);
+        Assert.Equal(pluggedIn ? MainWindow.ChargeTintFor(percent) : Color.FromRgb(0xE2, 0xBE, 0x86),
+            ((SolidColorBrush)window.ChargingBatteryFill.Background).Color);
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.ChargingNotification.Opacity - 1) < 1e-6 && Math.Abs(window.ChargingIconScale.ScaleX - 1) < 1e-6, "charging glance entrance", ct);
         await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty),
             "charging glance width settles", ct);
@@ -83,15 +111,14 @@ public sealed class MainWindowCompactFeedbackTests
             var window = fixture.Window;
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 60, IsPluggedIn = false });
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 60, IsCharging = true, IsPluggedIn = true });
-            Assert.True(Field<bool>(window, "_chargingPulseWanted"));
-            // The battery sits in the open notch's status bar: the pulse waits until it is on screen, then runs.
-            Assert.Equal(window.BatteryFill.IsVisible, Field<object?>(window, "_chargingPulseStoryboard") != null);
+            Assert.Equal(1, window.BatteryFill.Opacity);
+            Assert.False(window.BatteryFill.HasAnimatedProperties);
             // Plugging in and out play in the orb beside the notch now, not as a glance in it.
             Assert.Equal("PlugIn", Field<object>(window, "_chargeMoment").ToString());
             Assert.False(Field<bool>(window, "_isChargingNotificationVisible"));
             Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = 10, IsPluggedIn = false, IsBatterySaver = true });
             Assert.True(AnimationConfig.ReduceMotion);
-            Assert.Null(Field<object?>(window, "_chargingPulseStoryboard"));
+            Assert.False(window.BatteryFill.HasAnimatedProperties);
             Assert.Equal("Unplug", Field<object>(window, "_chargeMoment").ToString());
             await WpfFrameWaiter.UntilAsync(() => window.ChargingBolt.Opacity == 0 && Math.Abs(window.BatteryFillScale.ScaleX - 0.1) < 0.000001, "battery fill and charging bolt updated", ct);
             Assert.Equal(0.1, window.BatteryFillScale.ScaleX, 5);
@@ -113,7 +140,8 @@ public sealed class MainWindowCompactFeedbackTests
         var window = fixture.Window;
         Invoke(window, "HandleBatteryUpdate", new BatteryInfo { Percentage = percentage, IsPluggedIn = true });
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.ChargingBolt.Opacity - 1) < 1e-6, "plugged-in battery bolt", ct);
-        Assert.False(Field<bool>(window, "_chargingPulseWanted"));
+        Assert.Equal(1, window.BatteryFill.Opacity);
+        Assert.False(window.BatteryFill.HasAnimatedProperties);
         var fillColor = ((SolidColorBrush)window.BatteryFill.Background).Color;
         var white = UiPalette.PrimaryColor;
         Assert.Equal((white.R, white.G, white.B), (fillColor.R, fillColor.G, fillColor.B));
@@ -183,6 +211,7 @@ public sealed class MainWindowCompactFeedbackTests
     private static GreetingAcceptanceTests.MainWindowFixture CreateFixture()
     {
         var fixture = new GreetingAcceptanceTests.MainWindowFixture("en", greeting: false,
+            configureSettings: settings => settings.SlimIdleNotch = false,
             configureServices: services => services.AddSingleton<IMediaDetectionService>(new FakeMediaDetectionService()));
         fixture.Window.NotchBorder.Width = 300;
         fixture.Window.NotchBorder.Height = 40;
@@ -190,7 +219,8 @@ public sealed class MainWindowCompactFeedbackTests
         return fixture;
     }
 
-    private static T Field<T>(MainWindow window, string name) => (T)typeof(MainWindow).GetField(name, Private)!.GetValue(window)!;
+    private static T Field<T>(MainWindow window, string name) => (T)(typeof(MainWindow).GetField(name, Private) is { } field
+        ? field.GetValue(window) : typeof(MainWindow).GetProperty(name, Private)!.GetValue(window))!;
     private static void Set(MainWindow window, string name, object value)
     {
         if (typeof(MainWindow).GetField(name, Private) is { } field) field.SetValue(window, value);

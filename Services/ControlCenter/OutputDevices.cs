@@ -17,11 +17,14 @@ internal static class OutputDevices
     private static readonly string[] Virtual =
         { "Virtual", "Elgato", "Wave Link", "Steam Streaming", "NVIDIA", "Oculus", "VB-Audio", "Voicemeeter", "Sonar", "Hands-Free", "Freisprech" };
 
-    public static List<OutputDevice> List(IEnumerable<string> bluetoothNames)
+    public static List<OutputDevice> List(IEnumerable<string> bluetoothNames, string? retainedOutputId = null) =>
+        Select(AudioMixerService.EnumerateOutputDevices(), bluetoothNames, retainedOutputId);
+
+    internal static List<OutputDevice> Select(IEnumerable<AudioDeviceInfo> devices, IEnumerable<string> bluetoothNames, string? retainedOutputId = null)
     {
         var bt = bluetoothNames.Where(n => n.Length >= 3).ToList();
-        var list = AudioMixerService.EnumerateOutputDevices()
-            .Where(d => !IsVirtual(d.FriendlyName))
+        var list = devices
+            .Where(d => d.IsDefault || d.Id == retainedOutputId || !IsVirtual(d.FriendlyName))
             .Select(d => new OutputDevice(d.Id, Nickname(d.FriendlyName), d.FriendlyName, d.IsDefault,
                 bt.Any(n => d.FriendlyName.Contains(n, StringComparison.OrdinalIgnoreCase))))
             .ToList();

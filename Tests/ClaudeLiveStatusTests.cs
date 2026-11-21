@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using VNotch.Services;
@@ -63,6 +64,42 @@ public class ClaudeLiveStatusTests
             Assert.True(clock.IsEnabled);
             Assert.False(window.ClaudeLiveStarRotate.HasAnimatedProperties);
             Assert.False(window.ClaudeLiveStarScale.HasAnimatedProperties);
+        }
+        finally { AnimationConfig.SetReduceMotion(reduced); }
+        ct.ThrowIfCancellationRequested();
+    });
+
+    [Fact]
+    public void TheStatusWordRollsOverWithoutAGapAndSettlesWhenHidden() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        await using var fixture = new GreetingAcceptanceTests.MainWindowFixture("en", greeting: false,
+            configureSettings: settings => settings.EnableLocalOnlyMode = true,
+            configureServices: services => services.AddSingleton<IMediaDetectionService>(new FakeMediaDetectionService()));
+        var window = fixture.Window;
+        using var host = new HudContentHost(window);
+        await WpfFrameWaiter.UntilAsync(() => window.CollapsedContent.IsVisible, "closed notch visible", ct);
+        window.ClaudeLive.Visibility = Visibility.Visible;
+        await WpfFrameWaiter.UntilAsync(() => window.ClaudeLiveStatus.IsVisible, "live pill visible", ct);
+        bool reduced = AnimationConfig.ReduceMotion;
+        try
+        {
+            AnimationConfig.SetReduceMotion(false);
+            var roll = typeof(MainWindow).GetMethod("RollClaudeLiveStatus", flags)!;
+            window.ClaudeLiveStatus.Text = "Thinking";
+            roll.Invoke(window, ["Running"]);
+            // The new word is there at once; the old one leaves on its own label, so the pill is never empty.
+            Assert.Equal("Running", window.ClaudeLiveStatus.Text);
+            var ghost = (TextBlock)typeof(MainWindow).GetField("_claudeStatusGhost", flags)!.GetValue(window)!;
+            Assert.Equal("Thinking", ghost.Text);
+            Assert.Equal(Visibility.Visible, ghost.Visibility);
+            Assert.True(ghost.HasAnimatedProperties);
+
+            window.ClaudeLive.Visibility = Visibility.Collapsed;
+            Assert.Equal(Visibility.Collapsed, ghost.Visibility);
+            Assert.False(ghost.HasAnimatedProperties);
+            Assert.False(window.ClaudeLiveStatus.HasAnimatedProperties);
+            Assert.Null(window.ClaudeLiveStatus.Effect);
         }
         finally { AnimationConfig.SetReduceMotion(reduced); }
         ct.ThrowIfCancellationRequested();

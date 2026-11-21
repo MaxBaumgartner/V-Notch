@@ -42,7 +42,7 @@ internal sealed record PiHome(IReadOnlyList<HomeLight> Lights, IReadOnlyList<Hom
     IReadOnlyList<HomeAction> AirConditioner, IReadOnlyList<HomePlug> Plugs, IReadOnlyList<HomeAction> Scenes, HomePi? Pi,
     IReadOnlyList<HomeReading>? Readings = null);
 
-internal sealed record PiLesson(string Start, string End, string Subject, string Room, bool Cancelled, string Change, int StartMinutes, int EndMinutes);
+internal sealed record PiLesson(string Start, string End, string Subject, string Room, bool Cancelled, string Change, int StartMinutes, int EndMinutes, string SubjectKey = "");
 
 /// <summary>
 /// A Moodle assignment; <paramref name="Cmid"/> is its course-module id (its page's "?id="). <paramref name="Kind"/>
@@ -63,7 +63,10 @@ internal sealed record PiSubmitResult(bool Ok, string? SubmittedName, string? Er
 internal sealed record PiExam(DateTime Date, string Start, string Kind, string Title, string Subject = "");
 
 internal sealed record PiSchool(string Date, bool IsToday, IReadOnlyList<PiLesson> Lessons, IReadOnlyList<PiDeadline> Deadlines,
-    IReadOnlyList<PiExam> Exams, string? Break);
+    IReadOnlyList<PiExam> Exams, string? Break)
+{
+    public IReadOnlyDictionary<string, IReadOnlyList<PiLesson>> Days { get; init; } = new Dictionary<string, IReadOnlyList<PiLesson>>();
+}
 
 internal sealed record PiTodo(string Id, string Text, bool Done);
 
@@ -153,16 +156,25 @@ internal sealed partial class PiDashboardClient : IDisposable
 
     internal static PiSchool ParseSchool(JsonObject school)
     {
-        var lessons = new List<PiLesson>();
-        if (school["timetable"] is JsonArray timetable)
+        static IReadOnlyList<PiLesson> Lessons(JsonNode? node)
         {
-            foreach (var node in timetable)
+            var lessons = new List<PiLesson>();
+            if (node is not JsonArray timetable) return lessons;
+            foreach (var item in timetable)
             {
-                if (node is not JsonObject l) continue;
+                if (item is not JsonObject l) continue;
                 lessons.Add(new PiLesson(Str(l, "startTime"), Str(l, "endTime"), Str(l, "subject"), Str(l, "room"),
-                    Bool(l, "cancelled"), Str(l, "change"), Int(l, "startMinutes"), Int(l, "endMinutes")));
+                    Bool(l, "cancelled"), Str(l, "change"), Int(l, "startMinutes"), Int(l, "endMinutes"), Str(l, "subjectShort")));
             }
+            return lessons;
         }
+        var lessons = Lessons(school["timetable"]);
+        var days = new Dictionary<string, IReadOnlyList<PiLesson>>(StringComparer.Ordinal);
+        if (school["days"] is JsonObject dayMap)
+            foreach (var day in dayMap)
+                if (day.Value is JsonArray && DateTime.TryParseExact(day.Key, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                    days[day.Key] = Lessons(day.Value);
+        if (Str(school, "date") is { Length: > 0 } dateKey && !days.ContainsKey(dateKey)) days[dateKey] = lessons;
         var deadlines = new List<PiDeadline>();
         if (school["deadlines"] is JsonArray due)
         {
@@ -185,7 +197,7 @@ internal sealed partial class PiDashboardClient : IDisposable
             }
         }
         string? holiday = school["breaks"] is JsonObject b ? Str(b, "name") : null;
-        return new PiSchool(Str(school, "date"), Bool(school, "isToday"), lessons, deadlines, exams, holiday is { Length: > 0 } ? holiday : null);
+        return new PiSchool(Str(school, "date"), Bool(school, "isToday"), lessons, deadlines, exams, holiday is { Length: > 0 } ? holiday : null) { Days = days };
     }
 
     public async Task<List<PiTodo>?> GetTodosAsync()

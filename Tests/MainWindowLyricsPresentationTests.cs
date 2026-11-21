@@ -16,6 +16,35 @@ public sealed class MainWindowLyricsPresentationTests
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [Fact]
+    public void HidingMediaReleasesBothShimmerStoryboards() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = CreateFixture();
+        var window = fixture.Window;
+        bool previous = AnimationConfig.ReduceMotion;
+        try
+        {
+            window.SetDebugViewLock(true);
+            window.Show();
+            var coordinator = Field<VNotch.Controllers.NotchTransitionCoordinator>(window, "_transitionCoordinator");
+            await WpfFrameWaiter.UntilAsync(() => Field<bool>(window, "_isStartupLayoutReady") && !coordinator.IsTransitionActive, "shimmer window startup", ct);
+            window.SetDebugViewState("MediaExpanded");
+            await WpfFrameWaiter.UntilAsync(() => !coordinator.IsTransitionActive, "shimmer media view", ct);
+            AnimationConfig.SetReduceMotion(false);
+            Invoke(window, "StartTitleShimmer");
+            Invoke(window, "ShowLyricsSearchState", false);
+            var title = Assert.IsType<Storyboard>(Field<object?>(window, "_titleShimmerStoryboard"));
+            var lyrics = Assert.IsType<Storyboard>(Field<object?>(window, "_lyricsSearchShimmerStoryboard"));
+            _ = title.GetCurrentState(window);
+            _ = lyrics.GetCurrentState(window);
+
+            window.ExpandedContent.Visibility = Visibility.Collapsed;
+            Assert.Throws<InvalidOperationException>(() => title.GetCurrentState(window));
+            Assert.Throws<InvalidOperationException>(() => lyrics.GetCurrentState(window));
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
     public void SpotifyPrefetchWarmsTheSelectedSourceWithoutChangingCollapsedUi() => SharedStaTestRunner.Run(() =>
     {
         using var fixture = CreateFixture();

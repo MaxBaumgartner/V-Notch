@@ -19,10 +19,45 @@ public sealed class MainWindowCountdownCompletionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void CompletionContentTravelsWithTheShellAndReducedMotionCommitsInline(bool reduced) => SharedStaTestRunner.RunAsync(async _ =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        await using var fixture = Create();
+        var window = fixture.Window;
+        try
+        {
+            AnimationConfig.SetReduceMotion(reduced);
+            window.NotchBorder.Width = 300;
+            window.NotchBorder.Height = 40;
+            Invoke(window, "ShowCountdownCompletionOnPill", (object?)null);
+            Assert.Equal(Visibility.Visible, window.CountdownCompleteOverlay.Visibility);
+            var layer = Assert.IsAssignableFrom<FrameworkElement>(window.CountdownCompleteOverlay.Parent);
+            var scale = Assert.IsType<System.Windows.Media.ScaleTransform>(layer.RenderTransform);
+            if (reduced)
+            {
+                Assert.Equal(1, scale.ScaleX);
+                Assert.Equal(1, layer.Opacity);
+                Assert.False(Get<bool>(window, "_isAnimating"));
+            }
+            else
+            {
+                Assert.Equal(Math.Clamp(window.NotchBorder.Width / layer.Width, .04, 1.3), scale.ScaleX, 6);
+                Assert.True(Get<bool>(window, "_isAnimating"));
+            }
+            Assert.Equal(1, window.CountdownCompleteSurface.Opacity);
+            Assert.False(window.CountdownCompleteText.HasAnimatedProperties);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void RestartingACompletedCountdownRestoresTheClockAndStartsTheSameTimer(bool music) => SharedStaTestRunner.RunAsync(async ct =>
     {
         await using var fixture = Create();
         var window = fixture.Window;
+        using var host = new RenderHost(window);
         await ShowCompletion(window, music, ct);
         var timer = ((ShellViewModel)window.DataContext).Timer;
         var args = Click();
@@ -52,6 +87,7 @@ public sealed class MainWindowCountdownCompletionTests
     {
         await using var fixture = Create();
         var window = fixture.Window;
+        using var host = new RenderHost(window);
         await ShowCompletion(window, music, ct);
         var mouse = new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount);
         Invoke(window, "CountdownCompleteOverlay_MouseEnter", window, mouse);
@@ -82,6 +118,27 @@ public sealed class MainWindowCountdownCompletionTests
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.CountdownRestartHost.Opacity - 1) < 1e-6 && Math.Abs(window.CountdownDismissHost.Opacity - 1) < 1e-6, "countdown completion controls", ct);
     }
     private static GreetingAcceptanceTests.MainWindowFixture Create() => new("en", false, settings => { settings.EnableLocalOnlyMode = true; settings.DisableMouseLeaveAutoClose = true; }, services => services.AddSingleton<IMediaDetectionService>(new FakeMediaDetectionService()));
+    private sealed class RenderHost : IDisposable
+    {
+        private readonly MainWindow _owner;
+        private readonly Window _host;
+        internal RenderHost(MainWindow owner)
+        {
+            _owner = owner;
+            var root = owner.Content;
+            owner.Content = null;
+            _host = new BackgroundWindow { Content = root, Left = -20000, Top = -20000, Width = 760, Height = 420 };
+            _host.Show();
+            _host.UpdateLayout();
+        }
+        public void Dispose()
+        {
+            var root = _host.Content;
+            _host.Content = null;
+            _host.Close();
+            _owner.Content = root;
+        }
+    }
     private static MouseButtonEventArgs Click() => new(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
     private static void Invoke(MainWindow window, string name, params object?[] arguments) => typeof(MainWindow).GetMethod(name, Private)!.Invoke(window, arguments);
     private static T Get<T>(MainWindow window, string name)

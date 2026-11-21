@@ -146,19 +146,10 @@ public partial class MainWindow
 
         SpotifyJamIcon.BeginAnimation(OpacityProperty, null);
         SpotifyJamIcon.Opacity = 1;
-        if (pulse && !AnimationConfig.ReduceMotion)
+        if (SpotifyJamButton.IsVisible && !AnimationConfig.ReduceMotion)
         {
-            // Runs only for the few hundred ms the request takes.
-            var breathe = MakeAnim(1.0, 0.35, new Duration(TimeSpan.FromMilliseconds(450)), _easeQuadOut);
-            breathe.AutoReverse = true;
-            breathe.RepeatBehavior = RepeatBehavior.Forever;
-            SpotifyJamIcon.BeginAnimation(OpacityProperty, breathe);
-        }
-        else if (!pulse && !AnimationConfig.ReduceMotion)
-        {
-            var pop = MakeAnim(1.25, 1.0, new Duration(TimeSpan.FromMilliseconds(260)), _easeAppleOut);
-            SpotifyJamButtonScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-            SpotifyJamButtonScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
+            Motion.To(SpotifyJamButtonScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, from: .6);
+            Motion.To(SpotifyJamButtonScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, from: .6);
         }
     }
 

@@ -10,21 +10,12 @@ using VNotch.Services;
 
 namespace VNotch;
 
-/// <summary>
-/// Charging in the orb (the "Kabel" design, picked 2026-11-09). Plugging in buds the orb out and a cable shoots
-/// from it across the gap into the notch, which gives a small jolt. While the battery charges, a ring around the
-/// bolt shows the level and every few seconds a light runs from the bolt along the cable into the notch, whose
-/// edge glows a moment. Unplugging pulls the cable taut until it snaps: the ends whip back and the recoil pushes
-/// the orb away before it goes. Full (or held by battery care), the bolt turns into a tick and the cable draws back.
-/// The quiet part only takes a free orb; plugging in and out push in front of whatever has it, for a moment.
-/// </summary>
+/// <summary>Charging uses a quiet connection and a data-driven level ring beside the notch.</summary>
 public partial class MainWindow
 {
     private enum ChargeMoment { None, PlugIn, Unplug, Full }
 
-    private static readonly TimeSpan ChargePulseEvery = TimeSpan.FromSeconds(2.5);
     private const int ChargeGlowFps = 30;
-    private const int ChargeGlintFps = 60;
     private const int ChargeDoneAt = 75;
     private const double ChargeCableUnderNotch = 6;
     private const double ChargeCableIntoOrb = 8;
@@ -53,12 +44,9 @@ public partial class MainWindow
     private double _chargeCableLength = 34;
     private Color _chargeTintColor = ChargeTintFor(100);
     private DispatcherTimer? _chargeMomentTimer;
-    private DispatcherTimer? _chargePulseTimer;
     private readonly TranslateTransform _chargeRimShift = new(RimStreakBefore, 0);
     // Where the rim streak's head is, in notch widths: just off the right edge, past the middle, past the left edge.
     private const double RimStreakBefore = 0.6;
-    private const double RimStreakHalf = -0.3;
-    private const double RimStreakAll = -1.0;
     private readonly SolidColorBrush _chargeTint = new(ChargeTintFor(100));
     private readonly SolidColorBrush _chargeTrack = new(Colors.Transparent);
     private readonly SolidColorBrush _chargeCableBrush = new(ChargeCableGrey);
@@ -85,8 +73,6 @@ public partial class MainWindow
     /// </summary>
     private bool WantsChargingOrb => _chargePlugged && _chargeFromPlug && !_chargeDone;
 
-    /// <summary>A charge the user started by plugging in, so the battery icon may pulse.</summary>
-    private bool InChargeFromPlug => _chargeFromPlug && !_chargeDone;
 
     #region Battery events
 
@@ -160,9 +146,9 @@ public partial class MainWindow
         _chargeMoment = kind;
         TimeSpan length = kind switch
         {
-            ChargeMoment.Unplug => TimeSpan.FromMilliseconds(connected ? 1050 : faceUp ? 1900 : 2500),
-            ChargeMoment.Full => TimeSpan.FromMilliseconds(3500),
-            _ => TimeSpan.FromMilliseconds(3400)
+            ChargeMoment.Unplug => TimeSpan.FromMilliseconds(700),
+            ChargeMoment.Full => TimeSpan.FromMilliseconds(1400),
+            _ => TimeSpan.FromMilliseconds(1800)
         };
         if (_chargeMomentTimer == null)
         {
@@ -174,7 +160,7 @@ public partial class MainWindow
         _chargeMomentTimer.Start();
         StopChargePulse();
 
-        if (connected)
+        if (faceUp)
         {
             switch (kind)
             {
@@ -211,7 +197,6 @@ public partial class MainWindow
     private void StopChargeTimers()
     {
         _chargeMomentTimer?.Stop();
-        _chargePulseTimer?.Stop();
         _chargeToken++;
     }
 
@@ -245,9 +230,9 @@ public partial class MainWindow
         _chargeTintColor = color;
         Tint(_chargeTint, color);
         Tint(_chargeTrack, Color.FromArgb(0x3D, color.R, color.G, color.B));
-        Tint(_chargeCableBrush, Mix(color, ChargeCableGrey, 0.3));
-        Tint(_chargeSparkBrush, Mix(color, Colors.White, 0.35));
-        Tint(_chargeHaloBrush, Color.FromArgb(0x8C, color.R, color.G, color.B));
+        Tint(_chargeCableBrush, Mix(color, ChargeCableGrey, 0.3), ChargeCable.IsVisible);
+        _chargeSparkBrush.Color = Mix(color, Colors.White, 0.35);
+        _chargeHaloBrush.Color = Color.FromArgb(0x8C, color.R, color.G, color.B);
 
         // The glow spans the whole notch now, so its reach is a share of the width: about the right quarter.
         var glow = new RadialGradientBrush
@@ -272,9 +257,9 @@ public partial class MainWindow
         rim.GradientStops.Add(new GradientStop(Color.FromArgb(0x00, color.R, color.G, color.B), 0.94));
         ChargeNotchRim.BorderBrush = rim;
 
-        void Tint(SolidColorBrush brush, Color to)
+        void Tint(SolidColorBrush brush, Color to, bool visible = true)
         {
-            if (!animate || AnimationConfig.ReduceMotion)
+            if (!animate || !visible || !AmbientAnimationsAllowed || !ActivityBubble.IsVisible)
             {
                 brush.BeginAnimation(SolidColorBrush.ColorProperty, null);
                 brush.Color = to;
@@ -410,6 +395,9 @@ public partial class MainWindow
                 PlayChargeArrival(plugged: false);
                 ChargeAfter(TimeSpan.FromMilliseconds(700), PlayChargeUnplug);
                 break;
+            case ChargeMoment.Full:
+                PlayChargeFull();
+                break;
             default:
                 PlayChargeArrival(plugged: false);
                 break;
@@ -430,7 +418,7 @@ public partial class MainWindow
 
     private void AnimateChargeRing(int level, TimeSpan duration)
     {
-        Motion.To(this, ChargeRingLevelProperty, level, Motion.Glide);
+        Motion.To(this, ChargeRingLevelProperty, level, Motion.Shift);
     }
 
     #endregion
@@ -439,152 +427,40 @@ public partial class MainWindow
 
     private static TimeSpan Ms(double milliseconds) => TimeSpan.FromMilliseconds(milliseconds);
 
-    /// <summary>
-    /// The cable shoots from the orb into the notch and springs taut; plugged in, the notch and the orb give a
-    /// jolt. Then the bolt lights up, the ring runs up to the level and the first light flows.
-    /// </summary>
+    /// <summary>The cable grows from the orb; the level and bolt settle together without a jolt.</summary>
     private void PlayChargeArrival(bool plugged)
     {
+        ++_chargeToken;
         _chargeConnected = true;
-        int level = ChargeLevel;
         PositionChargeCable();
-        bool entering = !ChargeCable.IsVisible;
+        bool entering = ChargeCable.Visibility != Visibility.Visible;
         if (entering) ResetChargeCableHalves();
         else
         {
-            // Replugging during the snap restores the live cable instead of resetting its halves.
             Motion.To(ChargeCableLeftScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop);
             Motion.To(ChargeCableRightScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop);
-            Motion.To(ChargeCableLeftTurn, RotateTransform.AngleProperty, 0, Motion.Pop);
-            Motion.To(ChargeCableRightTurn, RotateTransform.AngleProperty, 0, Motion.Pop);
+            Motion.To(ChargeCableLeftTurn, RotateTransform.AngleProperty, 0, Motion.Shift);
+            Motion.To(ChargeCableRightTurn, RotateTransform.AngleProperty, 0, Motion.Shift);
         }
         ChargeCable.Visibility = Visibility.Visible;
-
-        if (AnimationConfig.ReduceMotion)
-        {
-            Still(ChargeCableGrow, ScaleTransform.ScaleXProperty, 1);
-            Still(this, ChargeCableSagProperty, ChargeCableRestSag);
-            Still(ChargeBolt, OpacityProperty, 1);
-            Still(ChargeTrack, OpacityProperty, 1);
-            Still(this, ChargeRingLevelProperty, level);
-            return;
-        }
-
+        StopChargePulse();
+        Motion.To(ChargeBoltBox, OpacityProperty, 1, Motion.Exit);
+        Motion.To(ChargeCheck, OpacityProperty, 0, Motion.Exit);
+        Motion.To(ChargeCheckScale, ScaleTransform.ScaleXProperty, .6, Motion.Exit);
+        Motion.To(ChargeCheckScale, ScaleTransform.ScaleYProperty, .6, Motion.Exit);
         Motion.To(ChargeCableGrow, ScaleTransform.ScaleXProperty, 1, Motion.Pop, from: entering ? 0 : null);
-        Motion.To(this, ChargeCableSagProperty, ChargeCableRestSag, Motion.Pop, from: entering ? 5 : null);
-
-        if (plugged) JoltForCharge(Ms(170));
-
-        var lit = new DoubleAnimation(1, new Duration(Ms(180))) { BeginTime = Motion.Stagger(1) };
-        if (entering) lit.From = 0;
-        Fps(lit);
-        ChargeBolt.BeginAnimation(OpacityProperty, lit);
-        Motion.To(ChargeBoltScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: entering ? Motion.TileFromScale : null, delay: Motion.Stagger(1));
-        Motion.To(ChargeBoltScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: entering ? Motion.TileFromScale : null, delay: Motion.Stagger(1));
-        var track = new DoubleAnimation(1, new Duration(Ms(180))) { BeginTime = Motion.Stagger(2) };
-        if (entering) track.From = 0;
-        Fps(track);
-        ChargeTrack.BeginAnimation(OpacityProperty, track);
-        Motion.To(this, ChargeRingLevelProperty, level, Motion.Glide, delay: Motion.Stagger(2));
-
-        ChargeAfter(Ms(520), () => PlayChargePulse(alongTheRim: plugged));
-        ChargeAfter(Ms(1400), RefreshChargePulse);
+        Motion.To(this, ChargeCableSagProperty, ChargeCableRestSag, Motion.Shift);
+        Motion.To(ChargeBolt, OpacityProperty, 1, Motion.Exit);
+        Motion.To(ChargeBoltScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, from: entering ? .6 : null);
+        Motion.To(ChargeBoltScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, from: entering ? .6 : null);
+        Motion.To(ChargeTrack, OpacityProperty, 1, Motion.Exit);
+        Motion.To(this, ChargeRingLevelProperty, ChargeLevel, Motion.Shift);
     }
 
-    /// <summary>The notch squashes a little as the cable lands in it, the orb with it.</summary>
-    private void JoltForCharge(TimeSpan delay)
-    {
-        ChargeAfter(delay, () =>
-        {
-            Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: 1.4);
-            Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: -1.4);
-            bool resting = !_isExpanded && !_isAnimating &&
-                Math.Abs(NotchScale.ScaleX - 1) < 0.001 && Math.Abs(NotchScale.ScaleY - 1) < 0.001;
-            if (!resting) return;
-            foreach (var scale in new[] { NotchScale, NotchShadowScale })
-            {
-                Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: 0.8);
-                Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: -1.4);
-            }
-        });
-    }
-
-    /// <summary>
-    /// A light leaves the bolt, runs along the cable into the notch, the notch's right side glows a moment and a
-    /// streak of the light runs on along the rim. Just plugged in it goes round the whole rim; the pulses that
-    /// repeat while charging fade out halfway, so they stay quiet.
-    /// </summary>
-    private void PlayChargePulse() => PlayChargePulse(alongTheRim: false);
-
-    private void PlayChargePulse(bool alongTheRim)
-    {
-        if (AnimationConfig.ReduceMotion || !AmbientAnimationsAllowed || !ActivityBubble.IsVisible || !_chargeConnected || _cleanedUp) return;
-
-        Motion.To(ChargeGlintShift, TranslateTransform.XProperty, -14, Motion.Glide, from: 44, fps: ChargeGlintFps);
-        ChargeGlint.BeginAnimation(OpacityProperty, Blink(Ms(220), TimeSpan.Zero, ChargeGlintFps));
-
-        Motion.To(ChargeCableGlintShift, TranslateTransform.XProperty, 5, Motion.Glide, from: _chargeCableLength - 6, delay: Ms(190), fps: ChargeGlintFps);
-        ChargeCableGlint.BeginAnimation(OpacityProperty, Blink(Ms(240), Ms(190), ChargeGlintFps));
-
-        var glow = new DoubleAnimationUsingKeyFrames { Duration = new Duration(Ms(620)), BeginTime = Ms(380) };
-        glow.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(0)));
-        glow.KeyFrames.Add(new EasingDoubleKeyFrame(1, KeyTime.FromPercent(0.3), new QuadraticEase { EasingMode = EasingMode.EaseOut }));
-        glow.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1), new QuadraticEase { EasingMode = EasingMode.EaseInOut }));
-        Timeline.SetDesiredFrameRate(glow, ChargeGlintFps);
-        ChargeNotchGlow.BeginAnimation(OpacityProperty, glow);
-
-        // The streak leaves as the glow peaks, a little behind the light on the cable.
-        var streakLength = Ms(alongTheRim ? 1000 : 620);
-        Motion.To(_chargeRimShift, TranslateTransform.XProperty, alongTheRim ? RimStreakAll : RimStreakHalf, Motion.Glide, from: RimStreakBefore, delay: Ms(400), fps: ChargeGlintFps);
-        double strength = alongTheRim ? 1 : 0.55;
-        var rimLight = new DoubleAnimationUsingKeyFrames { Duration = new Duration(streakLength), BeginTime = Ms(400) };
-        rimLight.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(0)));
-        rimLight.KeyFrames.Add(new EasingDoubleKeyFrame(strength, KeyTime.FromPercent(0.12), new QuadraticEase { EasingMode = EasingMode.EaseOut }));
-        rimLight.KeyFrames.Add(new LinearDoubleKeyFrame(strength, KeyTime.FromPercent(0.7)));
-        rimLight.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromPercent(1), new QuadraticEase { EasingMode = EasingMode.EaseIn }));
-        Timeline.SetDesiredFrameRate(rimLight, ChargeGlintFps);
-        ChargeNotchRim.BeginAnimation(OpacityProperty, rimLight);
-
-        static DoubleAnimationUsingKeyFrames Blink(TimeSpan duration, TimeSpan begin, int fps)
-        {
-            var blink = new DoubleAnimationUsingKeyFrames { Duration = new Duration(duration), BeginTime = begin };
-            blink.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(0)));
-            blink.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromPercent(0.15)));
-            blink.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromPercent(0.85)));
-            blink.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(1)));
-            Timeline.SetDesiredFrameRate(blink, fps);
-            return blink;
-        }
-    }
-
-    private bool ChargePulseAllowed =>
-        !_cleanedUp && _chargeConnected && _bubbleShown && _bubbleActivity == LiveActivity.Charging &&
-        _chargeMoment is ChargeMoment.None or ChargeMoment.PlugIn && AmbientAnimationsAllowed && ActivityBubble.IsVisible;
-
-    /// <summary>The light runs every few seconds, only while the charging orb is on screen and nothing hides it.</summary>
-    private void RefreshChargePulse()
-    {
-        if (!ChargePulseAllowed)
-        {
-            StopChargePulse();
-            return;
-        }
-        if (_chargePulseTimer == null)
-        {
-            _chargePulseTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = ChargePulseEvery };
-            _chargePulseTimer.Tick += (_, _) =>
-            {
-                if (ChargePulseAllowed) PlayChargePulse();
-                else _chargePulseTimer!.Stop();
-            };
-        }
-        if (!_chargePulseTimer.IsEnabled) _chargePulseTimer.Start();
-    }
-
+    // Battery data moves the ring. A stationary charging state needs no repeating light or timer.
+    private void RefreshChargePulse() => StopChargePulse();
     private void StopChargePulse()
     {
-        _chargePulseTimer?.Stop();
-        if (AmbientAnimationsAllowed && ActivityBubble.IsVisible) return;
         // A hidden orb must release even finite light sweeps, not just the next pulse timer.
         Motion.Stop(ChargeGlintShift, TranslateTransform.XProperty);
         Motion.Stop(ChargeCableGlintShift, TranslateTransform.XProperty);
@@ -595,101 +471,51 @@ public partial class MainWindow
         Still(ChargeNotchRim, OpacityProperty, 0);
     }
 
-    /// <summary>The cable pulls taut and trembles, then snaps in the middle (see <see cref="SnapChargeCable"/>).</summary>
+    /// <summary>Unplugging withdraws the connection without sparks, recoil or a shell wobble.</summary>
     private void PlayChargeUnplug()
     {
-        StopChargePulse();
+        ++_chargeToken;
         _chargeConnected = false;
-        if (AnimationConfig.ReduceMotion)
-        {
-            ChargeCable.Visibility = Visibility.Collapsed;
-            Still(ChargeBolt, OpacityProperty, 0);
-            Still(ChargeTrack, OpacityProperty, 0);
-            Still(this, ChargeRingLevelProperty, 0);
-            ApplyChargeTint(ChargeGrey, animate: false);
-            return;
-        }
-        Motion.To(this, ChargeCableSagProperty, -0.7, Motion.PressDown);
-        Motion.To(BubbleSlide, TranslateTransform.XProperty, 1.4, Motion.Press);
-        ChargeAfter(Ms(300), SnapChargeCable);
+        StopChargePulse();
+        SnapChargeCable();
     }
 
-    /// <summary>
-    /// Snap: sparks where it broke, both ends whip back into the notch and the orb, the recoil pushes the orb away,
-    /// and the bolt goes out grey.
-    /// </summary>
     private void SnapChargeCable()
     {
-        var sparks = Keys(Ms(360), (0, 1), (0.4, 1), (1, 0));
-        ChargeCableSparks.BeginAnimation(OpacityProperty, sparks);
-        Motion.To(ChargeCableSparksScale, ScaleTransform.ScaleXProperty, 1.4, Motion.Pop, from: 0.4);
-        Motion.To(ChargeCableSparksScale, ScaleTransform.ScaleYProperty, 1.4, Motion.Pop, from: 0.4);
+        _chargeConnected = false;
+        int token = _chargeToken;
         Motion.To(ChargeCableLeftScale, ScaleTransform.ScaleXProperty, 0, Motion.PopBack);
-        Motion.To(ChargeCableRightScale, ScaleTransform.ScaleXProperty, 0, Motion.PopBack);
-        Motion.To(ChargeCableLeftTurn, RotateTransform.AngleProperty, 6, Motion.PopBack, velocity: -650);
-        Motion.To(ChargeCableRightTurn, RotateTransform.AngleProperty, -8, Motion.PopBack, velocity: 700);
-        Motion.To(BubbleSlide, TranslateTransform.XProperty, 0, Motion.Pop, velocity: 150);
-        Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: -1.8);
-        Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: 1.8);
-
-        var dark = new DoubleAnimation(0, new Duration(Ms(260))) { BeginTime = Ms(60) };
-        Fps(dark);
-        ChargeBolt.BeginAnimation(OpacityProperty, dark);
+        Motion.To(ChargeCableRightScale, ScaleTransform.ScaleXProperty, 0, Motion.PopBack, done: () =>
+        {
+            if (token == _chargeToken && !_chargeConnected) ChargeCable.Visibility = Visibility.Collapsed;
+        });
+        Motion.To(ChargeBolt, OpacityProperty, 0, Motion.Exit);
         Motion.To(this, ChargeRingLevelProperty, 0, Motion.Exit);
-        var trackOut = new DoubleAnimation(0, new Duration(Ms(300))) { BeginTime = Ms(200) };
-        Fps(trackOut);
-        ChargeTrack.BeginAnimation(OpacityProperty, trackOut);
-        ApplyChargeTint(ChargeGrey, animate: true);
-        ChargeAfter(Ms(700), () => ChargeCable.Visibility = Visibility.Collapsed);
+        Motion.To(ChargeTrack, OpacityProperty, 0, Motion.Exit);
+        ApplyChargeTint(ChargeGrey, animate: !AnimationConfig.ReduceMotion);
     }
 
-    /// <summary>
-    /// Full: the ring closes, a few lights hurry through, the bolt turns into a tick with a happy bounce, and the
-    /// cable draws back into the orb before it goes.
-    /// </summary>
+    /// <summary>A full charge confirms once with a small check and draws the cable back into the orb.</summary>
     private void PlayChargeFull()
     {
+        ++_chargeToken;
         StopChargePulse();
         ApplyChargeTint(ChargeTintFor(100), animate: true);
-        if (AnimationConfig.ReduceMotion)
+        Motion.To(this, ChargeRingLevelProperty, 100, Motion.Shift);
+        Motion.To(ChargeBoltBox, OpacityProperty, 0, Motion.Exit);
+        Motion.To(ChargeBoltScale, ScaleTransform.ScaleXProperty, .6, Motion.Exit);
+        Motion.To(ChargeBoltScale, ScaleTransform.ScaleYProperty, .6, Motion.Exit);
+        Motion.To(ChargeCheck, OpacityProperty, 1, Motion.Exit);
+        Motion.To(ChargeCheck, System.Windows.Shapes.Shape.StrokeDashOffsetProperty, 0, Motion.Exit);
+        Motion.To(ChargeCheckScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop);
+        Motion.To(ChargeCheckScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop);
+        _chargeConnected = false;
+        int token = _chargeToken;
+        Motion.To(ChargeCableGrow, ScaleTransform.ScaleXProperty, 0, Motion.PopBack, done: () =>
         {
-            Still(this, ChargeRingLevelProperty, 100);
-            Still(ChargeBoltBox, OpacityProperty, 0);
-            Still(ChargeCheck, OpacityProperty, 1);
-            Still(ChargeCheck, System.Windows.Shapes.Shape.StrokeDashOffsetProperty, 0);
-            return;
-        }
-        Motion.To(this, ChargeRingLevelProperty, 100, Motion.Glide);
-        PlayChargePulse();
-        ChargeAfter(Ms(330), PlayChargePulse);
-        ChargeAfter(Ms(660), PlayChargePulse);
-        ChargeAfter(Ms(900), () =>
-        {
-            var boltOut = new DoubleAnimation(0, new Duration(Ms(220))) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
-            Fps(boltOut);
-            ChargeBoltBox.BeginAnimation(OpacityProperty, boltOut);
-            Motion.To(ChargeBoltScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
-            Motion.To(ChargeBoltScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
-            Motion.To(ChargeBoltTurn, RotateTransform.AngleProperty, -35, Motion.Exit);
-
-            var show = new DoubleAnimation(0, 1, new Duration(Ms(80))) { BeginTime = Ms(170) };
-            var draw = new DoubleAnimation(7, 0, new Duration(Ms(300))) { BeginTime = Ms(170), EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
-            Fps(show);
-            Fps(draw);
-            ChargeCheck.BeginAnimation(OpacityProperty, show);
-            ChargeCheck.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, draw);
-            Motion.To(ChargeCheckScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: Motion.Stagger(1));
-            Motion.To(ChargeCheckScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: Motion.Stagger(1));
-            Motion.To(BubbleScale, ScaleTransform.ScaleXProperty, 1, Motion.Press, velocity: 3);
-            Motion.To(BubbleScale, ScaleTransform.ScaleYProperty, 1, Motion.Press, velocity: 3);
-        });
-        ChargeAfter(Ms(3000), () =>
-        {
-            _chargeConnected = false;
-            Motion.To(ChargeCableGrow, ScaleTransform.ScaleXProperty, 0, Motion.PopBack);
+            if (token == _chargeToken && !_chargeConnected) ChargeCable.Visibility = Visibility.Collapsed;
         });
     }
-
     #endregion
 
     #region Words

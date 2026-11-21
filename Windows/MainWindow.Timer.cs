@@ -26,8 +26,8 @@ public partial class MainWindow
     }
 
 
-    private double CountdownCompleteViewWidth => _collapsedWidth;
-    private double CountdownCompleteViewHeight => _collapsedHeight;
+    private double CountdownCompleteViewWidth => _collapsedWidth + 28;
+    private double CountdownCompleteViewHeight => _collapsedHeight + 16;
 
     private CountdownController CountdownController => CountdownWidget.Controller;
     private TimeSpan _countdownDuration => _viewModel.Timer.Duration;
@@ -335,6 +335,7 @@ public partial class MainWindow
 
     private void UpdateTimerNavIconsState()
     {
+        UpdateCompactTabStatus();
         // Expansion can call this before the local view flags are committed.
         // Set the timer state explicitly and release any previous opacity clocks.
         if (_navDragItem != HomeIconButton) AnimateNavIconOpacity(HomeIconButton, 0.45, animate: false);
@@ -344,7 +345,6 @@ public partial class MainWindow
         if (_navDragItem != ClaudeIconButton) AnimateNavIconOpacity(ClaudeIconButton, 0.45, animate: false);
         if (_navDragItem != PiIconButton) AnimateNavIconOpacity(PiIconButton, 0.45, animate: false);
         if (_navDragItem != SchoolIconButton) AnimateNavIconOpacity(SchoolIconButton, 0.45, animate: false);
-        if (_navDragItem != WeatherIconButton) AnimateNavIconOpacity(WeatherIconButton, 0.45, animate: false);
     }
 
     #endregion
@@ -371,6 +371,7 @@ public partial class MainWindow
     }
 
     private bool _isCountdownCompleteVisible = false;
+    private VNotch.Presenters.CompactSurfaceAttachment? _countdownCompleteAttachment;
 
     private bool IsCountdownCompletionVisualActive =>
         _isCountdownCompleteVisible || CountdownCompleteOverlay.Visibility == Visibility.Visible;
@@ -490,6 +491,10 @@ public partial class MainWindow
         double targetWidth = CountdownCompleteViewWidth;
         double targetHeight = CountdownCompleteViewHeight;
 
+        ShowCompletionOverlayContent();
+        _countdownCompleteAttachment ??= new(NotchBorder, CountdownCompleteOverlay, () => new Size(_collapsedWidth, _collapsedHeight));
+        _countdownCompleteAttachment.Attach(targetWidth, targetHeight);
+
         Action onCompletedAction = () =>
         {
             if (transitionId.HasValue && generation != _viewTransitionGeneration) return;
@@ -500,7 +505,7 @@ public partial class MainWindow
             Motion.Stop(NotchBorder, WidthProperty, targetWidth);
             Motion.Stop(NotchBorder, HeightProperty, targetHeight);
             RestoreExpandedWindowSize();
-            ShowCompletionOverlayContent();
+            _countdownCompleteAttachment.Detach(true);
 
             if (transitionId.HasValue)
             {
@@ -515,7 +520,8 @@ public partial class MainWindow
                 Duration: resizeDuration,
                 Easing: _easeExpOut6,
                 TargetFps: VNotch.Services.AnimationConfig.TargetFps,
-                ReduceMotion: false
+                ReduceMotion: AnimationConfig.ReduceMotion,
+                Spring: Motion.Pop
             );
 
             var plan = new VNotch.Models.TransitionPlan(
@@ -603,61 +609,21 @@ public partial class MainWindow
 
     private void ShowCompletionOverlayContent()
     {
-        ExpandedContent.Visibility = Visibility.Collapsed;
-        TimerContent.Visibility = Visibility.Collapsed;
-        SecondaryContent.Visibility = Visibility.Collapsed;
-        AudioContent.Visibility = Visibility.Collapsed;
-        AudioContent.Opacity = 0;
-        if (AudioScrollViewer != null)
-        {
-            AudioScrollViewer.BeginAnimation(OpacityProperty, null);
-            AudioScrollViewer.Visibility = Visibility.Collapsed;
-            AudioScrollViewer.Opacity = 0;
-        }
-        SuppressCompactMediaChromeForCountdownCompletion();
-
-        CountdownCompleteOverlay.BeginAnimation(OpacityProperty, null);
-        CountdownCompleteOverlay.RenderTransform = new TranslateTransform(0, -10);
+        Motion.Stop(CountdownCompleteOverlay, OpacityProperty, 1);
+        CountdownCompleteOverlay.RenderTransform = null;
         CountdownCompleteOverlay.Visibility = Visibility.Visible;
-        CountdownCompleteOverlay.Opacity = 0;
-
-        Motion.To(CountdownCompleteOverlay, OpacityProperty, 1, Motion.Tile, from: 0);
-        Motion.To((TranslateTransform)CountdownCompleteOverlay.RenderTransform, TranslateTransform.YProperty, 0, Motion.Tile, from: -10);
-
-        CountdownCompleteSurface.BeginAnimation(OpacityProperty, null);
-        CountdownCompleteSurface.Opacity = 0;
-
+        Motion.Stop(CountdownCompleteSurface, OpacityProperty, 1);
         ResetCountdownCompleteActionButtonsVisual();
-        PrepareCountdownCompleteElement(CountdownCompleteText, CountdownCompleteTextTranslate, CountdownCompleteTextScale, 0.82);
-        PrepareCountdownCompleteElement(CountdownRestartHost, CountdownRestartTranslate, CountdownRestartRevealScale, 0.68);
-        PrepareCountdownCompleteElement(CountdownDismissHost, CountdownDismissTranslate, CountdownDismissRevealScale, 0.68);
-
-        var surfaceFade = new DoubleAnimation(0, 1, new Duration(TimeSpan.FromMilliseconds(180)))
+        FrameworkElement[] elements = [CountdownCompleteText, CountdownRestartHost, CountdownDismissHost];
+        TranslateTransform[] shifts = [CountdownCompleteTextTranslate, CountdownRestartTranslate, CountdownDismissTranslate];
+        ScaleTransform[] scales = [CountdownCompleteTextScale, CountdownRestartRevealScale, CountdownDismissRevealScale];
+        for (int i = 0; i < elements.Length; i++)
         {
-            EasingFunction = _easeQuadOut
-        };
-        Timeline.SetDesiredFrameRate(surfaceFade, VNotch.Services.AnimationConfig.TargetFps);
-        CountdownCompleteSurface.BeginAnimation(OpacityProperty, surfaceFade);
-
-        AnimateCountdownCompleteElement(
-            CountdownCompleteText,
-            CountdownCompleteTextTranslate,
-            CountdownCompleteTextScale,
-            fromScale: 0.82,
-            TimeSpan.Zero,
-            (_, _) => StartCountdownCompleteTextFlash());
-        AnimateCountdownCompleteElement(
-            CountdownRestartHost,
-            CountdownRestartTranslate,
-            CountdownRestartRevealScale,
-            fromScale: 0.68,
-            Motion.Stagger(1));
-        AnimateCountdownCompleteElement(
-            CountdownDismissHost,
-            CountdownDismissTranslate,
-            CountdownDismissRevealScale,
-            fromScale: 0.68,
-            Motion.Stagger(2));
+            Motion.Stop(elements[i], OpacityProperty, 1);
+            Motion.Stop(shifts[i], TranslateTransform.YProperty, 0);
+            Motion.Stop(scales[i], ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(scales[i], ScaleTransform.ScaleYProperty, 1);
+        }
     }
 
     private static void PrepareCountdownCompleteElement(
@@ -984,6 +950,7 @@ public partial class MainWindow
             if (transitionId != _transitionCoordinator.ActiveTransitionId) return;
             _transitionCoordinator.CompleteTransition(transitionId);
             _transitionCoordinator.ForceState(VNotch.Models.NotchView.Compact, VNotch.Controllers.NotchShapeState.Collapsed, "CountdownDismissCompleted");
+            if (!_isCountdownCompleteVisible) DismissCountdownCompletion();
             _isAnimating = false;
             NotchBorder.IsHitTestVisible = true;
 
@@ -1028,18 +995,8 @@ public partial class MainWindow
     {
         _isCountdownCompleteVisible = false;
         AnimateCountdownCompleteHover(false);
-        AnimateCountdownCompleteElementsFadeOut();
-        var overlayTranslate = CountdownCompleteOverlay.RenderTransform as TranslateTransform ?? new TranslateTransform();
-        CountdownCompleteOverlay.RenderTransform = overlayTranslate;
-        Motion.To(overlayTranslate, TranslateTransform.YProperty, 18, Motion.Exit);
-        Motion.To(CountdownCompleteOverlay, OpacityProperty, 0, Motion.Exit, done: () =>
-        {
-            if (!_isCountdownCompleteVisible)
-            {
-                DismissCountdownCompletion();
-                CountdownCompleteOverlay.RenderTransform = null;
-            }
-        });
+        // The dismissal's shell spring carries the readable face back into the notch.
+        _countdownCompleteAttachment?.Attach(CountdownCompleteViewWidth, CountdownCompleteViewHeight);
     }
 
     private void AnimateCountdownCompleteElementsFadeOut()
@@ -1133,6 +1090,7 @@ public partial class MainWindow
 
     private void DismissCountdownCompletion()
     {
+        _countdownCompleteAttachment?.Detach(false);
         _isCountdownCompleteVisible = false;
         AnimateCountdownCompleteHover(false);
         ResetCountdownCompleteActionButtonsVisual();

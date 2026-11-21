@@ -83,7 +83,7 @@ public partial class MainWindow
 
 
 
-        if ((_isExpanded || _isMusicExpanded) && !_isAnimating)
+        if ((_transitionCoordinator.TargetView != VNotch.Models.NotchView.Compact || _isMusicExpanded) && !_isGestureActive)
         {
             IntPtr hWndAtPoint = WindowFromPoint(new POINT { X = pt.x, Y = pt.y });
 
@@ -102,7 +102,8 @@ public partial class MainWindow
                     $"isExpanded={_isExpanded} isMusicExpanded={_isMusicExpanded} isSecondary={_isSecondaryView} " +
                     $"isAnimating={_isAnimating}");
 
-                CollapseAll();
+                if (_isExpanded || _isMusicExpanded) CollapseAll();
+                else _transitionCoordinator.RequestCollapse("OutsideClick");
             }
         }
     }

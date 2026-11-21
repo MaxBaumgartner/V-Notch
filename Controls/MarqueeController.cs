@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using VNotch.Services;
 using static VNotch.Services.AnimationPrimitives;
@@ -34,6 +35,9 @@ internal sealed class MarqueeController : IDisposable
     private bool _isArtistActiveA = true;
     private DateTime _lastTitleMorphTimeUtc = DateTime.MinValue;
     private DateTime _lastArtistMorphTimeUtc = DateTime.MinValue;
+    private int _swapDirection = 1;
+    internal bool AnimateChanges { get; set; } = true;
+    internal bool EnableBlurEffects { get; set; } = true;
 
     #endregion
 
@@ -65,6 +69,17 @@ internal sealed class MarqueeController : IDisposable
         _title.B.Marquee.BeginAnimation(TranslateTransform.XProperty, null);
         _artist.A.Marquee.BeginAnimation(TranslateTransform.XProperty, null);
         _artist.B.Marquee.BeginAnimation(TranslateTransform.XProperty, null);
+        foreach (var layer in new[] { _title.A, _title.B, _artist.A, _artist.B })
+        {
+            Motion.Stop(layer.Morph, TranslateTransform.XProperty, 0);
+            Motion.Stop(layer.Morph, TranslateTransform.YProperty, 0);
+            Motion.Stop(layer.Layer, UIElement.OpacityProperty);
+            if (layer.Layer is FrameworkElement { Effect: BlurEffect blur }) Motion.Stop(blur, BlurEffect.RadiusProperty, 0);
+        }
+        Motion.Stop(_title.A.Layer, UIElement.OpacityProperty, _isTitleActiveA ? 1 : 0);
+        Motion.Stop(_title.B.Layer, UIElement.OpacityProperty, _isTitleActiveA ? 0 : 1);
+        Motion.Stop(_artist.A.Layer, UIElement.OpacityProperty, _isArtistActiveA ? 1 : 0);
+        Motion.Stop(_artist.B.Layer, UIElement.OpacityProperty, _isArtistActiveA ? 0 : 1);
     }
 
     public void Dispose()
@@ -81,10 +96,11 @@ internal sealed class MarqueeController : IDisposable
         RestartMarqueeFor(_artist, _isArtistActiveA, isTitle: false);
     }
 
-    public void TransitionTrackText(string title, string artist)
+    public void TransitionTrackText(string title, string artist, int direction = 1)
     {
         title ??= string.Empty;
         artist ??= string.Empty;
+        _swapDirection = direction < 0 ? -1 : 1;
 
         _pendingTitleText = null;
         _pendingArtistText = null;
@@ -107,6 +123,7 @@ internal sealed class MarqueeController : IDisposable
             return;
         }
 
+        if (!AnimateChanges) { ApplyTitleText(newText); return; }
         var remaining = GetRemainingThrottle(_lastTitleMorphTimeUtc);
         if (remaining > TimeSpan.Zero)
         {
@@ -127,6 +144,7 @@ internal sealed class MarqueeController : IDisposable
             return;
         }
 
+        if (!AnimateChanges) { ApplyArtistText(newText); return; }
         var remaining = GetRemainingThrottle(_lastArtistMorphTimeUtc);
         if (remaining > TimeSpan.Zero)
         {
@@ -244,6 +262,7 @@ internal sealed class MarqueeController : IDisposable
     {
         var activeText = activeA ? t.A.Text : t.B.Text;
         var activeTranslate = activeA ? t.A.Marquee : t.B.Marquee;
+        if (!AnimateChanges) return;
 
         activeText.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         double textWidth = activeText.DesiredSize.Width;
@@ -268,14 +287,31 @@ internal sealed class MarqueeController : IDisposable
 
     private void MorphAndRestart(MarqueeTargets t, ref bool activeA, string newText, Action<double> setDistance)
     {
+        if (!AnimateChanges || AnimationConfig.ReduceMotion)
+        {
+            t.A.Text.SetCurrentValue(TextBlock.TextProperty, newText);
+            t.B.Text.SetCurrentValue(TextBlock.TextProperty, newText);
+            Motion.Stop(t.A.Layer, UIElement.OpacityProperty, activeA ? 1 : 0);
+            Motion.Stop(t.B.Layer, UIElement.OpacityProperty, activeA ? 0 : 1);
+            foreach (var layer in new[] { t.A, t.B })
+            {
+                Motion.Stop(layer.Morph, TranslateTransform.XProperty, 0);
+                Motion.Stop(layer.Morph, TranslateTransform.YProperty, 0);
+                layer.Marquee.BeginAnimation(TranslateTransform.XProperty, null);
+                layer.Marquee.X = 0;
+                if (layer.Layer is FrameworkElement { Effect: BlurEffect blur }) Motion.Stop(blur, BlurEffect.RadiusProperty, 0);
+            }
+            setDistance(0);
+            return;
+        }
         if (activeA)
         {
-            AnimateTextMorph(t.A.Layer, t.B.Layer, t.B.Text, t.A.Morph, t.B.Morph, newText);
+            AnimateTextMorph(t.A.Layer, t.B.Layer, t.B.Text, t.A.Morph, t.B.Morph, newText, _swapDirection, EnableBlurEffects);
             activeA = false;
         }
         else
         {
-            AnimateTextMorph(t.B.Layer, t.A.Layer, t.A.Text, t.B.Morph, t.A.Morph, newText);
+            AnimateTextMorph(t.B.Layer, t.A.Layer, t.A.Text, t.B.Morph, t.A.Morph, newText, _swapDirection, EnableBlurEffects);
             activeA = true;
         }
 
@@ -309,21 +345,30 @@ internal sealed class MarqueeController : IDisposable
         TextBlock next,
         TranslateTransform currentMorph,
         TranslateTransform nextMorph,
-        string newText)
+        string newText, int direction, bool blurEnabled)
     {
         // The leaving text goes on from wherever it is, so a track that changes again mid-swap never jumps
         // back; only the arriving text starts fresh.
         next.SetCurrentValue(TextBlock.TextProperty, newText);
         int animFps = VNotch.Services.AnimationConfig.TargetFps;
 
-        VNotch.Services.Motion.To(currentMorph, TranslateTransform.XProperty, -18, VNotch.Services.Motion.Exit, fps: animFps);
+        VNotch.Services.Motion.To(currentMorph, TranslateTransform.XProperty, -18 * direction, VNotch.Services.Motion.Exit, fps: animFps);
         VNotch.Services.Motion.To(currentMorph, TranslateTransform.YProperty, 0, VNotch.Services.Motion.Exit, fps: animFps);
         VNotch.Services.Motion.To(currentLayer, UIElement.OpacityProperty, 0, VNotch.Services.Motion.Exit, fps: animFps);
 
         VNotch.Services.Motion.Stop(nextMorph, TranslateTransform.YProperty, 0);
-        VNotch.Services.Motion.To(nextMorph, TranslateTransform.XProperty, 0, VNotch.Services.Motion.Tile, from: 20, fps: animFps);
-        VNotch.Services.Motion.To(nextLayer, UIElement.OpacityProperty, 1, VNotch.Services.Motion.Tile, from: 0,
-            delay: TimeSpan.FromMilliseconds(70), fps: animFps);
+        VNotch.Services.Motion.To(nextMorph, TranslateTransform.XProperty, 0, VNotch.Services.Motion.Tile,
+            from: nextLayer.Opacity < .01 ? 20 * direction : null, fps: animFps);
+        VNotch.Services.Motion.To(nextLayer, UIElement.OpacityProperty, 1, VNotch.Services.Motion.Tile, fps: animFps);
+        if (currentLayer is FrameworkElement old && nextLayer is FrameworkElement incoming)
+        {
+            var oldBlur = old.Effect as BlurEffect ?? new BlurEffect();
+            var newBlur = incoming.Effect as BlurEffect ?? new BlurEffect();
+            old.Effect = oldBlur;
+            incoming.Effect = newBlur;
+            Motion.To(oldBlur, BlurEffect.RadiusProperty, blurEnabled ? 2 : 0, Motion.Exit);
+            Motion.To(newBlur, BlurEffect.RadiusProperty, 0, Motion.Tile, from: blurEnabled && nextLayer.Opacity < .01 ? 2 : null);
+        }
     }
 
     #endregion

@@ -906,6 +906,7 @@
                                              LostFocus="SettingsSearchBox_LostFocus"/>
                                     <TextBlock x:Name="SearchPlaceholder" Grid.Column="1"
                                                Text="Search settings..."
+                                               TextTrimming="CharacterEllipsis"
                                                FontSize="12.5" FontWeight="Bold"
                                                Foreground="#B0FFFFFF"
                                                VerticalAlignment="Center"
@@ -1268,9 +1269,9 @@
 
                     <ScrollViewer x:Name="SettingsScrollViewer"
                                   Grid.Row="1"
-                                  VerticalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Disabled"
-                                  Padding="20,0,14,14"
+                                  Padding="20,0,20,14"
                                   CanContentScroll="False"
                                    PreviewMouseWheel="SettingsScrollViewer_PreviewMouseWheel">
                         <Grid x:Name="ContentHost">

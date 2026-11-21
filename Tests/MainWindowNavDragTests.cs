@@ -146,7 +146,7 @@ public sealed class MainWindowNavDragTests
     });
 
     private static GreetingAcceptanceTests.MainWindowFixture CreateFixture() => new("en", greeting: false,
-        configureSettings: settings => { settings.EnableLocalOnlyMode = true; settings.NavTabOrder = "Media,Secondary,Timer,Claude,Pi,Weather,AudioMixer"; settings.VisibleNavTabs = settings.NavTabOrder; },
+        configureSettings: settings => { settings.EnableLocalOnlyMode = true; settings.NavTabOrder = "Media,Secondary,Timer,Claude,Pi,AudioMixer"; settings.VisibleNavTabs = settings.NavTabOrder; },
         configureServices: services => services.AddSingleton<IMediaDetectionService>(new FakeMediaDetectionService()));
     private static T Field<T>(MainWindow window, string name) => (T)typeof(MainWindow).GetField(name, Private)!.GetValue(window)!;
     private static void Set(MainWindow window, string name, object value) => typeof(MainWindow).GetField(name, Private)!.SetValue(window, value);

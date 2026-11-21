@@ -366,6 +366,7 @@
         <tb:TaskbarIcon x:Name="TrayIcon"
                         Visibility="Collapsed"
                         ToolTipText="V-Notch"
+                        TrayMouseMove="TraySettingsTargeted"
                         MenuActivation="RightClick">
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu Style="{StaticResource TrayContextMenuStyle}"
@@ -396,6 +397,8 @@
                     <Separator Style="{StaticResource TraySeparatorStyle}"/>
                     <MenuItem Style="{StaticResource TrayMenuItemStyle}"
                               Icon="{StaticResource TraySettingsIconGeometry}"
+                              MouseEnter="TraySettingsTargeted"
+                              GotKeyboardFocus="TraySettingsTargeted"
                               Click="OpenSettings_Click">
                         <MenuItem.Header>
                             <TextBlock x:Name="MenuSettingsText" Text="Notch settings" Style="{StaticResource TrayMenuItemText}"/>
@@ -1003,6 +1006,7 @@
                                 SizeChanged="VolumeIndicatorContainer_SizeChanged"
                                 MouseLeftButtonDown="VolumeIndicator_MouseDown"
                                 MouseMove="VolumeIndicator_MouseMove"
+                                LostMouseCapture="VolumeIndicator_LostMouseCapture"
                                 MouseLeftButtonUp="VolumeIndicator_MouseUp">
                             <Border.RenderTransform>
                                 <TransformGroup>
@@ -1495,34 +1499,6 @@
                                           Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
                                 </Viewbox>
                             </ctrl:ActionBorder>
-                            <ctrl:ActionBorder x:Name="WeatherIconButton" AutomationProperties.Name="Weather"
-                                    Tag="Weather"
-                                    Width="22" Height="22"
-                                    Background="Transparent"
-                                    Cursor="Hand"
-                                    Margin="0,0,4,0"
-                                    Opacity="0.45"
-                                    RenderTransformOrigin="0.5,0.5"
-                                    PreviewMouseLeftButtonDown="NavIcon_PreviewMouseLeftButtonDown"
-                                    PreviewMouseMove="NavIcon_PreviewMouseMove"
-                                    PreviewMouseLeftButtonUp="NavIcon_PreviewMouseLeftButtonUp"
-                                    LostMouseCapture="NavIcon_LostMouseCapture"
-                                    Click="WeatherIconButton_Click">
-                                <Border.RenderTransform>
-                                    <TransformGroup>
-                                        <ScaleTransform ScaleX="1" ScaleY="1"/>
-                                        <TranslateTransform X="0" Y="0"/>
-                                    </TransformGroup>
-                                </Border.RenderTransform>
-                                <Border.Effect>
-                                    <DropShadowEffect Color="Black" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/>
-                                </Border.Effect>
-                                <Viewbox Width="15" Height="15" Stretch="Uniform"
-                                         HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <Path Data="{x:Static ctrl:WeatherGlyph.Data}"
-                                          Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
-                                </Viewbox>
-                            </ctrl:ActionBorder>
                             <ctrl:ActionBorder x:Name="AudioIconButton" AutomationProperties.Name="Audio Mixer"
                                     Tag="AudioMixer"
                                     Width="22" Height="22"
@@ -1635,6 +1611,7 @@
                                        FontSize="12"
                                        FontWeight="SemiBold"
                                        FontFamily="{StaticResource MainSystemFont}"
+                                       Typography.NumeralAlignment="Tabular"
                                        HorizontalAlignment="Right"
                                        VerticalAlignment="Center"
                                        Margin="30,0,2,0"/>
@@ -2650,24 +2627,6 @@
                             <Grid x:Name="LyricsCanvasViewport"
                                   Background="Transparent"
                                   ClipToBounds="True">
-                                <MediaElement x:Name="LyricsCanvasVideo"
-                                              LoadedBehavior="Manual"
-                                              UnloadedBehavior="Manual"
-                                              Stretch="UniformToFill"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              IsMuted="True"
-                                              ScrubbingEnabled="True"
-                                              Opacity="1"/>
-                                <MediaElement x:Name="LyricsCanvasVideoAlt"
-                                              LoadedBehavior="Manual"
-                                              UnloadedBehavior="Manual"
-                                              Stretch="UniformToFill"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              IsMuted="True"
-                                              ScrubbingEnabled="True"
-                                              Opacity="0"/>
                                 <Rectangle x:Name="LyricsCanvasBrightnessOverlay"
                                            Fill="Black"
                                            Opacity="0.3"
@@ -3621,7 +3580,7 @@
                     <Grid x:Name="PiContent"
                           Opacity="0"
                           Visibility="Collapsed"
-                          Margin="20,34,20,14"
+                          Margin="16,30,16,0"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Top"
                           MouseLeftButtonDown="SecondaryContent_Click"
@@ -3632,7 +3591,7 @@
                     <Grid x:Name="SchoolContent"
                           Opacity="0"
                           Visibility="Collapsed"
-                          Margin="20,34,20,14"
+                          Margin="16,30,16,0"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Top"
                           MouseLeftButtonDown="SecondaryContent_Click"
@@ -3640,22 +3599,11 @@
                         <ctrl:ControlCenterView x:Name="SchoolCenter" Page="School"/>
                     </Grid>
 
-                    <Grid x:Name="WeatherContent"
-                          Opacity="0"
-                          Visibility="Collapsed"
-                          Margin="20,34,20,14"
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Top"
-                          MouseLeftButtonDown="SecondaryContent_Click"
-                          RenderOptions.ClearTypeHint="Enabled">
-                        <ctrl:WeatherView x:Name="WeatherPanel"/>
-                    </Grid>
-
 
                     <Grid x:Name="TimerContent"
                           Opacity="0"
                           Visibility="Collapsed"
-                          Margin="20,34,20,14"
+                          Margin="16,30,16,0"
                           HorizontalAlignment="Center"
                           Width="420"
                           Height="122"

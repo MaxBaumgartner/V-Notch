@@ -1349,6 +1349,7 @@
   "home.piOk": "一切正常",
   "home.fix": "修复",
   "school.deadlines": "待交作业",
+  "school.until": "截至 {0}",
   "school.exams": "测验和考试",
   "school.nothingDue": "没有待交",
   "school.days": "天",

@@ -1349,6 +1349,7 @@
   "home.piOk": "alles groen",
   "home.fix": "Oplossen",
   "school.deadlines": "Inleveren",
+  "school.until": "tot {0}",
   "school.exams": "Toetsen en examens",
   "school.nothingDue": "Niets open",
   "school.days": "dagen",

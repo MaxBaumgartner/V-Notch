@@ -358,6 +358,39 @@ public sealed class DataProtectionSettingsTests : IDisposable
         }
     }
 
+    [Fact]
+    public void ForwardVersionSettingsPreserveUnknownFieldsAcrossLoadAndSave()
+    {
+        int version = SettingsMigrator.CurrentVersion + 5;
+        string path = Path.Combine(_directory, "settings-forward.json");
+        string original = JsonSerializer.Serialize(new
+        {
+            SettingsVersion = version,
+            Width = 4100,
+            ProcessPriority = "RealTime",
+            FutureFeatureFlag = true,
+            LiquidGlass = new { FutureOptic = 7 }
+        });
+        File.WriteAllText(path, original);
+        using var service = new SettingsService(path, _ => { });
+
+        var settings = service.Load();
+        Assert.Equal(version, settings.SettingsVersion);
+        Assert.Equal(4000, settings.Width);
+        Assert.Equal("Normal", settings.ProcessPriority);
+        Assert.Equal(original, File.ReadAllText(path));
+        var copy = settings.Clone();
+        Assert.True(settings.ValueEquals(copy));
+        copy.LiquidGlass.ExtensionData!.Clear();
+        Assert.False(settings.ValueEquals(copy));
+
+        service.Save(settings);
+        using var saved = JsonDocument.Parse(File.ReadAllText(path));
+        Assert.Equal(version, saved.RootElement.GetProperty("SettingsVersion").GetInt32());
+        Assert.True(saved.RootElement.GetProperty("FutureFeatureFlag").GetBoolean());
+        Assert.Equal(7, saved.RootElement.GetProperty("LiquidGlass").GetProperty("FutureOptic").GetInt32());
+    }
+
     public void Dispose()
     {
         DataProtection.ProtectBytes = _originalProtectBytes;

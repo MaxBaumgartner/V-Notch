@@ -117,8 +117,7 @@ internal sealed partial class LocalTranslationService(ILocalTranslationEngine en
             if (!literalsPreserved && !inspection.ProtectedFactsPreserved)
                 throw new TranslationException("translation.literalsChanged");
             var result = new TranslationResult(translated, source, target, literalsPreserved,
-                TranslationDateIntegrity.PreservesWeekdays(text, hintSource, translated, target))
-            { InputTruncated = tokenTruncated };
+                TranslationDateIntegrity.PreservesWeekdays(text, hintSource, translated, target));
             if (vn_local_translation_should_cache_result(
                 literalsPreserved ? (byte)1 : (byte)0,
                 result.WeekdaysPreserved ? (byte)1 : (byte)0,
@@ -183,7 +182,7 @@ internal sealed partial class LocalTranslationService(ILocalTranslationEngine en
                 return null;
             }
             _order.AddLast(node);
-            return node.Value.Result with { InputTruncated = node.Value.Result.InputTruncated || truncated };
+            return node.Value.Result with { InputTruncated = truncated };
         }
     }
 

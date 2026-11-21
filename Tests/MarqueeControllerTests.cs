@@ -9,6 +9,7 @@ using Xunit;
 
 namespace VNotch.Tests;
 
+[Collection("Localization")]
 public class MarqueeControllerTests
 {
     [Theory]
@@ -83,6 +84,39 @@ public class MarqueeControllerTests
     }
 
     [Fact]
+    public void PreviousTrackSendsBothRowsRightAndBringsTheirReplacementsFromTheLeft()
+    {
+        RunOnStaThread(() =>
+        {
+            var targets = new MarqueeTestTargets("Current", "Artist");
+            using var controller = targets.CreateController();
+            var root = new Grid();
+            foreach (var (layer, text, transform) in new[] {
+                (targets.TitleLayerA, targets.TitleA, targets.TitleMorphA),
+                (targets.TitleLayerB, targets.TitleB, targets.TitleMorphB),
+                (targets.ArtistLayerA, targets.ArtistA, targets.ArtistMorphA) })
+            {
+                layer.Children.Add(text);
+                layer.RenderTransform = transform;
+                root.Children.Add(layer);
+            }
+            var host = new BackgroundWindow { Left = -20000, Top = -20000, Width = 400, Height = 100, Content = root };
+            host.Show();
+            try
+            {
+                controller.TransitionTrackText("Previous", "Previous artist", -1);
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                while (VNotch.Services.Motion.VelocityOf(targets.TitleMorphA, TranslateTransform.XProperty) <= 0 &&
+                    clock.Elapsed < TimeSpan.FromSeconds(2)) PumpDispatcherFor(TimeSpan.FromMilliseconds(20));
+                Assert.True(VNotch.Services.Motion.VelocityOf(targets.TitleMorphA, TranslateTransform.XProperty) > 0);
+                Assert.True(VNotch.Services.Motion.VelocityOf(targets.TitleMorphB, TranslateTransform.XProperty) > 0);
+                Assert.True(VNotch.Services.Motion.VelocityOf(targets.ArtistMorphA, TranslateTransform.XProperty) > 0);
+            }
+            finally { host.Close(); }
+        });
+    }
+
+    [Fact]
     public void TrackTransition_BypassesPendingMetadataAndMovesBothRowsTogether()
     {
         RunOnStaThread(() =>
@@ -95,10 +129,10 @@ public class MarqueeControllerTests
             controller.UpdateArtistText("Stale artist");
             controller.TransitionTrackText("Final title", "Final artist");
 
-            // Both rows bring their final text in together. The layer that was only just arriving is still
-            // at opacity 0, so it has nowhere to fade and stays at rest.
-            Assert.True(targets.TitleLayerA.HasAnimatedProperties);
-            Assert.True(targets.ArtistLayerA.HasAnimatedProperties);
+            // Before the first rendered frame, reversing to the original layer can already be at rest.
+            // Both rows must still commit the latest text together, with the unused layer hidden.
+            Assert.Equal("Final title", targets.TitleA.Text);
+            Assert.Equal("Final artist", targets.ArtistA.Text);
             Assert.Equal(0, targets.TitleLayerB.Opacity, 3);
             Assert.Equal(0, targets.ArtistLayerB.Opacity, 3);
 
@@ -174,10 +208,13 @@ public class MarqueeControllerTests
         private readonly TranslateTransform _titleMarqueeA = new();
         public TranslateTransform TitleMarqueeA => _titleMarqueeA;
         private readonly TranslateTransform _titleMorphA = new();
+        public TranslateTransform TitleMorphA => _titleMorphA;
         private readonly TranslateTransform _titleMarqueeB = new();
         private readonly TranslateTransform _titleMorphB = new();
+        public TranslateTransform TitleMorphB => _titleMorphB;
         private readonly TranslateTransform _artistMarqueeA = new();
         private readonly TranslateTransform _artistMorphA = new();
+        public TranslateTransform ArtistMorphA => _artistMorphA;
         private readonly TranslateTransform _artistMarqueeB = new();
         private readonly TranslateTransform _artistMorphB = new();
 

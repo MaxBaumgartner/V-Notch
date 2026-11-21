@@ -17,7 +17,8 @@ public partial class MainWindow
     private void InitializeKeepAwake()
     {
         _keepAwake = new KeepAwakeService();
-        ControlCenter.AttachKeepAwake(KeepAwakeLabel, CycleKeepAwake);
+        ControlCenter.AttachKeepAwake(KeepAwakeLabel, CycleKeepAwake,
+            () => _settings?.KeepAwake ?? KeepAwakeMode.Automatic, SetKeepAwakeMode);
         UpdateKeepAwake();
     }
 
@@ -58,12 +59,18 @@ public partial class MainWindow
     private void CycleKeepAwake()
     {
         if (_settings == null) return;
-        _settings.KeepAwake = _settings.KeepAwake switch
+        SetKeepAwakeMode(_settings.KeepAwake switch
         {
             KeepAwakeMode.Off => KeepAwakeMode.Automatic,
             KeepAwakeMode.Automatic => KeepAwakeMode.Always,
             _ => KeepAwakeMode.Off
-        };
+        });
+    }
+
+    private void SetKeepAwakeMode(KeepAwakeMode mode)
+    {
+        if (_settings == null) return;
+        _settings.KeepAwake = mode;
         _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
         // A new mode always shows its own name first, even if a reason would keep the label the same.
         _keepAwakeReason = (KeepAwakeReason)(-1);

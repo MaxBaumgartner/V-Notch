@@ -15,6 +15,7 @@ namespace VNotch;
 
 public partial class MainWindow
 {
+    private VNotch.Presenters.CompactSurfaceAttachment? _appPillAttachment;
     private bool _appPillExpanded;
     private int _appPillToken;
     private int _appPillMotionGeneration;
@@ -53,8 +54,7 @@ public partial class MainWindow
         AppPillCodeText.Text = _appPillCode ?? "";
         AppPillCodeChip.Visibility = _appPillCode == null ? Visibility.Collapsed : Visibility.Visible;
         LocalizeAppPillCodeChip();
-        AppPillCodeTick.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
-        AppPillCodeTick.StrokeDashOffset = 17;
+        Motion.Stop(AppPillCodeTick, System.Windows.Shapes.Shape.StrokeDashOffsetProperty, 17);
         AppPillCodeTick.Visibility = Visibility.Hidden;
         _appPillExpanded = false;
         AppPillBody.Visibility = Visibility.Visible;
@@ -71,24 +71,15 @@ public partial class MainWindow
         HideCompactSurface(MusicCompactContent);
         AppNotificationPill.Visibility = Visibility.Visible;
         AppNotificationPill.IsHitTestVisible = true;
-        if (AnimationConfig.ReduceMotion)
+        SetAppNotificationOpacity(AppNotificationPill, replacing ? 0 : 1);
+        SetAppNotificationValue(AppPillTranslate, TranslateTransform.YProperty, 0);
+        if (replacing)
         {
-            SetAppNotificationOpacity(AppNotificationPill, 1);
-            SetAppNotificationValue(AppPillTranslate, TranslateTransform.YProperty, 0);
+            Motion.To(AppNotificationPill, OpacityProperty, 1, Motion.Exit, from: 0);
+            Motion.To(AppPillTranslate, TranslateTransform.YProperty, 0, Motion.Exit, from: 6);
         }
-        else
-        {
-            SetAppNotificationOpacity(AppNotificationPill, 0);
-            AnimateAppNotificationOpacity(AppNotificationPill, 1, 160);
-            Motion.To(AppPillTranslate, TranslateTransform.YProperty, 0, Motion.Pop,
-                from: replacing ? null : 6);
-        }
-        RevealAppPillPart(AppPillLogo.Visibility == Visibility.Visible ? AppPillLogo : AppPillBell, 0);
-        if (!replacing)
-        {
-            RevealAppPillPart(AppPillSender, 1);
-            RevealAppPillPart(AppPillBody, 2);
-        }
+        foreach (var part in new UIElement[] { AppPillLogo, AppPillBell, AppPillSender, AppPillBody })
+            if (part.Visibility == Visibility.Visible) RevealAppPillPart(part, 0);
         ResizeAppPill(Math.Max(_collapsedWidth, Math.Min(PillMaxWidth, 380)), AppPillCompactHeight, 350);
         _appPillDismissTimer ??= CreateAppPillDismissTimer();
         _appPillDismissTimer.Stop();
@@ -140,12 +131,8 @@ public partial class MainWindow
         try { AppPillClipboardWriter(_appPillCode); }
         catch (System.Runtime.InteropServices.ExternalException) { return; }
         AppPillCodeTick.Visibility = Visibility.Visible;
-        AppPillCodeTick.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
-        AppPillCodeTick.StrokeDashOffset = 0;
+        Motion.To(AppPillCodeTick, System.Windows.Shapes.Shape.StrokeDashOffsetProperty, 0, Motion.Exit);
         SquishAppPillCodeChip();
-        if (!AnimationConfig.ReduceMotion)
-            AppPillCodeTick.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty,
-                new DoubleAnimation(17, 0, TimeSpan.FromMilliseconds(160)));
     }
 
     /// <summary>
@@ -176,7 +163,7 @@ public partial class MainWindow
         return true;
     }
 
-    /// <summary>The pill grows out of the notch to the whole message; the text follows a beat later, the picture last.</summary>
+    /// <summary>The whole message grows with the notch, keeping sender and body together.</summary>
     private void ExpandAppPill()
     {
         if (_appPillToast is not { } toast) return;
@@ -280,37 +267,25 @@ public partial class MainWindow
         int generation = ++_appPillMotionGeneration;
         int token = _appPillToken;
         if (height + 32 > Height) ResizeHostWindowHeight(height);
-        var spring = Math.Abs(width - _collapsedWidth) < .5 && Math.Abs(height - _collapsedHeight) < .5
-            ? Motion.PopBack : _appPillExpanded ? Motion.Glide : Motion.Pop;
+        bool closing = Math.Abs(width - _collapsedWidth) < .5 && Math.Abs(height - _collapsedHeight) < .5;
+        var spring = closing ? Motion.PopBack : _appPillExpanded ? Motion.Shift : Motion.Pop;
         if (!double.IsFinite(NotchBorder.Width)) Motion.Stop(NotchBorder, WidthProperty, _collapsedWidth);
         if (!double.IsFinite(NotchBorder.Height)) Motion.Stop(NotchBorder, HeightProperty, _collapsedHeight);
-        Motion.To(NotchBorder, WidthProperty, width, spring);
-        Motion.To(NotchBorder, HeightProperty, height, spring, done: () =>
+        _notchShellPresenter?.CancelCurrentAnimation();
+        _appPillAttachment ??= new(NotchBorder, AppNotificationPill,
+            () => new Size(_collapsedWidth, _collapsedHeight));
+        _appPillAttachment.MoveTo(width, height, spring, shown: !closing, done: () =>
         {
             if (generation != _appPillMotionGeneration || token != _appPillToken || IsCompactSlotStale(token)) return;
-            if (Math.Abs(NotchBorder.Height - height) > .5) return;
             completed?.Invoke();
         });
     }
-
     /// <summary>The message slips back into the resting notch.</summary>
     private void DismissAppPill()
     {
         if (_appPillToken == 0) return;
         _appPillDismissTimer?.Stop();
         AppNotificationPill.IsHitTestVisible = false;
-        if (!AnimationConfig.ReduceMotion)
-        {
-            Motion.To(AppNotificationPill, OpacityProperty, 0, Motion.Exit);
-            Motion.To(AppPillTranslate, TranslateTransform.YProperty, -4, Motion.Exit);
-            foreach (var element in new UIElement[] { AppPillLogo, AppPillBell, AppPillSender,
-                         AppPillBody, AppPillExpandedBody, AppPillImage })
-                if (element.Visibility == Visibility.Visible && element.RenderTransform is ScaleTransform scale)
-                {
-                    Motion.To(scale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
-                    Motion.To(scale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
-                }
-        }
         ResizeAppPill(_collapsedWidth, _collapsedHeight, 260, () =>
         {
             int token = _appPillToken;
@@ -339,14 +314,16 @@ public partial class MainWindow
         _appPillToast = null;
         _appPillCode = null;
         AppPillCodeChip.Visibility = Visibility.Collapsed;
-        AppPillCodeTick.BeginAnimation(System.Windows.Shapes.Shape.StrokeDashOffsetProperty, null);
+        Motion.Stop(AppPillCodeTick, System.Windows.Shapes.Shape.StrokeDashOffsetProperty);
         _appPillQueue.Clear();
         if (_compactPillArbiter.ActiveSlot is CompactPillSlot.None or CompactPillSlot.AppNotification)
         {
             Motion.Stop(NotchBorder, WidthProperty, _collapsedWidth);
             Motion.Stop(NotchBorder, HeightProperty, _collapsedHeight);
         }
-        HideCompactSurface(AppNotificationPill);
+        _appPillAttachment?.Detach(false);
+        Motion.Stop(AppNotificationPill, OpacityProperty, 0);
+        AppNotificationPill.Visibility = Visibility.Collapsed;
         Motion.Stop(AppPillTranslate, TranslateTransform.YProperty, 0);
         AppPillLogo.Source = null;
         AppPillImage.Source = null;
@@ -354,21 +331,15 @@ public partial class MainWindow
 
     private static void RevealAppPillPart(UIElement element, int index)
     {
-        bool entering = element.Visibility != Visibility.Visible || element.Opacity <= 0 || element.RenderTransform is not ScaleTransform;
         element.Visibility = Visibility.Visible;
-        if (element.RenderTransform is not ScaleTransform scale)
+        if (element.RenderTransform is ScaleTransform scale)
         {
-            element.RenderTransformOrigin = new Point(.5, .5);
-            element.RenderTransform = scale = new ScaleTransform(1, 1);
+            Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
         }
-        Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale,
-            from: entering ? Motion.TileFromScale : null, delay: Motion.Stagger(index));
-        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale,
-            from: entering ? Motion.TileFromScale : null, delay: Motion.Stagger(index));
-        Motion.To(element, OpacityProperty, 1, Motion.Tile,
-            from: entering ? 0 : null, delay: Motion.Stagger(index));
+        // Layout and reveal belong to the attached face, rather than a stagger of individual words.
+        Motion.Stop(element, OpacityProperty, 1);
     }
-
     private void HideAppPillPart(UIElement element)
     {
         if (element.Visibility != Visibility.Visible) return;

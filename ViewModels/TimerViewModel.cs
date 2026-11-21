@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -95,6 +96,8 @@ public partial class TimerViewModel : ObservableObject
     {
         result = TimeSpan.Zero;
         if (string.IsNullOrWhiteSpace(input)) return false;
+        if (input.AsSpan().IndexOfAny("dDhHmMsS") >= 0)
+            return TryParseUnitDuration(input.AsSpan(), out result);
         fixed (char* ptr = input)
         {
             vn_timer_parse_custom_time(ptr, input.Length, out long ticks, out byte valid);
@@ -102,6 +105,36 @@ public partial class TimerViewModel : ObservableObject
             result = TimeSpan.FromTicks(ticks);
             return true;
         }
+    }
+
+    private static bool TryParseUnitDuration(ReadOnlySpan<char> input, out TimeSpan result)
+    {
+        result = TimeSpan.Zero;
+        double seconds = 0;
+        input = input.Trim();
+        while (!input.IsEmpty)
+        {
+            int unit = input.IndexOfAny("dDhHmMsS");
+            if (unit < 0) return false;
+            var number = input[..unit].TrimEnd();
+            if (number.IsEmpty || number.Length > 63 || !char.IsAsciiDigit(number[^1]) ||
+                !double.TryParse(number, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out double value))
+                return false;
+
+            seconds += value * (char.ToLowerInvariant(input[unit]) switch
+            {
+                'd' => 86400,
+                'h' => 3600,
+                'm' => 60,
+                _ => 1
+            });
+            input = input[(unit + 1)..].TrimStart();
+        }
+
+        double ticks = seconds * TimeSpan.TicksPerSecond;
+        if (ticks < 1 || ticks >= (double)long.MaxValue) return false;
+        result = TimeSpan.FromTicks((long)Math.Round(ticks, MidpointRounding.AwayFromZero));
+        return true;
     }
 
     private static unsafe string Format(TimeSpan value)

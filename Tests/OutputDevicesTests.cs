@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using VNotch.Services.ControlCenter;
+using VNotch.Services;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -32,5 +33,21 @@ public sealed class OutputDevicesTests(ITestOutputHelper output)
     {
         foreach (var o in OutputDevices.List(Array.Empty<string>()))
             output.WriteLine($"{(o.IsDefault ? "*" : " ")} {o.Name}  <-  {o.FriendlyName}");
+    }
+
+    [Fact]
+    public void TheWaveRouteRemainsAvailableAfterCyclingToAirPods()
+    {
+        var devices = new[]
+        {
+            new AudioDeviceInfo { Id = "wave", FriendlyName = "System (Elgato Virtual Audio)", IsDefault = false },
+            new AudioDeviceInfo { Id = "air", FriendlyName = "Headphones (AirPods Pro)", IsDefault = true },
+            new AudioDeviceInfo { Id = "dummy", FriendlyName = "Steam Streaming Speakers", IsDefault = false }
+        };
+        var outputs = OutputDevices.Select(devices, new[] { "AirPods Pro" }, "wave");
+        Assert.Equal(2, outputs.Count);
+        Assert.Contains(outputs, o => o.Id == "wave");
+        Assert.True(outputs.Single(o => o.Id == "air").IsDefault);
+        Assert.DoesNotContain(outputs, o => o.Id == "dummy");
     }
 }

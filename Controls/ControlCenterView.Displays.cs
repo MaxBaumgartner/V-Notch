@@ -43,6 +43,7 @@ public partial class ControlCenterView
 
     internal void RefreshDisplaysOnDisplayChange()
     {
+        if (_compactSystemReady) RefreshCompactDisplays();
         if (!_disposed && Page == ControlCenterPage.System && IsVisible && IsExpanded("displays")) BuildDisplaysSection();
     }
 
@@ -196,7 +197,7 @@ public partial class ControlCenterView
             chip.MouseLeftButtonUp += (_, e) => { e.Handled = true; click(); };
             row.Children.Add(chip);
         }
-        if (vertical) _displaysSection.Children.Add(new ScrollViewer { Content = row, MaxHeight = 160, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        if (vertical) _displaysSection.Children.Add(new ScrollViewer { Content = row, MaxHeight = 160, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         else _displaysSection.Children.Add(row);
     }
 

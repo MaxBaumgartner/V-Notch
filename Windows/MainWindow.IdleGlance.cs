@@ -12,6 +12,12 @@ namespace VNotch;
 
 public partial class MainWindow
 {
+    private static string FormatIdleTemperature(double celsius)
+    {
+        int value = (int)Math.Round(celsius, MidpointRounding.AwayFromZero);
+        return (value < 0 ? "\u2212" + (-value).ToString(System.Globalization.CultureInfo.InvariantCulture) : value.ToString(System.Globalization.CultureInfo.InvariantCulture)) + "\u00b0";
+    }
+
     #region Idle notch: slim, with the time and the weather
 
     // The resting width with nothing live; music, Claude Code and countdowns get the full width back.
@@ -223,7 +229,7 @@ public partial class MainWindow
             return;
         }
         bool wasShown = IdleWeather.Visibility == Visibility.Visible;
-        string temperature = WeatherView.Degrees(forecast.Now.Temperature);
+        string temperature = FormatIdleTemperature(forecast.Now.Temperature);
         string key = $"{forecast.Now.Code}:{forecast.Now.IsDay}:{temperature}";
         PositionIdleClock(HorizontalAlignment.Left);
         void Reveal()

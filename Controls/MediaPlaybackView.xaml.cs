@@ -30,12 +30,17 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
     public MediaPlaybackView()
     {
         InitializeComponent();
+        // Until the first media update arrives, the title says so in the user's language (the XAML text is English).
+        TrackTitle.Text = Loc.Get("media.noMedia");
+        TrackArtist.Text = "";
+        RenderPlaybackMorph(0);
         ProgressBarContainer.LostMouseCapture += ProgressBar_LostMouseCapture;
         IsVisibleChanged += (_, _) =>
         {
             UpdateProgressTimerState();
             if (!IsVisible)
             {
+                Motion.Stop(this, PlaybackMorphProperty, _presentedPlaying == false ? 1 : 0);
                 StopSpringRenderLoop();
                 StopCatchUpAnimation();
                 CancelRewindForNavigation();
@@ -149,7 +154,7 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
         if (_disposed || _viewModel == null) return;
         try
         {
-            ButtonFeedback.PlayButtonPressAnimation(PlayPauseButton);
+            ButtonFeedback.PlayButtonPressAnimation(PlayPauseButton, .88);
             _progressEngine.NotifyUserPlayPause(!_viewModel.IsPlaying);
             RenderProgressBar();
             UpdateProgressTimerState();
@@ -164,7 +169,7 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
         if (_disposed || _viewModel == null) return;
         try
         {
-            ButtonFeedback.PlayButtonPressAnimation(NextButton);
+            ButtonFeedback.PlayButtonPressAnimation(NextButton, .88);
             ButtonFeedback.PlayNextSkipAnimation(NextArrow0, NextArrow1);
             OptimisticPrepareForNextTrack();
             await _viewModel.NextTrackCommand.ExecuteAsync(null);
@@ -178,7 +183,7 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
         if (_disposed || _viewModel == null) return;
         try
         {
-            ButtonFeedback.PlayButtonPressAnimation(PrevButton);
+            ButtonFeedback.PlayButtonPressAnimation(PrevButton, .88);
             ButtonFeedback.PlayPrevSkipAnimation(PrevArrow0, PrevArrow2);
             PrepareForPreviousTrackRequest();
             await _viewModel.PreviousTrackCommand.ExecuteAsync(null);
@@ -200,15 +205,51 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
     }
 
     private bool? _presentedPlaying;
+    internal static readonly DependencyProperty PlaybackMorphProperty = DependencyProperty.Register(
+        "PlaybackMorph", typeof(double), typeof(MediaPlaybackView), new PropertyMetadata(0d,
+            (target, args) => ((MediaPlaybackView)target).RenderPlaybackMorph((double)args.NewValue)));
+
+    internal static Geometry PlaybackGeometry(double progress, double size)
+    {
+        Point[][] pause = [[new(6, 4), new(10.5, 4), new(10.5, 20), new(6, 20)],
+            [new(13.5, 4), new(18, 4), new(18, 20), new(13.5, 20)]];
+        Point[][] play = [[new(7, 4.5), new(12.6, 7.75), new(12.6, 16.25), new(7, 19.5)],
+            [new(12.6, 7.75), new(20, 12), new(20, 12), new(12.6, 16.25)]];
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            for (int half = 0; half < 2; half++)
+            {
+                for (int corner = 0; corner < 4; corner++)
+                {
+                    var a = pause[half][corner];
+                    var b = play[half][corner];
+                    var point = new Point((a.X + (b.X - a.X) * progress - 4) * size / 16,
+                        (a.Y + (b.Y - a.Y) * progress - 4) * size / 16);
+                    if (corner == 0) context.BeginFigure(point, true, true);
+                    else context.LineTo(point, true, false);
+                }
+            }
+        }
+        geometry.Freeze();
+        return geometry;
+    }
+
+    private void RenderPlaybackMorph(double progress)
+    {
+        PauseIconPath.Stretch = Stretch.None;
+        PauseIconPath.Data = PlaybackGeometry(progress, 46);
+        PauseIcon.Visibility = Visibility.Visible;
+        PlayIcon.Visibility = Visibility.Collapsed;
+    }
 
     internal void PresentPlayback(bool playing)
     {
         System.Windows.Automation.AutomationProperties.SetName(PlayPauseButton, Loc.Get(playing ? "media.pause" : "media.play"));
         if (_presentedPlaying == playing) return;
         _presentedPlaying = playing;
-        var from = playing ? PlayIcon : PauseIcon;
-        var to = playing ? PauseIcon : PlayIcon;
-        ButtonFeedback.AnimateIconSwitch(from, to, TimeSpan.FromMilliseconds(180), _easeQuadInOut);
+        if (IsVisible) Motion.To(this, PlaybackMorphProperty, playing ? 0 : 1, Motion.Glide);
+        else Motion.Stop(this, PlaybackMorphProperty, playing ? 0 : 1);
     }
 
     private void OnMediaPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -226,6 +267,7 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        Motion.Stop(this, PlaybackMorphProperty, _presentedPlaying == false ? 1 : 0);
         if (_viewModel != null) _viewModel.PropertyChanged -= OnMediaPropertyChanged;
         SetProgressRenderingEnabled(false);
         StopSpringRenderLoop();
@@ -430,17 +472,26 @@ public sealed partial class MediaPlaybackView : UserControl, IDisposable
 
     private MarqueeController? _marqueeController;
 
-    private MarqueeController Marquee => _marqueeController ??= new MarqueeController(
-        title: new MarqueeTargets(
-            A: new MarqueeLayer(TrackTitleLayer, TrackTitle, TitleMarqueeTranslate, TitleMorphTranslate),
-            B: new MarqueeLayer(TrackTitleNextLayer, TrackTitleNext, TitleMarqueeTranslateNext, TitleMorphTranslateNext)),
-        artist: new MarqueeTargets(
-            A: new MarqueeLayer(TrackArtistLayer, TrackArtist, ArtistMarqueeTranslate, ArtistMorphTranslate),
-            B: new MarqueeLayer(TrackArtistNextLayer, TrackArtistNext, ArtistMarqueeTranslateNext, ArtistMorphTranslateNext)),
-        GetVisibleMediaTextWidth);
+    private MarqueeController Marquee
+    {
+        get
+        {
+            _marqueeController ??= new MarqueeController(
+                title: new MarqueeTargets(
+                    A: new MarqueeLayer(TrackTitleLayer, TrackTitle, TitleMarqueeTranslate, TitleMorphTranslate),
+                    B: new MarqueeLayer(TrackTitleNextLayer, TrackTitleNext, TitleMarqueeTranslateNext, TitleMorphTranslateNext)),
+                artist: new MarqueeTargets(
+                    A: new MarqueeLayer(TrackArtistLayer, TrackArtist, ArtistMarqueeTranslate, ArtistMorphTranslate),
+                    B: new MarqueeLayer(TrackArtistNextLayer, TrackArtistNext, ArtistMarqueeTranslateNext, ArtistMorphTranslateNext)),
+                GetVisibleMediaTextWidth);
+            _marqueeController.AnimateChanges = IsVisible;
+            _marqueeController.EnableBlurEffects = EnableBlurEffects;
+            return _marqueeController;
+        }
+    }
 
     internal void RefreshMediaMarquee() => Marquee.RefreshMediaMarquee();
-    internal void TransitionTrackText(string title, string artist) => Marquee.TransitionTrackText(title, artist);
+    internal void TransitionTrackText(string title, string artist, int direction = 1) => Marquee.TransitionTrackText(title, artist, direction);
     internal void UpdateTitleText(string newText) => Marquee.UpdateTitleText(newText);
     internal void UpdateArtistText(string newText) => Marquee.UpdateArtistText(newText);
 

@@ -17,6 +17,11 @@ public partial class MainWindow
     private bool _isBluetoothNotificationVisible = false;
     private bool _currentBluetoothConnected = true;
     private int _bluetoothNotificationToken = 0;
+    private VNotch.Presenters.CompactSurfaceAttachment? _bluetoothAttachment, _bluetoothDisconnectAttachment;
+
+    private VNotch.Presenters.CompactSurfaceAttachment ActiveBluetoothAttachment => _currentBluetoothConnected
+        ? _bluetoothAttachment ??= new(NotchBorder, BluetoothNotification, () => new Size(_collapsedWidth, _collapsedHeight))
+        : _bluetoothDisconnectAttachment ??= new(NotchBorder, BluetoothDisconnectNotification, () => new Size(_collapsedWidth, _collapsedHeight));
 
     private void InitializeBluetoothNotificationController()
     {
@@ -100,28 +105,24 @@ public partial class MainWindow
         activeGrid.Visibility = Visibility.Visible;
         activeGrid.Opacity = 0;
 
-        PlayBluetoothBounce();
-
         HideCompactSurface(CollapsedContent);
         HideCompactSurface(MusicCompactContent);
-
-        var fadeIn = MakeCompactNotificationEntrance(0, 1);
-        activeGrid.BeginAnimation(OpacityProperty, fadeIn);
-
-        Motion.To(activeTranslate, TranslateTransform.YProperty, 0, Motion.Tile, from: 6);
-
-        Motion.To(activeIconScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
-        Motion.To(activeIconScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        activeGrid.Measure(new Size(double.PositiveInfinity, _collapsedHeight));
+        double width = Math.Clamp(activeGrid.DesiredSize.Width + 28, _collapsedWidth + 28, Math.Max(460, _collapsedWidth + 28));
+        Motion.Stop(activeGrid, OpacityProperty, 1);
+        Motion.Stop(activeTranslate, TranslateTransform.YProperty, 0);
+        _notchShellPresenter?.CancelCurrentAnimation();
+        ActiveBluetoothAttachment.MoveTo(width, _collapsedHeight, Motion.Pop, shown: true);
+        Motion.To(activeIconScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop);
+        Motion.To(activeIconScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop);
     }
 
     private void AnimateBluetoothNotificationOut()
     {
         var activeGrid = ActiveBluetoothGrid;
-        var activeTranslate = ActiveBluetoothTranslate;
         int token = _bluetoothNotificationToken;
-
-        var fadeOut = MakeCompactNotificationExit(1, 0);
-        fadeOut.Completed += (s, e) =>
+        _notchShellPresenter?.CancelCurrentAnimation();
+        ActiveBluetoothAttachment.MoveTo(_collapsedWidth, _collapsedHeight, Motion.PopBack, shown: false, done: () =>
         {
             if (token != _bluetoothNotificationToken) return;
             if (IsCompactSlotStale(token)) return;
@@ -147,13 +148,7 @@ public partial class MainWindow
                 var fadeInCollapsed = MakeCompactContentRestore();
                 CollapsedContent.BeginAnimation(OpacityProperty, fadeInCollapsed);
             }
-        };
-
-        activeGrid.BeginAnimation(OpacityProperty, fadeOut);
-
-        Motion.To(activeTranslate, TranslateTransform.YProperty, -4, Motion.Exit);
-        Motion.To(ActiveBluetoothIconScale, ScaleTransform.ScaleXProperty, Motion.ExitToScale, Motion.Exit);
-        Motion.To(ActiveBluetoothIconScale, ScaleTransform.ScaleYProperty, Motion.ExitToScale, Motion.Exit);
+        });
     }
 
     private void CancelBluetoothNotificationImmediate()
@@ -163,6 +158,8 @@ public partial class MainWindow
         _isBluetoothNotificationVisible = false;
         _bluetoothNotificationToken = 0;
         _bluetoothController.MarkDismissed();
+        _bluetoothAttachment?.Detach(false);
+        _bluetoothDisconnectAttachment?.Detach(false);
 
         Motion.Stop(BluetoothNotification, OpacityProperty, 0);
         Motion.Stop(BluetoothNotificationTranslate, TranslateTransform.YProperty, 0);

@@ -1,6 +1,7 @@
 using System.Windows.Media.Imaging;
 using VNotch.Controllers;
 using VNotch.Models;
+using VNotch.Services;
 using Xunit;
 
 namespace VNotch.Tests;
@@ -174,8 +175,8 @@ public class MediaDisplayControllerTests
         var info = new MediaInfo { CurrentTrack = "", IsAnyMediaPlaying = false };
         var result = _sut.ProcessMediaUpdate(info, true, false, false, false);
 
-        Assert.Equal("No media playing", result.DisplayText.Title);
-        Assert.Equal("Artist name", result.DisplayText.Artist);
+        Assert.Equal(Loc.Get("media.noMedia"), result.DisplayText.Title);
+        Assert.Equal("", result.DisplayText.Artist);
     }
 
     [Fact]

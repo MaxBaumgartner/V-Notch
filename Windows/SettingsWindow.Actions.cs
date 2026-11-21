@@ -120,7 +120,7 @@ public partial class SettingsWindow
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        if (!_isSaving && !_hasRevertedLivePreview && HasUncommittedLivePreview())
+        if (!IsDeferringBackgroundInitialization && !_isSaving && !_hasRevertedLivePreview && HasUncommittedLivePreview())
         {
             RevertLivePreviewIfNeeded();
         }

@@ -157,10 +157,14 @@ public partial class MainWindow
         _micMutedTabShown = show;
         bool entering = MicMutedTab.Visibility != Visibility.Visible;
         if (show) MicMutedTab.Visibility = Visibility.Visible;
+        // The tab shows over a fullscreen game, so the window has to be on the screen for it.
+        UpdateFullscreenParking();
         Motion.To(MicMutedTabSlide, TranslateTransform.YProperty, show ? 0 : -22,
             show ? Motion.Pop : Motion.PopBack, from: show && entering ? -22 : null, done: () =>
             {
-                if (!_micMutedTabShown) MicMutedTab.Visibility = Visibility.Collapsed;
+                if (_micMutedTabShown) return;
+                MicMutedTab.Visibility = Visibility.Collapsed;
+                UpdateFullscreenParking();
             });
     }
 

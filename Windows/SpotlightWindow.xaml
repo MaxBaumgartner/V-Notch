@@ -757,13 +757,13 @@
                                 </StackPanel>
                             </Border>
 
-                            <ScrollViewer x:Name="AiHistoryPanel" Visibility="Collapsed" MaxHeight="310" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+                            <ScrollViewer x:Name="AiHistoryPanel" Visibility="Collapsed" MaxHeight="310" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                                 <ScrollViewer.Resources><Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/></ScrollViewer.Resources>
                                 <StackPanel x:Name="AiHistoryItems" Margin="0,2,8,0" HorizontalAlignment="Stretch"/>
                             </ScrollViewer>
 
                             <Grid ClipToBounds="True">
-                            <ScrollViewer x:Name="AiTranscriptScroll" ScrollChanged="AiTranscript_ScrollChanged" MaxHeight="310" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <ScrollViewer x:Name="AiTranscriptScroll" ScrollChanged="AiTranscript_ScrollChanged" MaxHeight="310" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
                                 <ScrollViewer.Resources><Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScrollBar}"/></ScrollViewer.Resources>
                                 <StackPanel x:Name="AiTranscript" Margin="0,0,8,0"/>
                             </ScrollViewer>
@@ -848,7 +848,7 @@
                                     <ScrollViewer Focusable="False"
                                                   CanContentScroll="False"
                                                   HorizontalScrollBarVisibility="Disabled"
-                                                  VerticalScrollBarVisibility="Auto">
+                                                  VerticalScrollBarVisibility="Hidden">
                                         <Grid>
                                             <Border x:Name="SelectionGlide"
                                                     HorizontalAlignment="Left"

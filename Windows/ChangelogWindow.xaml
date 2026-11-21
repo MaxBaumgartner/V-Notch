@@ -200,7 +200,7 @@
                                    Margin="12,16,12,8"/>
 
                         <ScrollViewer Grid.Row="1" 
-                                      VerticalScrollBarVisibility="Auto"
+                                      VerticalScrollBarVisibility="Hidden"
                                       HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="VersionListPanel" Margin="8,0,8,16"/>
                         </ScrollViewer>
@@ -215,7 +215,7 @@
                         Background="Transparent"
                         CornerRadius="0,0,24,0">
                     <ScrollViewer x:Name="ContentScrollViewer"
-                                  VerticalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Disabled"
                                   Padding="24,20,24,24">
                         <StackPanel x:Name="ContentPanel">

@@ -102,6 +102,28 @@ public sealed class SettingsTransferTests : IDisposable
     }
 
     [Fact]
+    public void TransfersExcludeUnknownFutureFieldsThatMightContainCredentials()
+    {
+        string raw = $$"""
+            {
+              "SettingsVersion": {{SettingsMigrator.CurrentVersion + 1}},
+              "Width": 320,
+              "FutureToken": "private",
+              "LiquidGlass": { "FutureToken": "private" }
+            }
+            """;
+        var (local, _) = SettingsMigrator.Migrate(raw);
+        Assert.DoesNotContain("FutureToken", _settingsService.ExportSettingsToString(local));
+        Assert.NotNull(local.ExtensionData);
+        Assert.NotNull(local.LiquidGlass.ExtensionData);
+
+        var (imported, _) = SettingsService.ImportSettingsFromString(raw);
+        Assert.Equal(320, imported.Width);
+        Assert.Null(imported.ExtensionData);
+        Assert.Null(imported.LiquidGlass.ExtensionData);
+    }
+
+    [Fact]
     public void ImportSettingsFromString_EnvelopeFormat_RestoresAllSettings()
     {
         var original = new NotchSettings

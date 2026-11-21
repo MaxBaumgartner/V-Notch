@@ -1349,6 +1349,7 @@
   "home.piOk": "всё в порядке",
   "home.fix": "Исправить",
   "school.deadlines": "Сдача работ",
+  "school.until": "до {0}",
   "school.exams": "Контрольные и экзамены",
   "school.nothingDue": "Ничего не нужно сдавать",
   "school.days": "дн.",

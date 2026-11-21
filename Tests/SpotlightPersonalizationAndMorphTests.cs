@@ -106,6 +106,7 @@ public sealed class SpotlightPersonalizationAndMorphTests
         var vm = (SpotlightViewModel)window.DataContext;
         window.SearchBox.Text = "pow";
         Invoke(window, "CancelSearchDebounce");
+        vm.CancelPendingSearch();
         var item1 = ApplicationItem(fixture, "app1");
         for (int i = 0; i < 9; i++)
             vm.Results.Add(i == 0 ? item1 : ApplicationItem(fixture, $"app{i + 1}"));
@@ -218,6 +219,8 @@ public sealed class SpotlightPersonalizationAndMorphTests
             await WpfFrameWaiter.UntilAsync(() => window.ContentRegion.Visibility == Visibility.Visible, "query status content revealed", ct);
             window.HideSpotlight();
             Assert.True(Field<bool>(window, "_isClosing"));
+            if (notch) Assert.True(window.ContentRegion.ClipToBounds);
+            await WpfFrameWaiter.NextAsync(ct);
             if (notch) Assert.True(window.ContentRegion.ClipToBounds);
             window.ToggleFromHotkey();
             Assert.False(Field<bool>(window, "_isClosing"));

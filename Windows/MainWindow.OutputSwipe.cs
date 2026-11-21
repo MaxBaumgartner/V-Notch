@@ -62,7 +62,13 @@ public partial class MainWindow
 
     private IntPtr OutputSwipeHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (message != WmMouseHWheel || _cleanedUp || _isExpanded || _isAnimating || _isGreetingActive) return IntPtr.Zero;
+        if (message != WmMouseHWheel || _cleanedUp || _isGreetingActive) return IntPtr.Zero;
+        if (_isExpanded)
+        {
+            handled = MusicWheelInput(unchecked((short)((long)wParam >> 16)));
+            return IntPtr.Zero;
+        }
+        if (_isAnimating) return IntPtr.Zero;
         handled = true;
         int delta = unchecked((short)((long)wParam >> 16));
         OnOutputSwipeInput(delta);

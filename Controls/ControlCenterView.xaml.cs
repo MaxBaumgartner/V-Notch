@@ -174,6 +174,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         _usesGlass = usesGlass;
         if (LegionService.IsSupported) AttachLegion();
+        BuildCompactSystem(new Snapshot());
         RefreshOnceShellIsReady();
     }
 
@@ -217,6 +218,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         _displayBrightness?.Dispose();
         if (_displayApi is IDisposable displayApi) displayApi.Dispose();
         _piTimer?.Stop();
+        _schoolCountdownTimer?.Stop();
+        if (_drawerHeight != null) Motion.Stop(_drawerHeight, WeatherTween.ValueProperty);
         StopLiveTexts();
         DetachOutput();
         CoverColorsFile.Changed -= OnCoverColorsChanged;
@@ -256,6 +259,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             {
                 ForgetStaleHistory();
                 if (IsExpanded("displays")) BuildDisplaysSection();
+                if (_compactSystemReady) RefreshCompactDisplays();
             }
             Refresh();
             StartLiveTexts();
@@ -284,7 +288,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             if (_backdrop != null)
             {
                 _backdrop.Suppressed = _usesGlass();
-                _backdrop.SetDrifting(true);
+                _backdrop.SetDrifting(Page == ControlCenterPage.Claude);
             }
         }
         else
@@ -303,6 +307,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             {
                 _stats.Reset();
                 _processes.Reset();
+                _loadWarning.Pause();
+                ++_compactDisplayRevision;
                 _topMode = TopMode.Off;
                 _wifiLoops.StopAll();
                 _bluetoothLoops.StopAll();
@@ -442,6 +448,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         public LaptopStatus? Laptop;
         public List<OutputDevice>? Outputs;
         public List<AudioSessionInfo>? Apps;
+        public WaveXlrState? WaveXlr;
     }
 
     private Snapshot ReadSnapshot(bool? wifiOn, bool? bluetoothOn, bool rescanWifi, bool withStats, TopMode top)
@@ -467,6 +474,11 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void ApplySnapshot(Snapshot s)
     {
         _snapshot = s;
+        if (Page == ControlCenterPage.System)
+        {
+            BuildCompactSystem(s);
+            return;
+        }
         if (_statsTiles == null) BuildStatsSection();
         if (s.Stats is { } stats) ApplyStats(stats);
         UpdateTopList(s.Top);
@@ -550,6 +562,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     /// <summary>Five tiles built once; every refresh only changes their numbers and slides their bars.</summary>
     private void BuildStatsSection()
     {
+        if (_compactSystemReady) { _systemDrawerKey = ""; BuildCompactSystem(_snapshot ?? new Snapshot()); return; }
         _statsSection.Children.Clear();
         var header = BuildSectionHeader("system", Loc.Get("control.system"), _keepAwakeLabel?.Invoke() ?? "",
             _cycleKeepAwake == null ? null : () => _cycleKeepAwake(), topMargin: 0);
@@ -711,7 +724,8 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void ApplyStats(SystemStats stats)
     {
         RecordSample(stats);
-        SetMood(MoodLoad(stats));
+        // On a Legion the power mode colours the tab; elsewhere the load does.
+        if (_modeTile == null || _legion == null) SetMood(MoodLoad(stats));
         if (_statsTiles is not { } tiles || !IsExpanded("system")) return;
         SetLoad(tiles.Cpu, stats.CpuPercent);
         SetLoad(tiles.Gpu, stats.GpuPercent);
@@ -1282,8 +1296,9 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         if (Page == ControlCenterPage.Claude) BuildClaudeSection();
         var padding = ControlScrollViewer.Padding;
-        ControlRoot.Measure(new Size(Math.Max(0, width - padding.Left - padding.Right), double.PositiveInfinity));
-        return Math.Ceiling(ControlRoot.DesiredSize.Height);
+        var bleed = ControlRoot.Margin;
+        ControlRoot.Measure(new Size(Math.Max(0, width - padding.Left - padding.Right + bleed.Left + bleed.Right), double.PositiveInfinity));
+        return Math.Ceiling(Math.Max(0, ControlRoot.DesiredSize.Height - bleed.Top - bleed.Bottom));
     }
 
     private Func<bool>? _soundsOn;
@@ -1292,19 +1307,24 @@ public partial class ControlCenterView : UserControl, IDisposable
     /// <summary>The Claude page's speaker button reads and flips the sound setting the shell owns.</summary>
     private Func<string>? _keepAwakeLabel;
     private Action? _cycleKeepAwake;
+    private Func<KeepAwakeMode>? _keepAwakeMode;
+    private Action<KeepAwakeMode>? _setKeepAwakeMode;
     private TextBlock? _keepAwakeText;
 
     /// <summary>The "System" header's right side: keep-awake mode or the reason it holds the PC awake; a tap steps the mode.</summary>
-    internal void AttachKeepAwake(Func<string> label, Action cycle)
+    internal void AttachKeepAwake(Func<string> label, Action cycle, Func<KeepAwakeMode>? mode = null, Action<KeepAwakeMode>? setMode = null)
     {
         _keepAwakeLabel = label;
         _cycleKeepAwake = cycle;
+        _keepAwakeMode = mode;
+        _setKeepAwakeMode = setMode;
         RefreshKeepAwake();
     }
 
     /// <summary>New words in the header label, swapped with a short fade.</summary>
     internal void RefreshKeepAwake()
     {
+        if (_compactSystemReady) { _systemDrawerKey = ""; BuildCompactSystem(_snapshot ?? new Snapshot()); }
         if (_keepAwakeText is not { } label || _keepAwakeLabel == null) return;
         string text = _keepAwakeLabel();
         if (label.Text == text) return;
@@ -1850,7 +1870,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         {
             Content = body,
             MaxHeight = PlanMaxHeight,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Margin = new Thickness(0, 4, 0, 10)
         });
@@ -1993,10 +2013,14 @@ public partial class ControlCenterView : UserControl, IDisposable
         foreach (var id in gone) _questionPicks.Remove(id);
     }
 
+    /// <summary>
+    /// A running clock just ticks: the swap animation other values use would blank it out every second.
+    /// The digits are tabular, so the width holds still.
+    /// </summary>
     private void UpdateElapsedLabels()
     {
         DateTime now = DateTime.UtcNow;
-        foreach (var (label, started) in _elapsedLabels) SetDetailText(label, FormatElapsed(now - started));
+        foreach (var (label, started) in _elapsedLabels) label.Text = FormatElapsed(now - started);
     }
 
     internal static string FormatElapsed(TimeSpan span)
@@ -2545,12 +2569,12 @@ public partial class ControlCenterView : UserControl, IDisposable
             RevealClaude(baseDelay);
             return;
         }
+        if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.System) return;
         if (AnimationConfig.ReduceMotion) return;
         int index = 0;
         foreach (UIElement child in ControlRoot.Children)
             if (child is Panel section && section.Visibility == Visibility.Visible)
                 index = RevealChildren(section, baseDelay, index);
-        if (Page == ControlCenterPage.School) RevealSchoolDetails();
     }
 
     private static void RevealElement(FrameworkElement row, TimeSpan delay)

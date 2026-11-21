@@ -19,9 +19,9 @@ namespace VNotch.Controls;
 
 /// <summary>
 /// The home tab (<see cref="ControlCenterPage.Pi"/>): the room from the desk, through the Pi dashboard's
-/// /api/notch/zuhause. Big light tiles that bloom when a lamp comes on and fold their glow back in when it goes
+/// /api/notch/zuhause. Round switches that light up when a lamp comes on and fold their glow back in when it goes
 /// off, the strip's colours, the heating with − / +, the air conditioner's remote, sockets with their draw (the PC
-/// and the Pi ask before they switch off), the dashboard's scenes and the Pi in one line. The tab wears the
+/// and the Pi ask before they switch off), and the Pi's status and fixes. The tab wears the
 /// room's colour: the strip's when it is on, warm sand with a lamp on, night indigo when everything is off.
 /// </summary>
 public partial class ControlCenterView
@@ -44,11 +44,9 @@ public partial class ControlCenterView
     private PiHome? _home;
     private string _homeKey = "";
     private readonly LoopSet _homeLoops = new();
-    private readonly StackPanel _homeReadingSection = new();
     private readonly StackPanel _homeLightSection = new();
     private readonly StackPanel _homeClimateSection = new();
     private readonly StackPanel _homePlugSection = new();
-    private readonly StackPanel _homeSceneSection = new();
     private readonly StackPanel _homePiSection = new();
     private readonly Dictionary<string, LightTile> _lightTiles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBlock> _plugStatus = new(StringComparer.Ordinal);
@@ -65,15 +63,11 @@ public partial class ControlCenterView
 
     private static string Glyph(int code) => ((char)code).ToString();
 
-    private StackPanel[] HomeSections => [_homeReadingSection, _homeLightSection, _homeClimateSection, _homePlugSection, _homeSceneSection, _homePiSection];
 
     private void AttachHome()
     {
-        foreach (var section in HomeSections)
-        {
-            section.Tag = NestedSectionTag;
-            ControlRoot.Children.Add(section);
-        }
+        MountCompactPage();
+        _compactPage.Children.Add(_homeLightSection);
         SetMoodColors(HomeNight.Main, HomeNight.Warmer, HomeNight.Cooler);
         CoverColorsFile.Changed += OnCoverColorsChanged;
     }
@@ -89,6 +83,8 @@ public partial class ControlCenterView
             string emptyKey = "empty|" + text;
             if (emptyKey == _homeKey) return;
             _homeKey = emptyKey;
+            RemoveCompactDrawer();
+            SetCompactStatus("");
             ClearHome();
             _homeLightSection.Children.Add(text is "pi.loading" or "pi.unreachable"
                 ? new SkeletonPlaceholder(!_piReachable, Loc.Get(text), 82, 56, 48, 34)
@@ -104,7 +100,6 @@ public partial class ControlCenterView
             UpdateHome(home);
             return;
         }
-        bool arriving = _homeKey.StartsWith("empty|", StringComparison.Ordinal);
         _homeKey = key;
         ClearHome();
         _accent = _mood;
@@ -112,13 +107,16 @@ public partial class ControlCenterView
         BuildLights(home);
         BuildClimate(home);
         BuildPlugs(home);
-        BuildScenes(home);
         BuildPiLine(home);
-        if (arriving && IsVisible) RevealRows(TimeSpan.Zero);
+        var right = new StackPanel { Children = { _homePlugSection, _homePiSection } };
+        AddDrawer(CompactColumns(_homeClimateSection, right));
+        UpdateHomeStatus(home);
     }
 
     private void ClearHome()
     {
+        foreach (var section in new[] { _homeClimateSection, _homePlugSection, _homePiSection })
+            if (section.Parent is Panel parent) parent.Children.Remove(section);
         _homeLoops.StopAll();
         _lightTiles.Clear();
         _plugStatus.Clear();
@@ -126,7 +124,7 @@ public partial class ControlCenterView
         _heating = null;
         _piLine = null;
         _piReadout = null;
-        foreach (var section in HomeSections)
+        foreach (var section in new[] { _homeLightSection, _homeClimateSection, _homePlugSection, _homePiSection })
             section.Children.Clear();
     }
 
@@ -134,14 +132,13 @@ public partial class ControlCenterView
     private string HomeKey(PiHome home)
     {
         var sb = new StringBuilder();
-        foreach (string section in new[] { "home.lights", "home.climate", "home.plugs", "home.scenes", "home.pi" }) sb.Append(IsExpanded(section) ? '1' : '0');
+        foreach (string section in new[] { "home.lights", "home.climate", "home.plugs", "home.pi" }) sb.Append(IsExpanded(section) ? '1' : '0');
         sb.Append('|').Append(_musicSync.HasValue).Append('|');
-        foreach (var l in home.Lights) sb.Append(l.Id).Append(l.Available).Append(';');
+        foreach (var l in home.Lights) sb.Append(l.Id).Append(l.Name).Append(l.Rgb).Append(l.Available).Append(';');
         sb.Append('|').Append(home.Climate != null).Append(home.Climate?.WindowOpen).Append('|');
-        foreach (var p in home.Plugs) sb.Append(p.Id).Append(p.Available).Append(p.On).Append(';');
+        foreach (var p in home.Plugs) sb.Append(p.Id).Append(p.Name).Append(p.Guard).Append(p.Available).Append(p.On).Append(';');
         sb.Append('|').Append(_guardArmed);
         foreach (var a in home.AirConditioner) sb.Append(a.Id);
-        foreach (var s in home.Scenes) sb.Append(s.Id);
         sb.Append('|');
         if (home.Pi != null) foreach (var i in home.Pi.Issues) sb.Append(i.Title).Append(i.FixId).Append(';');
         sb.Append('|');
@@ -149,7 +146,8 @@ public partial class ControlCenterView
         return sb.ToString();
     }
 
-    /// <summary>A planner dashboard's start page (weather, when to leave, games) as small tiles: what it says, and the value.</summary>
+    /// <summary>A planner dashboard's start page (weather, when to leave, games) as small tiles: what it says, and the value.
+    /// A planner has no lamps, so they take the lights' place in the main area.</summary>
     private void BuildReadings(PiHome home)
     {
         if (home.Readings is not { Count: > 0 } readings) return;
@@ -168,7 +166,7 @@ public partial class ControlCenterView
             card.Child = new StackPanel { Children = { label, value } };
             PlaceTile(grid, card, i, columns);
         }
-        _homeReadingSection.Children.Add(grid);
+        _homeLightSection.Children.Add(grid);
     }
 
     /// <summary>
@@ -230,8 +228,12 @@ public partial class ControlCenterView
         return Color.FromRgb((byte)Math.Round((r1 + m) * 255), (byte)Math.Round((g1 + m) * 255), (byte)Math.Round((b1 + m) * 255));
     }
 
+    private void UpdateHomeStatus(PiHome home) => SetCompactStatus(home.Climate is { } c
+        ? $"{(c.IsHeating ? "♨ " : "")}{(c.Current is { } current ? Degrees(current) : "–")}  → {(c.Target is { } target ? Degrees(target) : "–")}" : "");
+
     private void UpdateHome(PiHome home, bool force = false)
     {
+        UpdateHomeStatus(home);
         bool quiet = !force && DateTime.UtcNow < _homeQuietUntilUtc;
         if (!quiet)
         {
@@ -260,29 +262,24 @@ public partial class ControlCenterView
     #region Lights
 
     /// <summary>
-    /// A lamp as a big tile. Switching on blooms a glow out of the bulb, sends a burst of rays and makes the bulb hop;
-    /// switching off folds the glow back into it. A steady lamp stays still after that response.
+    /// A round light switch. Its glow and glyph answer state changes and remain still at rest.
     /// </summary>
     private sealed class LightTile
     {
         public required ControlCenterView View;
         public required Border Card;
-        public required Grid Body;
         public required TextBlock Icon, State;
         public required SolidColorBrush Ink, Fill;
         public required GradientStop GlowCore, GlowMid;
-        public required Ellipse Glow;
         public required ScaleTransform GlowScale;
-        public required Canvas Rays;
-        public required ScaleTransform RaysScale;
-        public required SolidColorBrush RayInk;
         public HomeLight Light = null!;
         public bool? On;
         public Color Color;
         public readonly List<(Ellipse Dot, Color Color)> Dots = new();
-        public Ellipse? MusicDot;
-        public RollingNumber? BrightnessRoll;
-        public double? ShownBrightness;
+        public FrameworkElement? Controls;
+        public Action? RefreshStrip;
+        public TextBlock? BrightnessLabel;
+        public ScaleTransform? BrightnessFill;
 
         public Color LitColor => Light.Rgb ? Calm(Color, maxSaturation: 0.45, lightness: 0.66) : LampLight;
 
@@ -295,31 +292,19 @@ public partial class ControlCenterView
             bool turnedOff = On == true && !light.On;
             On = light.On;
             Color = color;
+            if (Controls != null) { Controls.Opacity = light.On ? 1 : .4; Controls.IsEnabled = light.On && light.Available; }
+            RefreshStrip?.Invoke();
             if (!changed && !animate) return;
             bool moving = animate && Card.IsVisible && !AnimationConfig.ReduceMotion;
             double ms = moving ? 180 : 0;
             var lit = LitColor;
             SetOrTint(Ink, light.On ? lit : ((SolidColorBrush)Muted).Color, ms);
             SetOrTint(Fill, light.On ? Alpha(lit, 0.16) : ((SolidColorBrush)CardBg).Color, ms);
-            SetOrTint(RayInk, lit, 0);
             Fade(GlowCore, light.On ? Alpha(lit, 0.55) : Alpha(lit, 0), ms);
             Fade(GlowMid, light.On ? Alpha(lit, 0.18) : Alpha(lit, 0), ms);
-            if (light.On && light.Rgb && light.Brightness is { } brightness && View._musicSync != true)
-            {
-                BrightnessRoll ??= new RollingNumber(value =>
-                {
-                    ShownBrightness = value;
-                    if (Light.On && Light.Rgb && View._musicSync != true)
-                        SetRollingDetailText(State, StateText());
-                }, State);
-                SetDetailText(State, StateText());
-                BrightnessRoll.To(brightness, moving ? 650 : 0);
-            }
-            else
-            {
-                BrightnessRoll?.To(ShownBrightness ?? 0, 0);
-                SetDetailText(State, StateText());
-            }
+            SetDetailText(State, StateText());
+            if (BrightnessLabel != null) BrightnessLabel.Text = $"{light.Brightness ?? 100} %";
+            if (BrightnessFill != null) Motion.Stop(BrightnessFill, ScaleTransform.ScaleXProperty, (light.Brightness ?? 100) / 100d);
             foreach (var (dot, c) in Dots) dot.Stroke = light.On && Near(c, color) ? Brushes.White : RingOff;
             if (!moving)
             {
@@ -328,31 +313,15 @@ public partial class ControlCenterView
             }
             if (turnedOn)
             {
-                // The light blooms out of the bulb with a little overshoot, rays burst outwards and the bulb hops.
-                Motion.To(GlowScale, ScaleTransform.ScaleXProperty, 1, Motion.Tile);
-                Motion.To(GlowScale, ScaleTransform.ScaleYProperty, 1, Motion.Tile);
-                Motion.To(Rays, OpacityProperty, 0.65, Motion.PressDown, done: () =>
-                {
-                    if (On == true && Rays.IsVisible && Math.Abs(Rays.Opacity - 0.65) < 0.01)
-                        Motion.To(Rays, OpacityProperty, 0, Motion.Exit, done: () =>
-                        {
-                            if (Rays.Opacity > 0.01) return;
-                            Motion.Stop(RaysScale, ScaleTransform.ScaleXProperty, 1);
-                            Motion.Stop(RaysScale, ScaleTransform.ScaleYProperty, 1);
-                        });
-                });
-                Motion.To(RaysScale, ScaleTransform.ScaleXProperty, 1.55, Motion.Tile);
-                Motion.To(RaysScale, ScaleTransform.ScaleYProperty, 1.55, Motion.Tile);
+                Motion.To(GlowScale, ScaleTransform.ScaleXProperty, 1, Motion.Shift);
+                Motion.To(GlowScale, ScaleTransform.ScaleYProperty, 1, Motion.Shift);
                 DetailReaction(Icon);
             }
             else if (turnedOff)
             {
-                // The glow folds back into the bulb, which sinks a little.
+                // The glow folds back into the switch.
                 Motion.To(GlowScale, ScaleTransform.ScaleXProperty, 0.2, Motion.Exit);
                 Motion.To(GlowScale, ScaleTransform.ScaleYProperty, 0.2, Motion.Exit);
-                Motion.To(Rays, OpacityProperty, 0, Motion.Exit);
-                Motion.To(RaysScale, ScaleTransform.ScaleXProperty, 1, Motion.Exit);
-                Motion.To(RaysScale, ScaleTransform.ScaleYProperty, 1, Motion.Exit);
                 DetailReaction(Icon);
             }
         }
@@ -361,9 +330,6 @@ public partial class ControlCenterView
         {
             Motion.Stop(GlowScale, ScaleTransform.ScaleXProperty, On == true ? 1 : 0.2);
             Motion.Stop(GlowScale, ScaleTransform.ScaleYProperty, On == true ? 1 : 0.2);
-            Motion.Stop(Rays, OpacityProperty, 0);
-            Motion.Stop(RaysScale, ScaleTransform.ScaleXProperty, 1);
-            Motion.Stop(RaysScale, ScaleTransform.ScaleYProperty, 1);
             var lit = LitColor;
             SetOrTint(Ink, On == true ? lit : ((SolidColorBrush)Muted).Color, 0);
             SetOrTint(Fill, On == true ? Alpha(lit, 0.16) : ((SolidColorBrush)CardBg).Color, 0);
@@ -372,10 +338,8 @@ public partial class ControlCenterView
         }
 
         public string StateText() =>
-            !Light.Available ? Loc.Get("control.noAdapter")
+            !Light.Available ? "Offline"
             : !Light.On ? Loc.Get("control.off")
-            : Light.Rgb && View._musicSync == true ? Loc.Get("home.musicSync")
-            : Light.Rgb && Light.Brightness is { } b && b < 100 ? $"{Loc.Get("control.on")} · {Math.Round(ShownBrightness ?? b)} %"
             : Loc.Get("control.on");
     }
 
@@ -385,244 +349,137 @@ public partial class ControlCenterView
 
     private void BuildLights(PiHome home)
     {
-        _homeLightSection.Children.Add(BuildSectionHeader("home.lights", Loc.Get("home.lights"), "", null, topMargin: 0));
-        if (!IsExpanded("home.lights") || home.Lights.Count == 0) return;
-        var grid = TileGrid(home.Lights.Count, home.Lights.Count);
-        for (int i = 0; i < home.Lights.Count; i++)
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (var light in home.Lights)
         {
-            var tile = NewLightTile(AsShown(home.Lights[i]), home.StripColors);
-            _lightTiles[home.Lights[i].Id] = tile;
-            PlaceTile(grid, tile.Card, i, home.Lights.Count);
+            var tile = NewLightTile(AsShown(light), home.StripColors);
+            _lightTiles[light.Id] = tile;
+            row.Children.Add(tile.Card);
+            if (light.Rgb) row.Children.Add(StripControls(tile, home.StripColors));
         }
-        _homeLightSection.Children.Add(grid);
+        foreach (var plug in home.Plugs.Where(p => !p.Guard).Take(3))
+        {
+            var socket = NewLightTile(new HomeLight(plug.Id, plug.Name, false, plug.Available, plug.On, null, null), Array.Empty<HomeColor>());
+            socket.Icon.Text = Glyph(plug.Name.Contains("Mikrofon", StringComparison.OrdinalIgnoreCase) ? 0xE720 : 0xE945);
+            socket.Card.IsHitTestVisible = false;
+            var hit = new Border { Child = socket.Card, Cursor = Cursors.Hand, Background = Brushes.Transparent };
+            bool on = plug.On;
+            Squish(hit);
+            hit.MouseLeftButtonUp += (_, e) => { e.Handled = true; if (!plug.Available) return; on = !on;
+                socket.Show(socket.Light with { On = on }, true); SendHome("plug", plug.Id, JsonValue.Create(on)); };
+            row.Children.Add(hit);
+        }
+        _homeLightSection.Children.Add(row);
     }
 
     private LightTile NewLightTile(HomeLight light, IReadOnlyList<HomeColor> colors)
     {
-        const double IconSize = 22, GlowSize = 170;
-        var ink = new SolidColorBrush(((SolidColorBrush)Muted).Color);
-        var icon = new TextBlock
-        {
-            Text = Glyph(light.Rgb ? 0xE790 : 0xE82F),
-            FontFamily = SegoeSymbolFont,
-            FontSize = IconSize,
-            Foreground = ink,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            RenderTransformOrigin = new Point(0.5, 0.5)
-        };
-        var name = MakeLabel(light.Name, 13, VNotch.Services.UiPalette.PrimaryBrush);
-        name.Margin = new Thickness(0, 10, 0, 0);
-        var state = MakeLabel("", 11, Muted);
-        state.Margin = new Thickness(0, 1, 0, 0);
-        var content = new StackPanel { Children = { icon, name, state } };
-
-        // The glow: a soft disc centred on the bulb, coloured by the light, clipped to the tile.
+        var ink = new SolidColorBrush(((SolidColorBrush)CompactLabel).Color);
+        var fill = new SolidColorBrush(((SolidColorBrush)CompactTrack).Color);
+        var icon = CompactGlyph(light.Rgb ? 0xE790 : 0xE82F, ink);
+        icon.FontSize = 20; icon.Width = 24;
         var core = new GradientStop(Colors.Transparent, 0);
-        var mid = new GradientStop(Colors.Transparent, 0.45);
-        var glowScale = new ScaleTransform(0.2, 0.2);
-        var glow = new Ellipse
-        {
-            Width = GlowSize,
-            Height = GlowSize,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(IconSize / 2 - GlowSize / 2, IconSize / 2 - GlowSize / 2, 0, 0),
+        var mid = new GradientStop(Colors.Transparent, .5);
+        var glowScale = new ScaleTransform(.2, .2);
+        var glow = new Ellipse { Width = 52, Height = 52, IsHitTestVisible = false,
             Fill = new RadialGradientBrush { GradientStops = { core, mid, new GradientStop(Colors.Transparent, 1) } },
-            RenderTransformOrigin = new Point(0.5, 0.5),
-            RenderTransform = glowScale,
-            IsHitTestVisible = false
-        };
-        // Eight short rays around the bulb, for the burst when it comes on.
-        var rayInk = new SolidColorBrush(LampLight);
-        var raysScale = new ScaleTransform(1, 1);
-        var rays = new Canvas
-        {
-            Width = 44,
-            Height = 44,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(IconSize / 2 - 22, IconSize / 2 - 22, 0, 0),
-            Opacity = 0,
-            RenderTransformOrigin = new Point(0.5, 0.5),
-            RenderTransform = raysScale,
-            IsHitTestVisible = false
-        };
-        for (int i = 0; i < 8; i++)
-        {
-            double a = i * Math.PI / 4;
-            rays.Children.Add(new Line
-            {
-                X1 = 22 + Math.Cos(a) * 14, Y1 = 22 + Math.Sin(a) * 14,
-                X2 = 22 + Math.Cos(a) * 19, Y2 = 22 + Math.Sin(a) * 19,
-                Stroke = rayInk, StrokeThickness = 1.8, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round
-            });
-        }
-
-        var body = new Grid { Children = { glow, rays, content } };
-        var fill = new SolidColorBrush(((SolidColorBrush)CardBg).Color);
-        var card = Card();
-        card.Padding = new Thickness(14, 12, 14, 12);
-        card.Background = fill;
-        card.Cursor = light.Available ? Cursors.Hand : Cursors.Arrow;
-        card.Child = body;
+            RenderTransformOrigin = new Point(.5, .5), RenderTransform = glowScale };
+        var ring = new Border { Width = 52, Height = 52, CornerRadius = new CornerRadius(26), Background = fill, Child = icon };
+        var body = new Grid { Height = 54, Children = { glow, ring } };
+        var name = CompactText(light.Name, 11, CompactLabel); name.TextAlignment = TextAlignment.Center;
+        name.Margin = new Thickness(0, 5, 0, 0);
+        var state = CompactText("", 10.5, CompactLabel); state.TextAlignment = TextAlignment.Center;
+        var card = new Border { Width = 62, Background = Brushes.Transparent, Cursor = Cursors.Hand,
+            Opacity = light.Available ? 1 : .4, Child = new StackPanel { Children = { body, name, state } } };
         System.Windows.Automation.AutomationProperties.SetName(card, light.Name);
-        // The glow stays inside the tile's rounded corners.
-        var clip = new RectangleGeometry { RadiusX = 12, RadiusY = 12 };
-        card.SizeChanged += (_, e) =>
-        {
-            clip.Rect = new Rect(-14, -12, e.NewSize.Width, e.NewSize.Height);
-            body.Clip = clip;
-        };
-
-        var tile = new LightTile
-        {
-            View = this, Card = card, Body = body, Icon = icon, State = state, Ink = ink, Fill = fill,
-            GlowCore = core, GlowMid = mid, Glow = glow, GlowScale = glowScale, Rays = rays, RaysScale = raysScale, RayInk = rayInk,
-            Color = light.Color ?? LampLight
-        };
-        card.IsVisibleChanged += (_, _) =>
-        {
-            if (!card.IsVisible) { tile.Settle(); return; }
-            DetailArrive(icon, 0);
-            DetailArrive(name, 1);
-            DetailArrive(state, 2);
-            tile.BrightnessRoll?.Reveal();
-        };
-        if (light.Rgb) content.Children.Add(StripDots(tile, colors));
-        Pressable(card, () => tile.On == true ? new SolidColorBrush(Alpha(tile.LitColor, 0.16)) : CardBg, CardHover, grow: true);
-        DetailHover(card, icon);
-        card.MouseLeftButtonDown += (_, e) =>
+        var tile = new LightTile { View = this, Card = card, Icon = icon, State = state,
+            Ink = ink, Fill = fill, GlowCore = core, GlowMid = mid, GlowScale = glowScale, Color = light.Color ?? LampLight };
+        Squish(card);
+        card.MouseEnter += (_, _) => ring.BorderThickness = new Thickness(1);
+        card.MouseLeave += (_, _) => ring.BorderThickness = new Thickness(0);
+        ring.BorderBrush = Frozen("#26FFFFFF");
+        card.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
             if (!tile.Light.Available) return;
             bool on = tile.On != true;
-            _homeQuietUntilUtc = DateTime.UtcNow.AddSeconds(3);
             tile.Show(tile.Light with { On = on }, animate: true);
             SetHomeMoodFromTiles();
             SendHome("light", tile.Light.Id, JsonValue.Create(on));
         };
+        card.IsVisibleChanged += (_, _) => { if (!card.IsVisible) tile.Settle(); };
         tile.Show(light, animate: false);
-        // Arriving lit: the glow blooms in with the tab instead of just being there.
-        if (light.On && IsVisible && !AnimationConfig.ReduceMotion)
-        {
-            Motion.To(glowScale, ScaleTransform.ScaleXProperty, 1, Motion.Tile, from: 0.2);
-            Motion.To(glowScale, ScaleTransform.ScaleYProperty, 1, Motion.Tile, from: 0.2);
-        }
         return tile;
     }
 
-    /// <summary>The strip's colours as dots under its name (and "music sync" first, when it is set up on this PC).</summary>
-    private FrameworkElement StripDots(LightTile tile, IReadOnlyList<HomeColor> colors)
+    private FrameworkElement StripControls(LightTile tile, IReadOnlyList<HomeColor> colors)
     {
-        var dots = new WrapPanel { Margin = new Thickness(0, 9, 0, 0) };
-        if (_musicSync != null)
+        var panel = new StackPanel { Width = 138, Margin = new Thickness(4, 0, 4, 0),
+            IsEnabled = tile.Light.Available && tile.On == true, Opacity = tile.On == true ? 1 : .4 };
+        var modes = new Grid { Height = 23 };
+        modes.ColumnDefinitions.Add(new ColumnDefinition()); modes.ColumnDefinitions.Add(new ColumnDefinition());
+        var dots = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 2) };
+        foreach (var color in colors.Take(8))
         {
-            var music = Dot(new LinearGradientBrush(new GradientStopCollection
-            {
-                new(Color.FromRgb(0xC4, 0xB6, 0xEA), 0), new(Color.FromRgb(0xE3, 0xC7, 0x9F), 0.5), new(Color.FromRgb(0xA9, 0xD2, 0xCC), 1)
-            }, 45), Loc.Get("home.musicSync"));
-            music.Stroke = _musicSync == true ? Brushes.White : RingOff;
-            music.MouseLeftButtonDown += async (_, e) =>
+            var dot = new Ellipse { Width = 12, Height = 12, Fill = new SolidColorBrush(Mix(color.Color, Grey, .3)),
+                Margin = new Thickness(2, 2, 3, 2), StrokeThickness = 1, ToolTip = color.Name, Cursor = Cursors.Hand };
+            tile.Dots.Add((dot, color.Color)); Squish(dot);
+            dot.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
-                bool run = _musicSync != true;
-                Ripple(tile, music, Color.FromRgb(0xC4, 0xB6, 0xEA));
-                music.Stroke = run ? Brushes.White : RingOff;
-                if (await GoveeSync.SetRunningAsync(run)) _musicSync = run;
-                SetDetailText(tile.State, tile.StateText());
-                if (_home is { } shown) UpdateHome(shown, force: true);
+                tile.Show(tile.Light with { Color = color.Color }, true);
                 SetHomeMoodFromTiles();
+                SendHome("light", tile.Light.Id, new JsonObject { ["rgb"] = new JsonArray(color.Color.R, color.Color.G, color.Color.B) });
             };
-            tile.MusicDot = music;
-            dots.Children.Add(music);
-        }
-        foreach (var color in colors)
-        {
-            var c = color.Color;
-            var dot = Dot(new SolidColorBrush(Mix(c, Grey, 0.38)), color.Name);
-            dot.MouseLeftButtonDown += (_, e) =>
-            {
-                e.Handled = true;
-                if (!tile.Light.Available) return;
-                Ripple(tile, dot, c);
-                _homeQuietUntilUtc = DateTime.UtcNow.AddSeconds(3);
-                tile.Show(tile.Light with { On = true, Color = c }, animate: true);
-                SetHomeMoodFromTiles();
-                SendHome("light", tile.Light.Id, new JsonObject { ["rgb"] = new JsonArray(c.R, c.G, c.B) });
-            };
-            tile.Dots.Add((dot, c));
             dots.Children.Add(dot);
         }
-        return dots;
-
-        Ellipse Dot(Brush fill, string tooltip)
+        var fold = new Border { ClipToBounds = true, Height = _musicSync == true ? 0 : 23, Child = dots };
+        var height = new WeatherTween { Step = h => fold.Height = Math.Max(0, h), Value = fold.Height };
+        Border? colorButton = null, musicButton = null;
+        bool? shownMusic = null;
+        void PaintMode()
         {
-            var scale = new ScaleTransform(1, 1);
-            var dot = new Ellipse
-            {
-                Width = 15,
-                Height = 15,
-                Fill = fill,
-                Stroke = RingOff,
-                StrokeThickness = 1.6,
-                Margin = new Thickness(0, 0, 6, 4),
-                Cursor = Cursors.Hand,
-                ToolTip = tooltip,
-                RenderTransformOrigin = new Point(0.5, 0.5),
-                RenderTransform = scale
-            };
-            dot.MouseEnter += (_, _) => Grow(scale, 1.3);
-            dot.MouseLeave += (_, _) => Grow(scale, 1);
-            dot.PreviewMouseLeftButtonDown += (_, _) =>
-            {
-                Motion.To(scale, ScaleTransform.ScaleXProperty, 0.9, Motion.PressDown);
-                Motion.To(scale, ScaleTransform.ScaleYProperty, 0.9, Motion.PressDown);
-            };
-            dot.PreviewMouseLeftButtonUp += (_, _) => Grow(scale, dot.IsMouseOver ? 1.3 : 1);
-            dot.LostMouseCapture += (_, _) => Grow(scale, 1);
-            return dot;
+            bool music = _musicSync == true;
+            if (shownMusic == music) return;
+            shownMusic = music;
+            colorButton!.Background = music ? Brushes.Transparent : Frozen("#26FFFFFF");
+            musicButton!.Background = music ? Frozen("#26FFFFFF") : Brushes.Transparent;
+            musicButton.ToolTip = _musicSync == null ? "Musik-Sync ist auf diesem PC nicht eingerichtet" : "Musik";
+            musicButton.IsEnabled = _musicSync != null;
+            if (panel.IsVisible) Motion.To(height, WeatherTween.ValueProperty, music ? 0 : 23, Motion.Shift);
+            else Motion.Stop(height, WeatherTween.ValueProperty, music ? 0 : 23);
+            Motion.Stop(dots, OpacityProperty, music ? 0 : 1);
         }
-    }
-
-    private static void Grow(ScaleTransform scale, double to)
-    {
-        Motion.To(scale, ScaleTransform.ScaleXProperty, to, Motion.Press);
-        Motion.To(scale, ScaleTransform.ScaleYProperty, to, Motion.Press);
-    }
-
-    /// <summary>A wave of the picked colour that spreads from the dot across the tile.</summary>
-    private void Ripple(LightTile tile, FrameworkElement from, Color color)
-    {
-        if (AnimationConfig.ReduceMotion || !IsVisible) return;
-        Point at;
-        try
+        async void Select(bool music)
         {
-            at = from.TransformToAncestor(tile.Body).Transform(new Point(from.ActualWidth / 2, from.ActualHeight / 2));
+            if ((_musicSync == true) == music || _musicSync == null && music) return;
+            if (_musicSync != null && !await GoveeSync.SetRunningAsync(music)) return;
+            _musicSync = music; PaintMode(); SetDetailText(tile.State, tile.StateText());
+            if (_home != null) UpdateHome(_home, force: true);
         }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
-        const double Size = 40;
-        var scale = new ScaleTransform(0.2, 0.2);
-        var wave = new Ellipse
-        {
-            Width = Size,
-            Height = Size,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(at.X - Size / 2, at.Y - Size / 2, 0, 0),
-            Fill = new SolidColorBrush(Alpha(color, 0.45)),
-            IsHitTestVisible = false,
-            RenderTransformOrigin = new Point(0.5, 0.5),
-            RenderTransform = scale
-        };
-        tile.Body.Children.Insert(1, wave);
-        var fade = WeatherMotion.To(0.9, 0, 700, WeatherMotion.Out);
-        fade.Completed += (_, _) => tile.Body.Children.Remove(wave);
-        wave.BeginAnimation(OpacityProperty, fade);
-        Motion.To(scale, ScaleTransform.ScaleXProperty, 9, Motion.Tile, from: 0.2);
-        Motion.To(scale, ScaleTransform.ScaleYProperty, 9, Motion.Tile, from: 0.2);
+        colorButton = CompactPill("Farbe", () => Select(false));
+        musicButton = CompactPill("Musik", () => Select(true));
+        colorButton.HorizontalAlignment = musicButton.HorizontalAlignment = HorizontalAlignment.Stretch;
+        Grid.SetColumn(musicButton, 1);
+        modes.Children.Add(colorButton); modes.Children.Add(musicButton);
+        panel.Children.Add(new Border { CornerRadius = new CornerRadius(9), Background = CompactTrack, Child = modes });
+        var brightness = CompactText($"{tile.Light.Brightness ?? 100} %", 10.5, CompactLabel);
+        brightness.HorizontalAlignment = HorizontalAlignment.Right;
+        brightness.Margin = new Thickness(0, 5, 0, 0);
+        panel.Children.Add(brightness);
+        tile.BrightnessLabel = brightness;
+        var bar = ThinBar((tile.Light.Brightness ?? 100) / 100d, tile.Ink, _ => { });
+        // The current Pi contract exposes brightness as telemetry, but accepts only RGB and on/off for lights.
+        bar.IsEnabled = false;
+        tile.BrightnessFill = (ScaleTransform)bar.Tag;
+        ToolTipService.SetShowOnDisabled(bar, true);
+        bar.ToolTip = "Helligkeit: Der Pi-Steuerweg unterstützt bisher nur Farbe und An/Aus";
+        panel.Children.Add(bar); panel.Children.Add(fold);
+        tile.Controls = panel;
+        tile.RefreshStrip = PaintMode;
+        panel.IsVisibleChanged += (_, _) => { if (!panel.IsVisible) Motion.Stop(height, WeatherTween.ValueProperty, _musicSync == true ? 0 : 23); };
+        PaintMode();
+        return panel;
     }
 
     /// <summary>Right after a tap the tab's colour follows what the tiles now show, before the dashboard confirms it.</summary>
@@ -658,50 +515,41 @@ public partial class ControlCenterView
 
     private void BuildClimate(PiHome home)
     {
-        if (home.Climate is not { } climate && home.AirConditioner.Count == 0) return;
-        string right = home.Climate?.WindowOpen == true ? Loc.Get("home.windowOpen") : "";
-        _homeClimateSection.Children.Add(BuildSectionHeader("home.climate", Loc.Get("home.climate"), right, null, topMargin: 14));
-        if (!IsExpanded("home.climate")) return;
-        var grid = TileGrid(2, 2);
-        int index = 0;
-        if (home.Climate is { } heating) PlaceTile(grid, HeatingCard(heating), index++, 2);
-        if (home.AirConditioner.Count > 0) PlaceTile(grid, AirConditionerCard(home.AirConditioner), index, 2);
-        _homeClimateSection.Children.Add(grid);
+        if (home.Climate is { } climate) _homeClimateSection.Children.Add(HeatingCard(climate));
+        if (home.AirConditioner.Count > 0) _homeClimateSection.Children.Add(AirConditionerCard(home.AirConditioner));
     }
 
     private FrameworkElement HeatingCard(HomeClimate climate)
     {
-        var title = MakeLabel(Loc.Get("home.heating"), 11, Muted);
-        var status = MakeLabel("", 11, _moodSoft);
+        var title = CompactText(Loc.Get("home.heating"), 11, Muted);
+        var status = CompactText("", 11, _moodSoft);
         status.Margin = new Thickness(6, 0, 0, 0);
         var head = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, status } };
 
-        var current = MakeLabel("–", 26, VNotch.Services.UiPalette.PrimaryBrush);
+        var current = CompactText("–", 11, CompactLabel);
         var roll = new RollingNumber(v => current.Text = v.ToString("0.0", CultureInfo.CurrentCulture) + "°", current);
-        var target = MakeLabel("", 15, _moodInk);
-        target.MinWidth = 44;
+        var target = CompactText("", 26, CompactInk);
+        target.MinWidth = 62;
         target.TextAlignment = TextAlignment.Center;
         target.RenderTransformOrigin = new Point(0.5, 0.5);
         var targetRoll = new RollingNumber(value => target.Text = Degrees(value), target);
         var stepper = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right,
+            HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
             Children = { StepButton("−", -0.5), target, StepButton("+", 0.5) }
         };
-        var middle = new Grid { Margin = new Thickness(0, 4, 0, 0) };
-        middle.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        middle.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        middle.Children.Add(current);
-        Grid.SetColumn(stepper, 1);
-        middle.Children.Add(stepper);
-
-        var humidity = MakeLabel("", 11, Muted);
-        humidity.Margin = new Thickness(0, 2, 0, 0);
-        var card = Card();
-        card.Padding = new Thickness(14, 11, 14, 11);
-        card.Child = new StackPanel { Children = { head, middle, humidity } };
+        stepper.Margin = new Thickness(0, 6, 0, 5);
+        var humidity = CompactText("", 11, CompactLabel);
+        var room = new WrapPanel { Children =
+        {
+            CompactText("Im Raum ", 11, CompactLabel), current,
+            CompactText(", ", 11, CompactLabel), humidity,
+            CompactText(climate.WindowOpen ? ", Fenster offen" : ", Fenster zu", 11, CompactLabel)
+        } };
+        var card = new Border { Background = Brushes.Transparent, Tag = "drawer-row", Padding = new Thickness(0, 0, 0, 10),
+            Child = new StackPanel { Children = { head, stepper, room } } };
 
         HeatingParts? parts = null;
         var humidityRoll = new RollingNumber(value =>
@@ -711,21 +559,11 @@ public partial class ControlCenterView
         parts = new HeatingParts { Status = status, Current = current, Target = target, Humidity = humidity, CurrentRoll = roll, TargetRoll = targetRoll, HumidityRoll = humidityRoll };
         _heating = parts;
         _heating.Show(climate, keepTarget: false);
-        card.IsVisibleChanged += (_, _) =>
-        {
-            if (!card.IsVisible) return;
-            DetailArrive(head, 0);
-            DetailArrive(current, 1);
-            DetailArrive(stepper, 1);
-            DetailArrive(humidity, 2);
-            roll.Reveal();
-            humidityRoll.Reveal();
-        };
         return card;
 
         Border StepButton(string sign, double step)
         {
-            var label = MakeLabel(sign, 15, VNotch.Services.UiPalette.PrimaryBrush);
+            var label = CompactText(sign, 15, VNotch.Services.UiPalette.PrimaryBrush);
             label.HorizontalAlignment = HorizontalAlignment.Center;
             var button = new Border
             {
@@ -745,7 +583,7 @@ public partial class ControlCenterView
                 e.Handled = true;
                 if (_home?.Climate is not { } now) return;
                 double from = _targetDraft ?? now.Target ?? 20;
-                double next = Math.Clamp(Math.Round((from + step) * 2) / 2, Math.Max(5, now.Min), Math.Min(30, now.Max));
+                double next = Math.Clamp(Math.Round((from + step) * 2) / 2, now.Min, now.Max);
                 _targetDraft = next;
                 targetRoll.To(next);
                 DetailReaction(target);
@@ -773,7 +611,7 @@ public partial class ControlCenterView
     /// <summary>The air conditioner's IR remote: one chip per button; it has no state to show, so a press just answers.</summary>
     private FrameworkElement AirConditionerCard(IReadOnlyList<HomeAction> buttons)
     {
-        var title = MakeLabel(Loc.Get("home.ac"), 11, Muted);
+        var title = CompactText(Loc.Get("home.ac"), 11, Muted);
         var chips = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         foreach (var button in buttons)
         {
@@ -781,7 +619,7 @@ public partial class ControlCenterView
             var label = new StackPanel { Orientation = Orientation.Horizontal };
             if (power)
                 label.Children.Add(new TextBlock { Text = Glyph(0xE7E8), FontFamily = SegoeSymbolFont, FontSize = 11, Foreground = _moodInk, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 6, 0) });
-            label.Children.Add(MakeLabel(button.Name, 11.5, power ? _moodInk : VNotch.Services.UiPalette.PrimaryBrush));
+            label.Children.Add(CompactText(button.Name, 11.5, power ? _moodInk : VNotch.Services.UiPalette.PrimaryBrush));
             var chip = new Border
             {
                 CornerRadius = new CornerRadius(11),
@@ -801,8 +639,8 @@ public partial class ControlCenterView
             Squish(chip);
             chips.Children.Add(chip);
         }
-        var card = Card();
-        card.Padding = new Thickness(14, 11, 14, 7);
+        var card = new Border { Background = Brushes.Transparent, Tag = "drawer-row" };
+        card.Padding = new Thickness(0, 0, 0, 3);
         card.Child = new StackPanel { Children = { title, chips } };
         return card;
 
@@ -811,13 +649,13 @@ public partial class ControlCenterView
             if (chip.Background is not SolidColorBrush { IsFrozen: false } fill) return;
             var rest = fill.Color;
             SetOrTint(fill, Alpha(_mood.Color, 0.55), 0);
-            WeatherMotion.Tint(fill, rest, 600);
+            WeatherMotion.Tint(fill, rest, 220);
         }
     }
 
     #endregion
 
-    #region Sockets, scenes, Pi
+    #region Sockets and Pi
 
     private static string PlugText(HomePlug plug)
     {
@@ -861,56 +699,51 @@ public partial class ControlCenterView
             _energyRoll.To(plug.TodayKwh ?? 0);
         }
 
-        private void Paint() => _text.Text = PlugText(_plug with
+        private void Paint()
+        {
+            _text.Text = PlugText(_plug with
         {
             Watts = _plug.Watts == null ? null : Math.Max(0, _watts),
             TodayKwh = _plug.TodayKwh == null ? null : Math.Max(0, _energy)
-        });
+            });
+            _text.ToolTip = _text.Text;
+        }
     }
 
     private void BuildPlugs(PiHome home)
     {
-        if (home.Plugs.Count == 0) return;
-        _homePlugSection.Children.Add(BuildSectionHeader("home.plugs", Loc.Get("home.plugs"), Loc.Get("home.power"), null, topMargin: 14));
-        if (!IsExpanded("home.plugs")) return;
         foreach (var plug in home.Plugs)
         {
-            var row = NewRow(Glyph(plug.Name == "PC" ? 0xE7F4 : plug.Name == "Pi" ? 0xE950 : 0xE945), plug.Name);
             string id = plug.Id;
-            if (!plug.Available) AddStatus(row, PlugText(plug), Muted);
-            else if (!plug.Guard || !plug.On) AddStatus(row, PlugText(plug), plug.On ? _moodSoft : Muted, Toggle(plug.On, on => SendHome("plug", id, JsonValue.Create(on))));
+            var watts = CompactText(PlugText(plug), 10.5, CompactLabel);
+            watts.MaxWidth = 95; watts.ToolTip = PlugText(plug);
+            _plugStatus[id] = watts; _plugReadouts[id] = new PlugReadout(watts, plug);
+            var action = new StackPanel { Orientation = Orientation.Horizontal };
+            if (_guardArmed == id)
+            {
+                action.Children.Add(CompactText("Wirklich aus?", 10.5, CompactInk));
+                action.Children.Add(CompactPill("Aus", () => { _guardArmed = null; SendHome("plug", id, JsonValue.Create(false)); RedrawHome(); }));
+                action.Children.Add(CompactPill("Nein", () => { _guardArmed = null; RedrawHome(); }));
+            }
             else
             {
-                // The PC and the Pi switch themselves off with their socket: a first press only asks.
-                AddStatus(row, PlugText(plug), _moodSoft);
-                bool armed = _guardArmed == id;
-                var button = TextButton(Loc.Get(armed ? "home.sure" : "home.turnOff"), accent: false, () =>
+                action.Children.Add(watts);
+                if (plug.Guard) action.Children.Add(CompactGlyph(0xE72E));
+                var toggle = Toggle(plug.On, on =>
                 {
-                    if (_guardArmed != id)
-                    {
-                        _guardArmed = id;
-                        _homeKey = "";
-                        BuildHome();
-                        DisarmLater(id);
-                        return;
-                    }
-                    _guardArmed = null;
-                    SendHome("plug", id, JsonValue.Create(false));
+                    if (plug.Guard && !on) { _guardArmed = id; RedrawHome(); DisarmLater(id); }
+                    else SendHome("plug", id, JsonValue.Create(on));
                 });
-                if (armed)
-                {
-                    button.Background = EndConfirmBg;
-                    ((TextBlock)button.Child).Foreground = HotTemp;
-                    Bounce(button, 1.08);
-                }
-                AddAction(row, button);
+                toggle.IsEnabled = plug.Available;
+                toggle.Margin = new Thickness(7, 0, 0, 0); action.Children.Add(toggle);
             }
-            if (row.Children[^1] is Grid { Children.Count: > 0 } panel && panel.Children[^1] is TextBlock status) _plugStatus[id] = status;
-            else if (row.Children.Count > 1 && row.Children[1] is Grid statusPanel && statusPanel.Children[^1] is TextBlock label) _plugStatus[id] = label;
-            if (_plugStatus.TryGetValue(id, out var readoutText)) _plugReadouts[id] = new PlugReadout(readoutText, plug);
+            var row = CompactLine(plug.Name == "PC" ? 0xE7F4 : plug.Name == "Pi" ? 0xE950 : 0xE945, plug.Name, action);
+            if (!plug.Available) row.Opacity = .4;
             _homePlugSection.Children.Add(row);
         }
     }
+
+    private void RedrawHome() { _homeKey = ""; BuildHome(); ContentHeightChanged?.Invoke(); }
 
     private void DisarmLater(string id)
     {
@@ -924,50 +757,6 @@ public partial class ControlCenterView
             BuildHome();
         };
         timer.Start();
-    }
-
-    private static int SceneGlyph(string icon) => icon switch
-    {
-        "moon" => 0xE708,
-        "game" => 0xE7FC,
-        "book" => 0xE736,
-        "wind" => 0xE753,
-        _ => 0xE781
-    };
-
-    private void BuildScenes(PiHome home)
-    {
-        if (home.Scenes.Count == 0) return;
-        _homeSceneSection.Children.Add(BuildSectionHeader("home.scenes", Loc.Get("home.scenes"), "", null, topMargin: 14));
-        if (!IsExpanded("home.scenes")) return;
-        var grid = TileGrid(home.Scenes.Count, home.Scenes.Count);
-        for (int i = 0; i < home.Scenes.Count; i++)
-        {
-            var scene = home.Scenes[i];
-            int glyph = SceneGlyph(scene.Icon);
-            var icon = new TextBlock { Text = Glyph(glyph), FontFamily = SegoeSymbolFont, FontSize = 16, Foreground = _moodInk, VerticalAlignment = VerticalAlignment.Center, RenderTransformOrigin = new Point(0.5, 0.5) };
-            var name = MakeLabel(scene.Name, 12.5, VNotch.Services.UiPalette.PrimaryBrush);
-            name.Margin = new Thickness(10, 0, 0, 0);
-            var card = Card();
-            card.Padding = new Thickness(12, 9, 12, 9);
-            card.Cursor = Cursors.Hand;
-            card.Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { icon, name } };
-            Pressable(card, () => CardBg, CardHover, grow: true);
-            DetailHover(card, icon);
-            string id = scene.Id;
-            card.MouseLeftButtonDown += async (_, e) =>
-            {
-                e.Handled = true;
-                // A tick answers the tap, then the scene's own icon comes back.
-                SetDetailText(icon, Glyph(0xE73E));
-                DetailReaction(icon);
-                SendHome("scene", id, null);
-                await Task.Delay(1400);
-                SetDetailText(icon, Glyph(glyph));
-            };
-            PlaceTile(grid, card, i, home.Scenes.Count);
-        }
-        _homeSceneSection.Children.Add(grid);
     }
 
     private static string PiText(HomePi pi)
@@ -1009,7 +798,7 @@ public partial class ControlCenterView
             _uptimeRoll.To(pi.UptimeSeconds ?? 0);
         }
 
-        private void Paint() => _text.Text = PiText(_pi with
+        private void Paint() => _text.Text = "Pi " + PiText(_pi with
         {
             Temp = _pi.Temp == null ? null : _temperature,
             UptimeSeconds = _pi.UptimeSeconds == null ? null : (long)Math.Max(0, _uptime)
@@ -1020,24 +809,18 @@ public partial class ControlCenterView
     private void BuildPiLine(PiHome home)
     {
         if (home.Pi is not { } pi) return;
-        _homePiSection.Children.Add(BuildSectionHeader("home.pi", "Pi", "", null, topMargin: 14));
-        if (!IsExpanded("home.pi")) return;
-        var row = NewRow(Glyph(0xE950), "Raspberry Pi");
-        AddStatus(row, PiText(pi), pi.Issues.Count == 0 ? HandedIn : Muted);
-        if (row.Children[^1] is Grid { Children.Count: > 0 } panel && panel.Children[^1] is TextBlock line) _piLine = line;
-        if (_piLine != null) _piReadout = new PiReadout(_piLine, pi);
-        _homePiSection.Children.Add(row);
+        _piLine = CompactText("Pi " + PiText(pi), 11, CompactLabel);
+        _piLine.TextWrapping = TextWrapping.Wrap;
+        _piLine.Tag = "drawer-row";
+        _piReadout = new PiReadout(_piLine, pi);
+        _homePiSection.Children.Add(_piLine);
         foreach (var issue in pi.Issues)
         {
-            var issueRow = NewRow(Glyph(issue.Status == "error" ? 0xE783 : 0xE7BA), issue.Title);
-            AddStatus(issueRow, issue.Detail, issue.Status == "error" ? HotTemp : DueSoon);
-            if (issue.FixId is { } fix)
-            {
-                string label = issue.FixLabel ?? Loc.Get("home.fix");
-                AddAction(issueRow, TextButton(Loc.Get("home.fix"), accent: false, () => SendHome("fix", fix, null)));
-                issueRow.ToolTip = label;
-            }
-            _homePiSection.Children.Add(issueRow);
+            FrameworkElement? fix = issue.FixId is { } id ? CompactPill(issue.FixLabel ?? Loc.Get("home.fix"), () => SendHome("fix", id, null)) : null;
+            var row = CompactLine(0xE7BA, issue.Title, fix); row.ToolTip = issue.Detail;
+            _homePiSection.Children.Add(row);
+            var detail = CompactText(issue.Detail, 10.5, CompactLabel); detail.TextWrapping = TextWrapping.Wrap;
+            _homePiSection.Children.Add(detail);
         }
     }
 

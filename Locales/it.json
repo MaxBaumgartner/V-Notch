@@ -1349,6 +1349,7 @@
   "home.piOk": "tutto verde",
   "home.fix": "Ripara",
   "school.deadlines": "Consegne",
+  "school.until": "entro {0}",
   "school.exams": "Verifiche ed esami",
   "school.nothingDue": "Niente in scadenza",
   "school.days": "giorni",

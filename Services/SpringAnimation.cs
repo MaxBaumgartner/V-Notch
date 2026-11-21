@@ -18,8 +18,8 @@ public sealed record SpringMotion(TimeSpan Response, double Bounce)
     /// far less for scales and opacities that only travel a fraction of 1.</param>
     /// <param name="floor">The value never goes below this, however far the spring swings (a size may not be negative).</param>
     internal SpringDoubleAnimation Animate(double from, double to, double velocity = 0, double settle = SpringDoubleAnimation.PixelSettle,
-        double floor = double.NegativeInfinity) =>
-        new(from, to, velocity, AngularFrequency, DampingRatio, settle, floor);
+        double floor = double.NegativeInfinity, double acceleration = 0) =>
+        new(from, to, velocity, AngularFrequency, DampingRatio, settle, floor, acceleration);
 }
 
 /// <summary>
@@ -40,15 +40,17 @@ internal sealed class SpringDoubleAnimation : DoubleAnimationBase
     private readonly double _omega;
     private readonly double _zeta;
     private readonly double _floor;
+    private readonly double _acceleration;
 
     internal SpringDoubleAnimation(double from, double to, double velocity, double angularFrequency, double dampingRatio, double settle = PixelSettle,
-        double floor = double.NegativeInfinity)
+        double floor = double.NegativeInfinity, double acceleration = 0)
     {
+        _acceleration = Math.Clamp(acceleration, 0, .5);
         _floor = double.IsNaN(floor) ? double.NegativeInfinity : floor;
         _settle = settle > 0 && double.IsFinite(settle) ? settle : PixelSettle;
         _from = from;
         _to = to;
-        _velocity = double.IsFinite(velocity) ? velocity : 0;
+        _velocity = double.IsFinite(velocity) ? velocity / (1 - _acceleration) : 0;
         _omega = angularFrequency;
         _zeta = dampingRatio;
         Duration = new Duration(SettleTime());
@@ -58,14 +60,22 @@ internal sealed class SpringDoubleAnimation : DoubleAnimationBase
     internal double To => _to;
 
     /// <summary>Position after <paramref name="seconds"/>.</summary>
-    internal double ValueAt(double seconds) => _to + Offset(seconds, out _);
+    internal double ValueAt(double seconds) => _to + Offset(ShellTime(seconds, out _), out _);
 
     /// <summary>Speed in units per second after <paramref name="seconds"/>; zero once settled.</summary>
     internal double VelocityAt(double seconds)
     {
         if (seconds >= Duration.TimeSpan.TotalSeconds) return 0;
-        Offset(seconds, out double velocity);
-        return velocity;
+        Offset(ShellTime(seconds, out double rate), out double velocity);
+        return velocity * rate;
+    }
+
+    // A small time bend lets a closing shell gather speed into the notch, without losing release momentum.
+    private double ShellTime(double seconds, out double rate)
+    {
+        double p = Duration.TimeSpan.TotalSeconds > 0 ? Math.Clamp(seconds / Duration.TimeSpan.TotalSeconds, 0, 1) : 1;
+        rate = 1 - _acceleration + 2 * _acceleration * p;
+        return seconds * (1 - _acceleration + _acceleration * p);
     }
 
     protected override double GetCurrentValueCore(double defaultOriginValue, double defaultDestinationValue, AnimationClock animationClock)
@@ -74,7 +84,7 @@ internal sealed class SpringDoubleAnimation : DoubleAnimationBase
         return Math.Max(_floor, ValueAt(progress * Duration.TimeSpan.TotalSeconds));
     }
 
-    protected override Freezable CreateInstanceCore() => new SpringDoubleAnimation(_from, _to, _velocity, _omega, _zeta, _settle, _floor);
+    protected override Freezable CreateInstanceCore() => new SpringDoubleAnimation(_from, _to, _velocity * (1 - _acceleration), _omega, _zeta, _settle, _floor, _acceleration);
 
     // Distance from the target (and its rate of change) for x'' + 2 zeta omega x' + omega^2 x = 0.
     private double Offset(double t, out double velocity)
