@@ -35,6 +35,26 @@ public sealed class DisplayChangesTests
     }
 
     [Fact]
+    public void RevertUndoesAPendingChangeAtOnceAndOnlyOnce()
+    {
+        var api = new FakeDisplayApi();
+        var clock = new ManualClock();
+        var changes = new DisplayChanges(api, () => clock.Now);
+        int reverted = 0;
+        changes.Reverted += () => reverted++;
+        changes.Revert();
+        Assert.Equal(0, reverted);
+        Assert.True(changes.Apply(DisplayChangeKind.Mode, a => a.SetModes(Modes(Changed))));
+        changes.Revert();
+        Assert.Equal(Original, api.Displays[0].Mode);
+        Assert.False(changes.NeedsConfirm);
+        Assert.Equal(1, reverted);
+        clock.Advance(20);
+        changes.Tick();
+        Assert.Equal(1, reverted);
+    }
+
+    [Fact]
     public void ConfirmKeepsTheChange()
     {
         var api = new FakeDisplayApi();

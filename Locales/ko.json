@@ -1194,6 +1194,7 @@
   "control.claude.limitWeek": "주간 한도",
   "control.claude.resetsIn": "{0} 후 초기화",
   "control.claude.limitBack": "{0} 다시 사용 가능",
+  "control.claude.allowanceLow": "{0}: {1} % 미만 남음",
   "control.claude.tokensContext": "컨텍스트",
   "control.claude.tokensLimit": "5시간 한도 중",
   "control.claude.tokensBreakdown": "입력 {0} · 캐시 쓰기 {1} · 캐시 읽기 {2} · 출력 {3}",

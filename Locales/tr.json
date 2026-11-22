@@ -1194,6 +1194,7 @@
   "control.claude.limitWeek": "Haftalık sınır",
   "control.claude.resetsIn": "{0} içinde sıfırlanır",
   "control.claude.limitBack": "{0} yeniden kullanılabilir",
+  "control.claude.allowanceLow": "{0}: %{1} altında kaldı",
   "control.claude.tokensContext": "Bağlam",
   "control.claude.tokensLimit": "5 saatlik sınırdan",
   "control.claude.tokensBreakdown": "Girdi {0} · önbelleğe yazılan {1} · önbellekten okunan {2} · çıktı {3}",

@@ -1194,6 +1194,7 @@
   "control.claude.limitWeek": "साप्ताहिक सीमा",
   "control.claude.resetsIn": "{0} में रीसेट",
   "control.claude.limitBack": "{0} फिर से उपलब्ध",
+  "control.claude.allowanceLow": "{0}: {1} % से कम बचा",
   "control.claude.tokensContext": "संदर्भ",
   "control.claude.tokensLimit": "5 घंटे की सीमा का",
   "control.claude.tokensBreakdown": "इनपुट {0} · कैश लिखा {1} · कैश पढ़ा {2} · आउटपुट {3}",

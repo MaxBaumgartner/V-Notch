@@ -235,6 +235,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         StopCodexClock();
         StopResetFeedback();
         SetGpuSampling(false);
+        StopPeaks();
+        _endDisarm?.Stop();
         _stats.Dispose();
         IsVisibleChanged -= OnIsVisibleChanged;
         Loc.LanguageChanged -= OnLanguageChanged;
@@ -378,7 +380,12 @@ public partial class ControlCenterView : UserControl, IDisposable
             RefreshPi();
             return;
         }
-        if (_refreshing) return;
+        if (_refreshing)
+        {
+            // A read is under way: one more follows it, so a list that was just asked for comes at once.
+            _refreshAgain = true;
+            return;
+        }
         _refreshing = true;
         try
         {
@@ -404,8 +411,15 @@ public partial class ControlCenterView : UserControl, IDisposable
         finally
         {
             _refreshing = false;
+            if (_refreshAgain && !_disposed)
+            {
+                _refreshAgain = false;
+                _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Refresh));
+            }
         }
     }
+
+    private bool _refreshAgain;
 
     private async void RefreshUsage(TimeSpan minAge)
     {
@@ -449,6 +463,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         public List<OutputDevice>? Outputs;
         public List<AudioSessionInfo>? Apps;
         public WaveXlrState? WaveXlr;
+        public bool? MicMuted;
     }
 
     private Snapshot ReadSnapshot(bool? wifiOn, bool? bluetoothOn, bool rescanWifi, bool withStats, TopMode top)
@@ -562,7 +577,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     /// <summary>Five tiles built once; every refresh only changes their numbers and slides their bars.</summary>
     private void BuildStatsSection()
     {
-        if (_compactSystemReady) { _systemDrawerKey = ""; BuildCompactSystem(_snapshot ?? new Snapshot()); return; }
+        if (_compactSystemReady) { BuildCompactSystem(_snapshot ?? new Snapshot()); return; }
         _statsSection.Children.Clear();
         var header = BuildSectionHeader("system", Loc.Get("control.system"), _keepAwakeLabel?.Invoke() ?? "",
             _cycleKeepAwake == null ? null : () => _cycleKeepAwake(), topMargin: 0);
@@ -1324,7 +1339,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     /// <summary>New words in the header label, swapped with a short fade.</summary>
     internal void RefreshKeepAwake()
     {
-        if (_compactSystemReady) { _systemDrawerKey = ""; BuildCompactSystem(_snapshot ?? new Snapshot()); }
+        if (_compactSystemReady) { BuildCompactSystem(_snapshot ?? new Snapshot()); }
         if (_keepAwakeText is not { } label || _keepAwakeLabel == null) return;
         string text = _keepAwakeLabel();
         if (label.Text == text) return;

@@ -27,6 +27,7 @@ public partial class ControlCenterView
     private List<WifiNetwork>? _quickNetworks;
     private readonly TranslateTransform _faceShift = new(), _quickShift = new();
     private string _quickKey = "";
+    private bool _drawerBeforeQuick;
 
     /// <summary>The open page follows the regular refresh, but only rebuilds when what it lists has changed.</summary>
     private void RefreshQuickPage(Snapshot s)
@@ -43,6 +44,9 @@ public partial class ControlCenterView
     private void OpenQuickPage(QuickPage page)
     {
         if (_faceGrid == null || _snapshot is not { } snapshot) return;
+        // The page takes the face's place; the drawer folds away meanwhile so the notch stays short, and comes back after.
+        if (_quickPage == QuickPage.None) _drawerBeforeQuick = _drawerOpen;
+        if (_drawerOpen) SetDrawerOpen(false);
         _quickPage = page;
         _quickNetworks = null;
         EnsureQuickPanel();
@@ -57,6 +61,8 @@ public partial class ControlCenterView
         if (_quickPage == QuickPage.None) return;
         _quickPage = QuickPage.None;
         SwapQuickPage(toPanel: false, animate);
+        if (_drawerBeforeQuick && animate && IsVisible) SetDrawerOpen(true);
+        _drawerBeforeQuick = false;
     }
 
     private void EnsureQuickPanel()
@@ -103,10 +109,10 @@ public partial class ControlCenterView
         var back = CompactGlyph(0xE76B);
         back.FontSize = 12;
         var backButton = new Border { Width = 30, Height = 30, CornerRadius = new CornerRadius(15), Background = Frozen("#1AFFFFFF"),
-            Cursor = Cursors.Hand, Child = back, ToolTip = "Zurück" };
+            Cursor = Cursors.Hand, Child = back, ToolTip = Say("Zurück", "Back") };
         Squish(backButton);
         backButton.MouseLeftButtonUp += (_, e) => { e.Handled = true; CloseQuickPage(); };
-        var title = CompactText(wifi ? "WLAN" : "Bluetooth", 15, CompactInk);
+        var title = CompactText(wifi ? Say("WLAN", "Wi-Fi") : "Bluetooth", 15, CompactInk);
         title.FontWeight = FontWeights.SemiBold;
         title.Margin = new Thickness(12, 0, 0, 0);
         title.VerticalAlignment = VerticalAlignment.Center;
@@ -128,7 +134,7 @@ public partial class ControlCenterView
 
         if (on != true)
         {
-            _quickPanel.Children.Add(QuickNote(wifi ? "WLAN ist aus" : "Bluetooth ist aus"));
+            _quickPanel.Children.Add(QuickNote(wifi ? Say("WLAN ist aus", "Wi-Fi is off") : Say("Bluetooth ist aus", "Bluetooth is off")));
         }
         else if (wifi)
         {
@@ -149,7 +155,7 @@ public partial class ControlCenterView
         {
             var devices = s.Devices.OrderByDescending(d => d.IsConnected).ThenBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase)
                 .Take(QuickNetworkLimit).ToList();
-            if (devices.Count == 0) _quickPanel.Children.Add(QuickNote("Keine gekoppelten Geräte"));
+            if (devices.Count == 0) _quickPanel.Children.Add(QuickNote(Say("Keine gekoppelten Geräte", "No paired devices")));
             foreach (var device in devices)
             {
                 var chosen = device;
@@ -159,7 +165,7 @@ public partial class ControlCenterView
             }
         }
 
-        var more = CompactText(wifi ? Loc.Get("control.moreNetworks") : "Bluetooth-Einstellungen", 11, CompactLabel);
+        var more = CompactText(wifi ? Loc.Get("control.moreNetworks") : Say("Bluetooth-Einstellungen", "Bluetooth settings"), 11, CompactLabel);
         var moreButton = new Border { Background = Brushes.Transparent, Cursor = Cursors.Hand, Padding = new Thickness(0, 8, 0, 2), Child = more,
             HorizontalAlignment = HorizontalAlignment.Left };
         moreButton.MouseLeftButtonUp += (_, e) =>

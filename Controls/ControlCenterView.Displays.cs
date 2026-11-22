@@ -220,8 +220,13 @@ public partial class ControlCenterView
         {
             _displayTimer?.Stop(); _displayTimer = null;
             if (IsVisible && IsExpanded("displays")) BuildDisplaysSection();
+            if (_drawerPage == DrawerPage.Displays) FillDisplayPage();
         }
-        else _displaySeconds?.To(Changes.SecondsLeft, 250);
+        else
+        {
+            _displaySeconds?.To(Changes.SecondsLeft, 250);
+            UpdateDisplayCountdown();
+        }
     }
 
     private void ShowKeepBar()

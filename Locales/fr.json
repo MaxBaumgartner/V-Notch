@@ -1194,6 +1194,7 @@
   "control.claude.limitWeek": "Limite hebdomadaire",
   "control.claude.resetsIn": "Réinitialisation dans {0}",
   "control.claude.limitBack": "{0} de nouveau disponible",
+  "control.claude.allowanceLow": "{0} : moins de {1} % restant",
   "control.claude.tokensContext": "Contexte",
   "control.claude.tokensLimit": "de la limite 5 h",
   "control.claude.tokensBreakdown": "Entrée {0} · cache écrit {1} · cache lu {2} · sortie {3}",

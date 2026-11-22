@@ -36,6 +36,73 @@ public sealed class LaptopModeGuardTests
         return Task.CompletedTask;
     });
 
+    [Fact]
+    public void TheSectionIsAModuleOfTheSystemDrawerWhileTheHelperAnswers() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        BackgroundTestWindows.EnsureApplicationResources();
+        using var view = SystemTabTests.CreateView(legion: false);
+        var host = new BackgroundWindow { Width = 600, Height = 760, Left = -20000, Top = -20000,
+            Content = new Border { Padding = new Thickness(16, 30, 16, 0), Child = view } };
+        try
+        {
+            var snapshot = HomeSchoolTabTests.Field(view, "_snapshot");
+            void Set(string name, object? value) => snapshot.GetType().GetField(name)!.SetValue(snapshot, value);
+            void Show() => HomeSchoolTabTests.Invoke(view, "BuildCompactSystem", snapshot);
+            Set("Laptop", new LaptopStatus("balanced", false, 3100, 2900, 52, true, 4, null));
+            Show();
+            host.Show();
+            view.SetDrawerOpen(true);
+            host.UpdateLayout();
+
+            var main = (StackPanel)HomeSchoolTabTests.Field(view, "_drawerMain");
+            var module = (Border)HomeSchoolTabTests.Field(view, "_laptopModule");
+            var section = (StackPanel)HomeSchoolTabTests.Field(view, "_laptopSection");
+            Assert.Same(section, module.Child);
+            Assert.Equal(main.Children.IndexOf((UIElement)HomeSchoolTabTests.Field(view, "_footer")) - 1, main.Children.IndexOf(module));
+            Assert.Equal(Visibility.Visible, module.Visibility);
+            var bounds = new Rect(module.RenderSize);
+            foreach (string key in new[] { "eco", "balanced", "performance" })
+            {
+                var button = Button(section, Loc.Get("control.laptop." + key));
+                var place = button.TransformToAncestor(module).TransformBounds(new Rect(button.RenderSize));
+                Assert.True(place.Width > 0 && bounds.Contains(place), $"{key} is cut off: {place} in {bounds}");
+            }
+
+            async Task DrawerFits()
+            {
+                double have = 0, want = 1;
+                for (int i = 0; i < 60 && Math.Abs(have - want) > 1; i++)
+                {
+                    await Task.Delay(50, ct);
+                    have = ((FrameworkElement)HomeSchoolTabTests.Field(view, "_drawerClip")).Height;
+                    want = (double)HomeSchoolTabTests.Invoke(view, "MeasureDrawer")!;
+                }
+                Assert.InRange(have, want - 1, want + 1);
+            }
+
+            await DrawerFits();
+            ((Dictionary<string, bool>)HomeSchoolTabTests.Field(view, "_expanded"))["laptop"] = false;
+            Show();
+            await DrawerFits();
+
+            // Read without numbers (tab hidden): stays. A read without an answer from the helper: gone.
+            var stats = snapshot.GetType().GetField("Stats")!.GetValue(snapshot);
+            Set("Laptop", null);
+            Set("Stats", null);
+            Show();
+            Assert.Equal(Visibility.Visible, module.Visibility);
+            Set("Stats", stats);
+            Show();
+            Assert.Equal(Visibility.Collapsed, module.Visibility);
+            await DrawerFits();
+        }
+        finally
+        {
+            HomeSchoolTabTests.SetField(view, "_gpuSampling", false);
+            host.Close();
+        }
+    });
+
     private static Border Button(DependencyObject root, string text)
     {
         foreach (var border in Descendants(root).OfType<Border>())

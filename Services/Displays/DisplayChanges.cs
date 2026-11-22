@@ -44,6 +44,16 @@ public sealed class DisplayChanges(IDisplayApi api, Func<DateTime> now)
     /// <summary>Keeps the current display settings and hides the countdown.</summary>
     public void Confirm() => _snapshot = null;
 
+    /// <summary>Undoes an unconfirmed change right away (the user said no, or walked away from it).</summary>
+    public void Revert()
+    {
+        if (_snapshot == null) return;
+        var snapshot = _snapshot;
+        _snapshot = null;
+        Restore(snapshot);
+        Reverted?.Invoke();
+    }
+
     /// <summary>Restores an unconfirmed change when the countdown expires.</summary>
     public void Tick()
     {

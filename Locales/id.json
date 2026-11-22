@@ -1194,6 +1194,7 @@
   "control.claude.limitWeek": "Batas mingguan",
   "control.claude.resetsIn": "Diatur ulang dalam {0}",
   "control.claude.limitBack": "{0} tersedia lagi",
+  "control.claude.allowanceLow": "{0}: tersisa kurang dari {1} %",
   "control.claude.tokensContext": "Konteks",
   "control.claude.tokensLimit": "dari batas 5 jam",
   "control.claude.tokensBreakdown": "Masukan {0} · tulis cache {1} · baca cache {2} · keluaran {3}",

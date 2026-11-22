@@ -24,12 +24,38 @@ public partial class ControlCenterView
     private static readonly TimeSpan LaptopModeConfirmWindow = TimeSpan.FromSeconds(3);
 
     private readonly StackPanel _laptopSection = new();
+    private Border? _laptopModule;
     private string _laptopKey = "";
     private TextBlock? _laptopReadings;
     private LaptopStatus? _laptopStatus;
     // The notch never changes the performance mode on its own, nor on one stray click (the tab still moving, a
     // section popping in under the pointer): a first tap only asks, a second tap within a few seconds switches.
     private string? _laptopModeArmed;
+
+    /// <summary>
+    /// The OMEN laptop as one more module of the system drawer, above its footer, while the helper answers. The
+    /// drawer is built once, so the module only shows and hides; a read without numbers (tab hidden) keeps it.
+    /// </summary>
+    private void FillLaptopModule(Snapshot s)
+    {
+        if (_drawerMain == null || _footer == null) return;
+        if (_laptopModule == null)
+        {
+            (_laptopSection.Parent as Panel)?.Children.Remove(_laptopSection);
+            _laptopModule = DrawerModule(_laptopSection);
+            _laptopModule.Margin = new Thickness(0, 10, 0, 0);
+            _laptopModule.Visibility = Visibility.Collapsed;
+            // Folding the section springs its height: the open drawer follows instead of leaving a gap or cutting it.
+            _laptopSection.SizeChanged += (_, e) => { if (e.HeightChanged) RefitDrawer(); };
+            _drawerMain.Children.Insert(_drawerMain.Children.IndexOf(_footer), _laptopModule);
+        }
+        if (s.Stats == null) return;
+        BuildLaptopSectionIfChanged(s.Laptop);
+        var shown = s.Laptop != null ? Visibility.Visible : Visibility.Collapsed;
+        if (_laptopModule.Visibility == shown) return;
+        _laptopModule.Visibility = shown;
+        RefitDrawer();
+    }
 
     private void BuildLaptopSectionIfChanged(LaptopStatus? laptop)
     {
@@ -50,7 +76,7 @@ public partial class ControlCenterView
     {
         _laptopSection.Children.Clear();
         _laptopReadings = null;
-        _laptopSection.Children.Add(BuildSectionHeader("laptop", Loc.Get("control.laptop"), Loc.Get("control.status"), null, topMargin: 14));
+        _laptopSection.Children.Add(BuildSectionHeader("laptop", Loc.Get("control.laptop"), Loc.Get("control.status"), null, topMargin: 0));
         if (!IsExpanded("laptop")) return;
         if (laptop == null)
         {

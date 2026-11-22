@@ -88,11 +88,11 @@ public sealed class SystemTabTests
             var label = (TextBlock)HomeSchoolTabTests.Field(view, "_outputLabel");
             Assert.Equal("Wave", label.Text);
             Assert.InRange(view.MeasureContentHeight(568), 140, 200);
-            // The drawer still lists every output.
-            var sound = (StackPanel)HomeSchoolTabTests.Field(view, "_systemSound");
-            var outputs = HomeSchoolTabTests.Descendants<Border>(sound).Where(b => b.ToolTip is string title &&
-                (title == "Wave Link Stream" || title == "Headphones (AirPods Pro)")).ToArray();
-            Assert.Equal(2, outputs.Length);
+            // The drawer does not repeat the outputs: it has a capsule per app and a line per connected battery.
+            Assert.Equal(2, ((System.Collections.IDictionary)HomeSchoolTabTests.Field(view, "_mixChannels")).Count);
+            var batteries = (StackPanel)HomeSchoolTabTests.Field(view, "_batteryHost");
+            Assert.Contains(HomeSchoolTabTests.Descendants<TextBlock>(batteries), t => t.Text == "AirPods Pro");
+            Assert.Contains(HomeSchoolTabTests.Descendants<TextBlock>(batteries), t => t.Text == "80 %");
             // The label opens a menu with the current output ticked, instead of silently cycling.
             HomeSchoolTabTests.Invoke(view, "ToggleOutputMenu");
             var menu = (Border)HomeSchoolTabTests.Field(view, "_outputMenu");
@@ -180,6 +180,67 @@ public sealed class SystemTabTests
             view.Visibility = Visibility.Collapsed;
             Assert.Equal(Visibility.Visible, face.Visibility);
             Assert.Equal(Visibility.Collapsed, panel.Visibility);
+            await Task.CompletedTask;
+        }
+        finally { HomeSchoolTabTests.SetField(view, "_gpuSampling", false); host.Close(); }
+    });
+
+    [Fact]
+    public void LongOutputAndNetworkNamesNeverPushTheSlidersIntoTheModeTile() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        BackgroundTestWindows.EnsureApplicationResources();
+        using var view = CreateView();
+        var host = new BackgroundWindow { Width = 600, Height = 260, Left = -20000, Top = -20000,
+            Content = new Border { Padding = new Thickness(16, 30, 16, 0), Child = view } };
+        try
+        {
+            var snapshot = HomeSchoolTabTests.Field(view, "_snapshot")!;
+            snapshot.GetType().GetField("Outputs")!.SetValue(snapshot, new List<OutputDevice>
+                { new("wf", "Kopfhörer WF-1000XM6", "Kopfhörer (WF-1000XM6 Stereo)", true, true), new("wave", "Wave", "Wave Link Stream", false, false) });
+            snapshot.GetType().GetField("Networks")!.SetValue(snapshot, new List<WifiNetwork> { new("FRITZ!Box 7590 KL Gastzugang", null, 90, true, true) });
+            HomeSchoolTabTests.Invoke(view, "BuildCompactSystem", snapshot);
+            // With a second monitor the brightness slider is there too, named after the main screen.
+            ((FrameworkElement)HomeSchoolTabTests.Field(view, "_brightnessColumn")).Visibility = Visibility.Visible;
+            ((TextBlock)HomeSchoolTabTests.Field(view, "_brightnessName")).Text = "Odyssey-G60SD-Pro";
+            host.Show(); host.UpdateLayout();
+            Rect Bounds(FrameworkElement element) => element.TransformToAncestor(view).TransformBounds(new Rect(element.RenderSize));
+            var face = (Grid)HomeSchoolTabTests.Field(view, "_faceGrid");
+            var columns = face.Children.Cast<FrameworkElement>().Where(c => c.Visibility == Visibility.Visible).OrderBy(c => Bounds(c).Left).ToArray();
+            for (int i = 1; i < columns.Length; i++)
+                Assert.True(Bounds(columns[i]).Left - Bounds(columns[i - 1]).Right >= -0.5, $"column {i} overlaps by {Bounds(columns[i - 1]).Right - Bounds(columns[i]).Left:0.#}");
+            await Task.CompletedTask;
+        }
+        finally { HomeSchoolTabTests.SetField(view, "_gpuSampling", false); host.Close(); }
+    });
+
+    [Fact]
+    public void DrawerPagesSlideInAndBackAndOnlyTheProcessPageAsksForProcesses() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        BackgroundTestWindows.EnsureApplicationResources();
+        using var view = CreateView();
+        var host = new BackgroundWindow { Width = 600, Height = 700, Left = -20000, Top = -20000, Content = new Border { Padding = new Thickness(16, 30, 16, 0), Child = view } };
+        try
+        {
+            host.Show(); host.UpdateLayout();
+            view.SetDrawerOpen(true);
+            var pages = typeof(ControlCenterView).GetNestedType("DrawerPage", BindingFlags.NonPublic)!;
+            var main = (FrameworkElement)HomeSchoolTabTests.Field(view, "_drawerMain");
+            HomeSchoolTabTests.Invoke(view, "ShowDrawerPage", Enum.Parse(pages, "Processes"), false, false);
+            var procs = (FrameworkElement)HomeSchoolTabTests.Field(view, "_drawerProcs");
+            Assert.Equal(Visibility.Collapsed, main.Visibility);
+            Assert.Equal(Visibility.Visible, procs.Visibility);
+            Assert.Equal("Cpu", HomeSchoolTabTests.Field(view, "_topMode").ToString());
+
+            HomeSchoolTabTests.Invoke(view, "ShowDrawerPage", Enum.Parse(pages, "Main"), false, false);
+            Assert.Equal(Visibility.Visible, main.Visibility);
+            Assert.Equal(Visibility.Collapsed, procs.Visibility);
+            Assert.Equal("Off", HomeSchoolTabTests.Field(view, "_topMode").ToString());
+
+            // Closing the notch brings the drawer back to its first page.
+            HomeSchoolTabTests.Invoke(view, "ShowDrawerPage", Enum.Parse(pages, "Processes"), false, false);
+            view.Visibility = Visibility.Collapsed;
+            Assert.Equal(Visibility.Visible, main.Visibility);
+            Assert.Equal("Main", HomeSchoolTabTests.Field(view, "_drawerPage").ToString());
             await Task.CompletedTask;
         }
         finally { HomeSchoolTabTests.SetField(view, "_gpuSampling", false); host.Close(); }

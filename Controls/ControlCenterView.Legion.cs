@@ -151,7 +151,7 @@ public partial class ControlCenterView
     /// <summary>Builds the tiles once per layout (reachable, sections open); values only animate after that.</summary>
     private void BuildLegionPage()
     {
-        if (_compactSystemReady) { _systemDrawerKey = ""; BuildCompactSystem(_snapshot ?? new Snapshot()); return; }
+        if (_compactSystemReady) { BuildCompactSystem(_snapshot ?? new Snapshot()); return; }
         if (_disposed || !_legionAttached) return;
         bool ready = _legionReachable && _legion != null;
         // Opening or closing a section only shows or hides its rows (ToggleLegionSection): a rebuild

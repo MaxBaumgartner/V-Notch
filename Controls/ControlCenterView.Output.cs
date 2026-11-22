@@ -104,9 +104,14 @@ public partial class ControlCenterView
         if (s.Outputs.FirstOrDefault(o => o.IsDefault && OutputDevices.IsVirtual(o.FriendlyName)) is { } route)
             _retainedSystemOutputId = route.Id;
         s.WaveXlr = WaveXlrControl.ReadAsync().GetAwaiter().GetResult();
+        // Wave Link can lose the XLR (after a USB reconnect it lists only the other mics) while Windows still has it:
+        // then the face reads the default mic's mute flag, which the XLR's own mute button sets.
+        if (s.WaveXlr == null) s.MicMuted = MicrophoneControl.IsMuted();
         try
         {
-            s.Apps = _mixer?.Invoke()?.GetSessions(includeIcons: false)
+            // With icons: the drawer's mixer shows each app's own icon and takes its colour from it (resolved once
+            // per app and cached).
+            s.Apps = _mixer?.Invoke()?.GetSessions(includeIcons: true)
                 .Where(a => !a.IsSystemSounds && a.DisplayName.Length > 0)
                 .GroupBy(a => a.ProcessId).Select(g => g.First())
                 .OrderBy(a => a.DisplayName, StringComparer.CurrentCultureIgnoreCase)

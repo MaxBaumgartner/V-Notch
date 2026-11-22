@@ -1194,6 +1194,7 @@
   "control.claude.limitWeek": "週間の上限",
   "control.claude.resetsIn": "{0} 後にリセット",
   "control.claude.limitBack": "{0}が回復しました",
+  "control.claude.allowanceLow": "{0}: 残り {1} % 未満",
   "control.claude.tokensContext": "コンテキスト",
   "control.claude.tokensLimit": "5時間上限のうち",
   "control.claude.tokensBreakdown": "入力 {0} · キャッシュ書き込み {1} · キャッシュ読み取り {2} · 出力 {3}",

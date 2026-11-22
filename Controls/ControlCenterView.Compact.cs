@@ -45,7 +45,8 @@ public partial class ControlCenterView
         {
             if (_drawerClip == null || e.Handled) return;
             for (var source = e.OriginalSource as DependencyObject; source != null && source != ControlScrollViewer; source = VisualTreeHelper.GetParent(source))
-                if (source is FrameworkElement element && element.ReadLocalValue(CursorProperty) is Cursor cursor && cursor == Cursors.SizeWE) return;
+                // Sliders (sideways and the tall capsules) take the wheel themselves.
+                if (source is FrameworkElement element && element.ReadLocalValue(CursorProperty) is Cursor cursor && (cursor == Cursors.SizeWE || cursor == Cursors.SizeNS)) return;
             // A long drawer keeps scrolling until it reaches its upper boundary.
             if (_drawerOpen && ControlScrollViewer.ScrollableHeight > 0 &&
                 (e.Delta < 0 || ControlScrollViewer.VerticalOffset > .5)) return;
@@ -168,6 +169,7 @@ public partial class ControlCenterView
     {
         if (_drawerHeight == null) return;
         _drawerOpen = open;
+        if (Page == ControlCenterPage.System) UpdatePeakTimer();
         double target = open ? MeasureDrawer() : 0;
         if (!IsVisible || AnimationConfig.ReduceMotion)
         {
