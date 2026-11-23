@@ -44,10 +44,10 @@ public partial class ControlCenterView
         RefreshQuickPage(s);
         var current = _volume?.Current ?? (0f, false);
         ShowCompactVolume(current.Item1, current.Item2);
-        FillSystemDrawer(s);
         FillLaptopModule(s);
+        FillSystemDrawer(s);
         if (s.Stats is { } stats && IsVisible)
-            SetCompactStatus(_loadWarning.Update(DateTime.UtcNow, stats.CpuPercent, stats.GpuPercent, _legion?.CpuTemp, _legion?.GpuTemp));
+            SetCompactStatus(_loadWarning.Update(DateTime.UtcNow, stats.CpuPercent, stats.GpuPercent, CpuTempNow, GpuTempNow));
     }
 
     private static string PercentAndTemp(double? percent, int? temp) =>

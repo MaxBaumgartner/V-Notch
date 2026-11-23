@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.Json.Nodes;
 
 namespace VNotch.Services.ControlCenter;
@@ -50,15 +51,45 @@ internal static class PlannerDashboard
         }
         var lessons = byDay.TryGetValue(day, out var list) ? list : new List<PiLesson>();
 
+        var subjects = SubjectCodes(byDay);
         var exams = new List<PiExam>();
         foreach (var ev in Events(events))
         {
             if (!IsExam(ev.Kind) || Occurrence(ev, now.Date, ExamWindow) is not { } date) continue;
-            exams.Add(new PiExam(date, ev.Start, ExamLabel(ev.Kind), ev.Title));
+            exams.Add(new PiExam(date, ev.Start, ExamLabel(ev.Kind), ev.Title, ExamSubjectCode(ev.Title, subjects)));
         }
         exams.Sort((a, b) => (a.Date, a.Start).CompareTo((b.Date, b.Start)));
         var deadlines = MoodleDeadlines(events, now).ConvertAll(d => d.Deadline);
-        return new PiSchool(day, day == today, lessons, deadlines, exams, null);
+        // Every day the timetable holds, so the tab's own day view finds today even when the cover shows the next school day.
+        return new PiSchool(day, day == today, lessons, deadlines, exams, null)
+        {
+            Days = byDay.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<PiLesson>)pair.Value, StringComparer.Ordinal)
+        };
+    }
+
+    /// <summary>
+    /// The timetable's subject codes ("0AM"), found by a lesson's full name ("Mathe") and by the code itself ("AM"), so a
+    /// test the user named after its subject gets that subject's colour and short name.
+    /// </summary>
+    internal static Dictionary<string, string> SubjectCodes(Dictionary<string, List<PiLesson>> byDay)
+    {
+        var codes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var lesson in byDay.Values.SelectMany(day => day))
+        {
+            if (lesson.SubjectKey.Length == 0) continue;
+            codes.TryAdd(lesson.Subject.Trim(), lesson.SubjectKey);
+            codes.TryAdd(PiDashboardClient.UntisSubject(lesson.SubjectKey), lesson.SubjectKey);
+        }
+        return codes;
+    }
+
+    /// <summary>The subject code a test's title names, as a whole or by one of its words; "" when it names none.</summary>
+    internal static string ExamSubjectCode(string title, IReadOnlyDictionary<string, string> codes)
+    {
+        if (codes.TryGetValue(title.Trim(), out var whole)) return whole;
+        foreach (string word in title.Split([' ', '-', ':', ',', '/', '(', ')'], StringSplitOptions.RemoveEmptyEntries))
+            if (codes.TryGetValue(word, out var code)) return code;
+        return "";
     }
 
     /// <summary>
@@ -92,7 +123,8 @@ internal static class PlannerDashboard
             if (date.Length != 10 || start.Length == 0 || end.Length == 0) continue;
             string name = Str(l, "name") is { Length: > 0 } full ? full : Str(l, "subject");
             if (!byDay.TryGetValue(date, out var list)) byDay[date] = list = new List<PiLesson>();
-            list.Add(new PiLesson(start, end, name, Str(l, "room"), Bool(l, "cancelled"), Str(l, "change"), Minutes(start), Minutes(end)));
+            list.Add(new PiLesson(start, end, name, Str(l, "room"), Bool(l, "cancelled"), Str(l, "change"), Minutes(start), Minutes(end),
+                Str(l, "subject")));
         }
         foreach (var list in byDay.Values) list.Sort((a, b) => a.StartMinutes.CompareTo(b.StartMinutes));
         return byDay;

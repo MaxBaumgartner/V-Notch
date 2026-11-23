@@ -63,6 +63,15 @@
     <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="7" />
   </ItemGroup>
 
+  <!-- A fork's own build can name the upstream commit it contains; the notch then says when the upstream moved on
+       (Services/UpstreamWatch.cs). Official builds pass none of these and never ask. -->
+  <ItemGroup Condition="'$(UpstreamCommit)' != ''">
+    <AssemblyMetadata Include="UpstreamRepository" Value="$(UpstreamRepository)" />
+    <AssemblyMetadata Include="UpstreamBranch" Value="$(UpstreamBranch)" />
+    <AssemblyMetadata Include="UpstreamCommit" Value="$(UpstreamCommit)" />
+    <AssemblyMetadata Include="UpstreamName" Value="$(UpstreamName)" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />

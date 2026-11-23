@@ -54,6 +54,23 @@ public sealed class PlannerDashboardTests
     }
 
     [Fact]
+    public void LessonsKeepTheirSubjectCodeAndTestsFindTheirSubjectByName()
+    {
+        var school = PlannerDashboard.School(Timetable(), Events(), Today.AddHours(7));
+        // The full name stays for the lesson orb; the code gives the school tab its subject colour and short name.
+        Assert.Equal(new[] { "0WMC", "0DBI" }, school.Lessons.Select(l => l.SubjectKey));
+        Assert.Equal(new[] { "2026-11-03", "2026-11-04", "2026-11-09" }, school.Days.Keys.Order());
+        Assert.Equal("Mathe", school.Days["2026-11-04"].Single().Subject);
+
+        var codes = PlannerDashboard.SubjectCodes(PlannerDashboard.LessonsByDay(Timetable()));
+        Assert.Equal("0AM", PlannerDashboard.ExamSubjectCode("Mathe", codes));
+        Assert.Equal("0AM", PlannerDashboard.ExamSubjectCode("mathe", codes));
+        Assert.Equal("0DBI", PlannerDashboard.ExamSubjectCode("DBI", codes));
+        Assert.Equal("0WMC", PlannerDashboard.ExamSubjectCode("Test: WMC Angular", codes));
+        Assert.Equal("", PlannerDashboard.ExamSubjectCode("Führerschein", codes));
+    }
+
+    [Fact]
     public void ExamsOfTheNextThreeWeeksAndMoodleDeadlinesComeWithTheSchool()
     {
         var school = PlannerDashboard.School(Timetable(), Events(), Today.AddHours(7));

@@ -60,13 +60,9 @@ public sealed class LaptopModeGuardTests
             Assert.Same(section, module.Child);
             Assert.Equal(main.Children.IndexOf((UIElement)HomeSchoolTabTests.Field(view, "_footer")) - 1, main.Children.IndexOf(module));
             Assert.Equal(Visibility.Visible, module.Visibility);
-            var bounds = new Rect(module.RenderSize);
-            foreach (string key in new[] { "eco", "balanced", "performance" })
-            {
-                var button = Button(section, Loc.Get("control.laptop." + key));
-                var place = button.TransformToAncestor(module).TransformBounds(new Rect(button.RenderSize));
-                Assert.True(place.Width > 0 && bounds.Contains(place), $"{key} is cut off: {place} in {bounds}");
-            }
+            // The mode is switched on the face's tile now; the module keeps sensors, fans and the keyboard light.
+            Assert.DoesNotContain(Descendants(section).OfType<Border>(), b => b.Child is TextBlock t && t.Text == Loc.Get("control.laptop.performance"));
+            Assert.Contains(Descendants(section).OfType<TextBlock>(), t => t.Text == Loc.Get("control.laptop.sensors"));
 
             async Task DrawerFits()
             {
@@ -101,6 +97,94 @@ public sealed class LaptopModeGuardTests
             HomeSchoolTabTests.SetField(view, "_gpuSampling", false);
             host.Close();
         }
+    });
+
+    [Fact]
+    public void WithoutALegionTheTileTakesTheCoverSpotAndAFirstTapOnlyAsks() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        BackgroundTestWindows.EnsureApplicationResources();
+        using var view = SystemTabTests.CreateView(legion: false);
+        var host = new BackgroundWindow { Width = 600, Height = 400, Left = -20000, Top = -20000,
+            Content = new Border { Padding = new Thickness(16, 30, 16, 0), Child = view } };
+        try
+        {
+            var snapshot = HomeSchoolTabTests.Field(view, "_snapshot");
+            snapshot.GetType().GetField("Laptop")!.SetValue(snapshot, new LaptopStatus("balanced", false, 3100, 2900, 52, true, 4, null));
+            snapshot.GetType().GetField("GpuTemp")!.SetValue(snapshot, 71);
+            HomeSchoolTabTests.Invoke(view, "BuildCompactSystem", snapshot);
+            host.Show();
+            host.UpdateLayout();
+            await Task.Yield();
+
+            var face = (Grid)HomeSchoolTabTests.Field(view, "_faceGrid");
+            var tile = (Border)HomeSchoolTabTests.Field(view, "_laptopTile");
+            Assert.Same(face, tile.Parent);
+            Assert.Equal(1, Grid.GetColumn(tile));
+            Assert.Equal(Visibility.Visible, tile.Visibility);
+            Assert.Same(tile, HomeSchoolTabTests.Field(view, "_modeTile"));
+            Rect Bounds(FrameworkElement e) => e.TransformToAncestor(face).TransformBounds(new Rect(e.RenderSize));
+            foreach (var column in face.Children.OfType<FrameworkElement>().Where(c => c != tile && c.IsVisible))
+                Assert.False(Bounds(column).IntersectsWith(Bounds(tile)), $"{column.GetType().Name} at {Bounds(column)} covers the tile at {Bounds(tile)}");
+            var readout = (TextBlock)HomeSchoolTabTests.Field(view, "_laptopTileReadout");
+            Assert.Equal("52 °C · " + Loc.Get("control.laptop.fan", 3100.ToString("N0", Loc.GetCulture())), readout.Text);
+            // CPU from the OMEN BIOS, GPU from the graphics driver, in the drawer's performance module.
+            Assert.Equal("52 °C", ((TextBlock)HomeSchoolTabTests.Field(view, "_cpuSub")).Text);
+            Assert.Equal("71 °C", ((TextBlock)HomeSchoolTabTests.Field(view, "_gpuSub")).Text);
+
+            // Only one tap: a second one on the same slot would really switch this PC through the OMEN helper.
+            var ring = (Border)HomeSchoolTabTests.Field(view, "_laptopTileRing");
+            Assert.Equal(Visibility.Collapsed, ring.Visibility);
+            HomeSchoolTabTests.Invoke(view, "TapLaptopMode", 2);
+            Assert.Equal("performance", HomeSchoolTabTests.Field(view, "_laptopModeArmed"));
+            Assert.Equal(Visibility.Visible, ring.Visibility);
+            Assert.Equal(Loc.Get("control.laptop.tapAgain"), readout.Text);
+            Assert.Equal(Loc.Get("control.laptop.performance") + "?", ((Grid)HomeSchoolTabTests.Field(view, "_laptopTileName")).Tag);
+            // A tap on the mode it is in calls it off.
+            HomeSchoolTabTests.Invoke(view, "TapLaptopMode", 1);
+            Assert.Null(HomeSchoolTabTests.Field(view, "_laptopModeArmed"));
+            Assert.Equal(Visibility.Collapsed, ring.Visibility);
+
+            // The helper stops answering: the tile goes, a read without numbers keeps it.
+            snapshot.GetType().GetField("Laptop")!.SetValue(snapshot, null);
+            HomeSchoolTabTests.Invoke(view, "BuildCompactSystem", snapshot);
+            Assert.Equal(Visibility.Collapsed, tile.Visibility);
+        }
+        finally
+        {
+            HomeSchoolTabTests.SetField(view, "_gpuSampling", false);
+            host.Close();
+        }
+    });
+
+    [Fact]
+    public void ALegionKeepsItsOwnTile() => SharedStaTestRunner.Run(() =>
+    {
+        using var view = SystemTabTests.CreateView(legion: true);
+        Assert.Null(typeof(ControlCenterView).GetField("_laptopTile", Private)!.GetValue(view));
+    });
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(51, 0)]
+    [InlineData(53, 1)]
+    [InlineData(120, 2)]
+    [InlineData(400, 2)]
+    public void TapsMapToTheirSlot(double x, int slot) => Assert.Equal(slot, ControlCenterView.LaptopSlotAt(x));
+
+    [Theory]
+    [InlineData(654u, 65)]
+    [InlineData(700u, 70)]
+    [InlineData(0u, null)]
+    [InlineData(2000u, null)]
+    public void DriverTemperaturesAreTenthsOfADegree(uint tenths, int? celsius) => Assert.Equal(celsius, GpuTemperature.Celsius(tenths));
+
+    [Fact]
+    public void TheTileReadsTheFasterFanAndLeavesOutWhatIsMissing() => SharedStaTestRunner.Run(() =>
+    {
+        string fan = Loc.Get("control.laptop.fan", 2900.ToString("N0", Loc.GetCulture()));
+        Assert.Equal("48 °C · " + fan, ControlCenterView.TileReadout(new LaptopStatus("eco", null, 2100, 2900, 48, null, 0, null)));
+        Assert.Equal(fan, ControlCenterView.TileReadout(new LaptopStatus("eco", null, null, 2900, null, null, 0, null)));
+        Assert.Equal("", ControlCenterView.TileReadout(new LaptopStatus("eco", null, null, null, null, null, 0, null)));
     });
 
     private static Border Button(DependencyObject root, string text)

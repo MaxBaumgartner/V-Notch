@@ -465,6 +465,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         public SystemStats? Stats;
         public List<ProcessLoad>? Top;
         public LaptopStatus? Laptop;
+        public int? GpuTemp;
         public List<OutputDevice>? Outputs;
         public List<AudioSessionInfo>? Apps;
         public WaveXlrState? WaveXlr;
@@ -486,7 +487,11 @@ public partial class ControlCenterView : UserControl, IDisposable
             }
         }
         if (bluetoothOn != false) s.Devices = BluetoothControl.Paired();
-        if (withStats) s.Laptop = LaptopControl.Read();
+        if (withStats)
+        {
+            s.Laptop = LaptopControl.Read();
+            s.GpuTemp = GpuTemperature.Read();
+        }
         if (Page == ControlCenterPage.System && withStats) ReadSound(s);
         return s;
     }

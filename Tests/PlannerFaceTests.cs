@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -69,6 +70,66 @@ public sealed class PlannerFaceTests
             window.Close();
             view.Dispose();
             Loc.SetLanguage(language);
+        }
+    });
+
+    [Fact]
+    public void APlannersSchoolFillsDavidsSchoolTabInTheAppsLanguage() => SharedStaTestRunner.Run(() =>
+    {
+        var now = new DateTimeOffset(2026, 11, 24, 9, 0, 0, TimeSpan.FromHours(1));
+        var timetable = (JsonArray)JsonNode.Parse("""
+            [
+              { "date": "2026-11-24", "start": "08:00", "end": "08:50", "subject": "0WMC", "name": "Web Apps", "room": "R101", "cancelled": false, "change": "" },
+              { "date": "2026-11-24", "start": "08:55", "end": "09:45", "subject": "0AM", "name": "Mathe", "room": "R112", "cancelled": false, "change": "" },
+              { "date": "2026-11-24", "start": "10:00", "end": "10:50", "subject": "0DBI", "name": "", "room": "R202", "cancelled": false, "change": "" }
+            ]
+            """)!;
+        var events = (JsonArray)JsonNode.Parse("""
+            [
+              { "id": "m1", "title": "Abgabe: Lab 7", "sub": "WMC 1ABC", "date": "2026-11-26", "start": "23:00", "end": "23:59", "kind": "hausuebung", "repeat": "none" },
+              { "id": "t1", "title": "Mathe", "date": "2026-11-28", "start": "08:00", "end": "08:50", "kind": "schularbeit", "repeat": "none" },
+              { "id": "t2", "title": "DBI", "date": "2026-12-01", "start": "10:00", "end": "10:50", "kind": "test", "repeat": "none" }
+            ]
+            """)!;
+        string language = Loc.CurrentLanguage;
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        Loc.SetLanguage("en");
+        // Windows in German, the app in English: the tab follows the app.
+        System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+        using var client = new PiDashboardClient(() => "http://127.0.0.1:1");
+        using var view = new ControlCenterView { Page = ControlCenterPage.School };
+        try
+        {
+            view.AttachPi(client, () => false, () => false, () => "", () => "");
+            SetField(view, "_piRefreshing", true);
+            SetField(view, "_schoolNow", (Func<DateTimeOffset>)(() => now));
+            SetField(view, "_piSchool", PlannerDashboard.School(timetable, events, now.DateTime));
+            Invoke(view, "BuildPiPage");
+            view.SetDrawerOpen(true);
+            var size = new Size(552, view.MeasureContentHeight(552));
+            view.Arrange(new Rect(size));
+            view.UpdateLayout();
+
+            Assert.Equal("Lab 7", ((TextBlock)Field(view, "_schoolTitle")).Text);
+            Assert.Equal("WMC", ((TextBlock)Field(view, "_schoolSubject")).Text);
+            string meta = ((TextBlock)Field(view, "_schoolMeta")).Text;
+            Assert.StartsWith("Moodle", meta);
+            Assert.Contains("Thu", meta);
+            Assert.DoesNotContain("Do.", meta);
+            // Tests named after their subject get its short name and colour, not "MATHE".
+            var chips = Descendants<TextBlock>((Grid)Field(view, "_schoolTestChips")).Select(x => x.Text).ToList();
+            Assert.Contains("AM", chips);
+            Assert.Contains("DBI", chips);
+            Assert.DoesNotContain("MATHE", chips);
+            // Today's lessons in the drawer carry their subject codes.
+            var drawer = Descendants<TextBlock>((StackPanel)Field(view, "_drawerBody")).Select(x => x.Text).ToList();
+            Assert.Contains("WMC", drawer);
+            Assert.DoesNotContain("WEB", drawer);
+        }
+        finally
+        {
+            Loc.SetLanguage(language);
+            System.Globalization.CultureInfo.CurrentCulture = culture;
         }
     });
 

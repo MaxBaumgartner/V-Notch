@@ -899,7 +899,7 @@ public partial class ControlCenterView
         SetMetric(_cpuValue, stats.CpuPercent is { } cpu ? $"{cpu:0}" : "–", "%");
         SetMetric(_gpuValue, stats.GpuPercent is { } gpu ? $"{gpu:0}" : "–", "%");
         SetMetric(_ramValue, $"{stats.RamUsedGb:0.0}", "GB");
-        int? cpuTemp = _legion?.CpuTemp is > 0 ? _legion.CpuTemp : null, gpuTemp = _legion?.GpuTemp is > 0 ? _legion.GpuTemp : null;
+        int? cpuTemp = CpuTempNow, gpuTemp = GpuTempNow;
         if (_cpuSub != null) _cpuSub.Text = cpuTemp is { } c ? $"{c} °C" : "";
         if (_gpuSub != null) _gpuSub.Text = gpuTemp is { } g ? $"{g} °C" : "";
         if (_ramSub != null) _ramSub.Text = Say($"von {stats.RamTotalGb:0} GB", $"of {stats.RamTotalGb:0} GB");

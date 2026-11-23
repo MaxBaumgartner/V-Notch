@@ -162,7 +162,7 @@ public partial class ControlCenterView
                 var resume = SchoolAction(0xE768, Say("Sitzung fortsetzen", "Resume session"), () => Act(() => SchoolStudy.OpenClaude(folder, session.Id)));
                 var row = SchoolColumns(name, resume);
                 row.Height = 25;
-                row.ToolTip = $"{session.Title} · {session.LastWrite:g}";
+                row.ToolTip = $"{session.Title} · {session.LastWrite.ToString("g", VNotch.Services.Loc.GetCulture())}";
                 claude.Children.Add(row);
             }
 

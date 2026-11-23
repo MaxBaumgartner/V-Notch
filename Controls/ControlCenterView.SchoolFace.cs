@@ -134,7 +134,7 @@ public partial class ControlCenterView
             _schoolSubject.Text = subject;
             _schoolTitle.Text = deadline.Name;
             _schoolTitle.ToolTip = deadline.Name;
-            _schoolMeta.Text = $"{SchoolSource(deadline)}  ·  {deadline.Due.ToLocalTime():ddd, d MMM · HH:mm}";
+            _schoolMeta.Text = $"{SchoolSource(deadline)}  ·  {deadline.Due.ToLocalTime().ToString("ddd, d MMM · HH:mm", Loc.GetCulture())}";
             _schoolSlipLabel.Text = Say("Frist", "Due");
             _schoolHeroMark.Fill = new SolidColorBrush(SchoolColor(subject));
             _schoolHeroMark.Visibility = _schoolSlip.Visibility = Visibility.Visible;
@@ -175,7 +175,7 @@ public partial class ControlCenterView
             foreach (var exam in upcoming)
             {
                 string subject = ExamSubject(exam);
-                var when = SchoolText($"{Say("Test", "Test")} {exam.Date:ddd d.M.}", 12);
+                var when = SchoolText($"{Say("Test", "Test")} {exam.Date.ToString("ddd d.M.", Loc.GetCulture())}", 12);
                 var chip = new Border
                 {
                     Height = 36, CornerRadius = new CornerRadius(9), BorderBrush = SchoolRim, BorderThickness = new Thickness(1),

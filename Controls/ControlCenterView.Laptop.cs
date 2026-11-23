@@ -38,6 +38,7 @@ public partial class ControlCenterView
     /// </summary>
     private void FillLaptopModule(Snapshot s)
     {
+        EnsureSystemDrawer();
         if (_drawerMain == null || _footer == null) return;
         if (_laptopModule == null)
         {
@@ -50,7 +51,11 @@ public partial class ControlCenterView
             _drawerMain.Children.Insert(_drawerMain.Children.IndexOf(_footer), _laptopModule);
         }
         if (s.Stats == null) return;
+        _gpuTemp = s.GpuTemp;
+        // Built the first time the helper names a mode this tile knows, so a PC without one never gets it.
+        if (s.Laptop?.Mode is { } mode && Array.IndexOf(LaptopModes, mode) >= 0) EnsureLaptopTile();
         BuildLaptopSectionIfChanged(s.Laptop);
+        PaintLaptopTile(s.Laptop);
         var shown = s.Laptop != null ? Visibility.Visible : Visibility.Collapsed;
         if (_laptopModule.Visibility == shown) return;
         _laptopModule.Visibility = shown;
@@ -62,7 +67,7 @@ public partial class ControlCenterView
         _laptopStatus = laptop;
         string key = laptop == null
             ? $"none|{IsExpanded("laptop")}"
-            : $"{laptop.Mode}|{laptop.MaxFan}|{laptop.KeyboardLight}|{laptop.KeyboardZones}|{laptop.KeyboardColor}|{IsExpanded("laptop")}|{_laptopModeArmed}";
+            : $"{laptop.Mode}|{laptop.MaxFan}|{laptop.KeyboardLight}|{laptop.KeyboardZones}|{laptop.KeyboardColor}|{IsExpanded("laptop")}|{_laptopModeArmed}|{_laptopTile != null}";
         if (key != _laptopKey)
         {
             _laptopKey = key;
@@ -84,6 +89,13 @@ public partial class ControlCenterView
             return;
         }
 
+        // With the cover tile on the face, the mode is switched there; the section keeps the rest.
+        if (_laptopTile == null) AddLaptopModeRow(laptop);
+        AddLaptopSensors(laptop);
+    }
+
+    private void AddLaptopModeRow(LaptopStatus laptop)
+    {
         var modeRow = NewRow("", Loc.Get("control.laptop.mode"));
         var modes = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         foreach (string mode in LaptopModes)
@@ -97,7 +109,7 @@ public partial class ControlCenterView
                 if (_laptopModeArmed != chosen)
                 {
                     _laptopModeArmed = chosen;
-                    BuildLaptopSectionIfChanged(_laptopStatus);
+                    LaptopArmChanged();
                     DisarmLaptopModeLater(chosen);
                     return;
                 }
@@ -110,7 +122,10 @@ public partial class ControlCenterView
         }
         AddAction(modeRow, modes);
         _laptopSection.Children.Add(modeRow);
+    }
 
+    private void AddLaptopSensors(LaptopStatus laptop)
+    {
         var sensorRow = NewRow("", Loc.Get("control.laptop.sensors"));
         _laptopReadings = MakeLabel(Readings(laptop), 12, Muted);
         _laptopReadings.Margin = new Thickness(0, 0, 10, 0);
@@ -185,7 +200,7 @@ public partial class ControlCenterView
             timer.Stop();
             if (_laptopModeArmed != mode) return;
             _laptopModeArmed = null;
-            BuildLaptopSectionIfChanged(_laptopStatus);
+            LaptopArmChanged();
         };
         timer.Start();
     }
