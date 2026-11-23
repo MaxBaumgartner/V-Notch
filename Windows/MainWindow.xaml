@@ -1239,6 +1239,7 @@
                                        Visibility="{Binding Visibility, ElementName=SchoolContent}"/>
                     <ctrl:MoodBackdrop x:Name="ClaudeBackdrop"
                                        Panel.ZIndex="-1"
+                                       Background="#030303"
                                        Opacity="{Binding Opacity, ElementName=ClaudeContent}"
                                        Visibility="{Binding Visibility, ElementName=ClaudeContent}"/>
 
@@ -1838,6 +1839,7 @@
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center"
                                            Visibility="Collapsed"/>
+                                  <Ellipse x:Name="NotificationAllowanceMark" Width="5" Height="5" Visibility="Collapsed"/>
                             </Grid>
                             <TextBlock ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" x:Name="ClaudeNotificationTitle"
                                        Text=""
@@ -3569,7 +3571,7 @@
                     <Grid x:Name="ClaudeContent"
                           Opacity="0"
                           Visibility="Collapsed"
-                          Margin="20,34,20,14"
+                          Margin="0,34,0,0"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Top"
                           MouseLeftButtonDown="SecondaryContent_Click"

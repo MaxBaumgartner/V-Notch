@@ -185,10 +185,10 @@ public partial class ControlCenterView
     /// </summary>
     private void RefitDrawer()
     {
-        if (!_drawerOpen || _drawerDragging || _drawerHeight == null) return;
+        if (!_drawerOpen || _drawerDragging || _drawerWheelActive || _drawerHeight == null) return;
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
-            if (_disposed || !_drawerOpen || _drawerDragging || _drawerHeight == null) return;
+            if (_disposed || !_drawerOpen || _drawerDragging || _drawerWheelActive || _drawerHeight == null) return;
             double target = MeasureDrawer();
             if (Math.Abs(target - DrawerHeight) < .5) return;
             if (!IsVisible || AnimationConfig.ReduceMotion)

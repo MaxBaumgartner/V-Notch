@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using VNotch.Services;
+using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using VNotch.Controllers;
 using VNotch.Services.ClaudeCode;
 
@@ -42,9 +45,12 @@ public partial class MainWindow
         }
     }
 
-    // Amber at half left, rosé when it gets tight: the Claude tab's own colours for "waits" and "near the limit".
-    private static readonly Brush AllowanceHalfInk = Frozen(Color.FromRgb(0xD6, 0xB0, 0x7E));
+    private static readonly Brush AllowanceHalfInk = Frozen(Color.FromRgb(0xD2, 0xAE, 0x7C));
     private static readonly Brush AllowanceLowInk = Frozen(Color.FromRgb(0xD2, 0x85, 0x7E));
+    private static readonly Brush AllowanceWhite = Frozen(Color.FromRgb(0xF5, 0xF5, 0xF7));
+    private static readonly Brush DefaultPillStatus = Frozen(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF));
+    private bool _allowancePill;
+    private bool _allowancePillPaused;
 
     private static Brush Frozen(Color color)
     {
@@ -54,35 +60,70 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Runs with the Claude sweep (every 15 s): when a Claude or Codex limit drops below 50 % or 20 % left, a short pill
-    /// says so, once per threshold and window. Uses the limits the Claude tab already read; nothing extra is fetched.
+    /// Runs on usage updates and during the Claude sweep, using the same history for the tab and the compact pill.
     /// </summary>
     private void CheckAllowanceAlerts()
     {
         if (_cleanedUp || _settings == null) return;
         var sent = _settings.AllowanceAlertsSent ??= new();
-        bool changed = AllowanceAlerts.Prune(sent, DateTimeOffset.UtcNow);
+        var now = DateTimeOffset.UtcNow;
+        bool changed = AllowanceAlerts.Prune(sent, now);
         var claude = _claudeUsage?.Latest;
-        var codex = _codexUsage?.Latest;
-        // One pill per sweep; the next sweep picks up whatever else is due.
-        bool shown = Try("Claude", "5h", claude?.FiveHour, "control.claude.limit5h", isClaude: true)
-            || Try("Claude", "week", claude?.Week, "control.claude.limitWeek", isClaude: true)
-            || Try("Codex", "5h", codex?.FiveHour, "control.claude.limit5h", isClaude: false)
-            || Try("Codex", "week", codex?.Week, "control.claude.limitWeek", isClaude: false);
+        bool shown = Try("Claude", "5h", claude?.FiveHour) || Try("Claude", "week", claude?.Week);
+        foreach (var account in ClaudeCenter.AccountSlots)
+        {
+            if (shown) break;
+            shown = Try(account.DisplayName, "5h", account.FiveHour) || Try(account.DisplayName, "week", account.Week);
+        }
         if (changed || shown) _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
 
-        bool Try(string source, string kind, ClaudeLimitWindow? window, string labelKey, bool isClaude)
+        bool Try(string source, string kind, ClaudeLimitWindow? window)
         {
+            if (window?.ResetsAt is not { } reset || reset <= now) return false;
             if (AllowanceAlerts.Due(source, kind, window, sent) is not { } due) return false;
-            // Busy notch, or another pill is up: never push it away; keep the warning for later instead of losing it.
-            if (_compactPillArbiter.ActiveSlot != CompactPillSlot.None) return false;
-            if (!ShowNotchPill(source, Loc.Get("control.claude.allowanceLow", Loc.Get(labelKey), due.Threshold), appIcon: null,
-                    isClaude: isClaude, tap: null, glyph: isClaude ? null : "\uE7BA",
-                    accent: due.Threshold <= 20 ? AllowanceLowInk : AllowanceHalfInk)) return false;
-            // Remembered only once it was really on screen.
+            bool weekly = kind == "week";
+            string title = weekly ? Loc.Get("control.claude.allowanceWeek", source) : source;
+            var culture = CultureInfo.GetCultureInfo(Loc.CurrentLanguage == "de" ? "de-DE" : "en-US");
+            string resetText = reset.ToLocalTime().ToString(weekly ? "ddd HH:mm" : "HH:mm", culture);
+            string status = Loc.Get(weekly ? "control.claude.allowanceWeeklyLeft" : "control.claude.allowanceHourlyLeft",
+                Math.Ceiling(Math.Clamp(100 - window.UsedPercent, 0, 100)), resetText);
+            if (_isClaudeView && !_isAnimating)
+            {
+                if (!ClaudeCenter.TryShowAllowanceNotice(title + " " + status, due.Threshold)) return false;
+            }
+            else
+            {
+                if (_compactPillArbiter.ActiveSlot != CompactPillSlot.None ||
+                    !ShowNotchPill(title, status, appIcon: null, isClaude: false, tap: null, duration: AllowanceAlerts.DisplayTime))
+                    return false;
+                SetAllowancePill(due.Threshold <= 20 ? AllowanceLowInk : AllowanceHalfInk);
+            }
             sent.AddRange(due.Keys);
-            RuntimeLog.Info("CLAUDE-USAGE", $"{source} {kind} below {due.Threshold} % left ({100 - window!.UsedPercent:0} %)");
+            RuntimeLog.Info("CLAUDE-USAGE", $"{source} {kind} reached {due.Threshold} % left");
             return true;
         }
+    }
+
+    private void SetAllowancePill(Brush? mark)
+    {
+        _allowancePill = mark != null;
+        _allowancePillPaused = false;
+        NotificationAllowanceMark.Visibility = mark == null ? Visibility.Collapsed : Visibility.Visible;
+        ClaudeNotificationStatus.Foreground = mark == null ? DefaultPillStatus : AllowanceWhite;
+        if (mark is not SolidColorBrush color) return;
+        ClaudeNotificationTitle.Foreground = AllowanceWhite;
+        NotificationBellIcon.Visibility = Visibility.Collapsed;
+        NotificationAllowanceMark.Fill = mark;
+        NotificationAllowanceMark.Effect = new DropShadowEffect
+        {
+            Color = color.Color, BlurRadius = 12, ShadowDepth = 0, Opacity = .75
+        };
+    }
+
+    private void ResumeAllowancePill()
+    {
+        if (!_allowancePillPaused) return;
+        _allowancePillPaused = false;
+        _claudeNotificationTimer?.Start();
     }
 }

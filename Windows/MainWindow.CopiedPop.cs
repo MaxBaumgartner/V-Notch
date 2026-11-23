@@ -49,9 +49,8 @@ public partial class MainWindow
     {
         _phoneSendToken++;
         string status = DescribeClipboard();
-        ShowNotchPill(Loc.Get("clipboard.copied").TrimStart('✓', ' '), status, null, isClaude: false, tap: null,
-            glyph: CopiedGlyph, duration: CopiedPillDuration);
-        if (!_isClaudeNotificationVisible) return;
+        if (!ShowNotchPill(Loc.Get("clipboard.copied").TrimStart('✓', ' '), status, null, isClaude: false, tap: null,
+            glyph: CopiedGlyph, duration: CopiedPillDuration)) return;
         _isCopiedPillShown = true;
         _copiedPillStatus = status;
     }

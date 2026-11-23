@@ -25,6 +25,7 @@ public sealed class MoodBackdrop : Grid
     private readonly Field[] _fields;
     private bool _drifting;
     private bool _driftWanted;
+    private bool _roomLights;
 
     private sealed class Field
     {
@@ -65,6 +66,18 @@ public sealed class MoodBackdrop : Grid
 
     internal double Intensity { get => _canvas.Opacity; set => _canvas.Opacity = Math.Clamp(value, 0, 1); }
 
+    /// <summary>Lets Home place individual lights in notch coordinates under the shared tab fade and glass suppression.</summary>
+    internal Canvas UseRoomLights()
+    {
+        _roomLights = true;
+        _canvas.Children.Clear();
+        _canvas.Width = _canvas.Height = double.NaN;
+        _canvas.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _canvas.VerticalAlignment = VerticalAlignment.Stretch;
+        Intensity = 1;
+        return _canvas;
+    }
+
     private Field AddField(double x, double y, double w, double h, double strength, double dx, double dy, double ds, double seconds)
     {
         var core = new GradientStop(Colors.Transparent, 0);
@@ -96,6 +109,7 @@ public sealed class MoodBackdrop : Grid
     /// </summary>
     public void SetMood(Color main, Color warmer, Color cooler, double ms)
     {
+        if (_roomLights) return;
         (_main, _warmer, _cooler) = (main, warmer, cooler);
         Paint(_fields[0], main, ms);
         Paint(_fields[1], warmer, ms);
@@ -109,13 +123,13 @@ public sealed class MoodBackdrop : Grid
     /// strength, instead of a faint wash over the whole notch. The rest of the notch stays black.
     /// <paramref name="center"/> is in this backdrop's coordinates.
     /// </summary>
-    public void Gather(Point center)
+    public void Gather(Point center, double verticalScale = 1)
     {
         if (ActualWidth <= 0) return;
         double x = center.X - (ActualWidth - Width0) / 2, y = center.Y;
-        Place(_fields[0], x, y, 360, 220, 0.62);
-        Place(_fields[1], x + 70, y - 110, 290, 170, 0.26);
-        Place(_fields[2], x - 60, y + 80, 270, 150, 0.16);
+        Place(_fields[0], x, y, 360, 220 * verticalScale, 0.62);
+        Place(_fields[1], x + 70, y - 110 * verticalScale, 290, 170 * verticalScale, 0.26);
+        Place(_fields[2], x - 60, y + 80 * verticalScale, 270, 150 * verticalScale, 0.16);
         Intensity = 1;
         SetMood(_main, _warmer, _cooler, 0);
     }
@@ -149,7 +163,7 @@ public sealed class MoodBackdrop : Grid
         stop.BeginAnimation(GradientStop.ColorProperty, fade, HandoffBehavior.SnapshotAndReplace);
     }
 
-    private static Color WithAlpha(Color color, double alpha) => Color.FromArgb((byte)Math.Round(Math.Clamp(alpha, 0, 1) * 255), color.R, color.G, color.B);
+    private static Color WithAlpha(Color color, double alpha) => color.A == 0 ? color : Color.FromArgb((byte)Math.Round(Math.Clamp(alpha, 0, 1) * 255), color.R, color.G, color.B);
 
     /// <summary>
     /// Starts or stops the slow wander. Only while the tab is on screen: any running animation repaints the

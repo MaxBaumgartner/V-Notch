@@ -37,6 +37,7 @@ public partial class MainWindow
         Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
         VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 6, 44, 0), IsHitTestVisible = false
     };
+    private readonly Border _compactSchoolStatus = new() { Visibility = Visibility.Collapsed };
     private readonly TextBlock _compactWarningText = new() { FontSize = 10.5, Foreground = new SolidColorBrush(Color.FromRgb(231, 191, 185)) };
     private readonly Border _compactLoadWarning = new()
     {
@@ -62,6 +63,8 @@ public partial class MainWindow
         _compactLoadWarning.Child = _compactWarningText;
         _compactStatusHost.Children.Add(_compactLoadWarning);
         _compactStatusHost.Children.Add(_compactTabStatus);
+        _compactSchoolStatus.Child = SchoolCenter.SchoolStatus;
+        _compactStatusHost.Children.Add(_compactSchoolStatus);
         var batteryText = new TextBlock { FontSize = 11.5, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center };
         batteryText.SetBinding(TextBlock.TextProperty, new Binding("Text") { Source = BatteryPercent });
         _compactSystemBattery.Children.Add(batteryText);
@@ -74,7 +77,6 @@ public partial class MainWindow
         _compactStatusHost.Children.Add(_compactSystemBattery);
         open.Children.Add(_compactStatusHost);
         PiCenter.StatusChanged += UpdateCompactTabStatus;
-        SchoolCenter.StatusChanged += UpdateCompactTabStatus;
         ControlCenter.StatusChanged += UpdateCompactTabStatus;
         _shellAttachment = new NotchShellAttachment(NotchBorder, open, () => _collapsedHeight,
             CollapsedContent, MusicCompactContent);
@@ -337,11 +339,14 @@ public partial class MainWindow
     {
         var center = ActiveDrawer;
         bool system = ReferenceEquals(center, ControlCenter);
+        bool school = ReferenceEquals(center, SchoolCenter);
         _compactStatusHost.Visibility = center == null ? Visibility.Collapsed : Visibility.Visible;
+        _compactSchoolStatus.Visibility = school ? Visibility.Visible : Visibility.Collapsed;
+        _compactTabStatus.Visibility = school ? Visibility.Collapsed : Visibility.Visible;
         _compactSystemBattery.Visibility = system && _settings?.ShowBatteryIndicator == true ? Visibility.Visible : Visibility.Collapsed;
         string status = center?.CompactStatus ?? "";
         _compactTabStatus.Inlines.Clear();
-        if (!system)
+        if (!system && !school)
         {
             if (status.StartsWith("♨ ", StringComparison.Ordinal))
             {
@@ -377,9 +382,10 @@ public partial class MainWindow
         if (ActiveDrawer is not { } center || !center.MoveDrawer(deltaY)) return;
         handled = true;
         _shellAttachment.Detach(true);
-        double height = _shellDragStartHeight + center.DrawerHeight - _shellDrawerStartHeight;
-        Motion.Stop(NotchBorder, HeightProperty, height);
         FrameworkElement host = ReferenceEquals(center, PiCenter) ? PiContent : ReferenceEquals(center, SchoolCenter) ? SchoolContent : TimerContent;
+        double height = ReferenceEquals(center, PiCenter) ? MeasureHomeViewHeight() :
+            Math.Min(CenterViewMaxHeight, _shellDragStartHeight + center.DrawerHeight - _shellDrawerStartHeight);
+        Motion.Stop(NotchBorder, HeightProperty, height);
         Motion.Stop(host, HeightProperty, Math.Max(0, height - host.Margin.Top - host.Margin.Bottom));
     }
 

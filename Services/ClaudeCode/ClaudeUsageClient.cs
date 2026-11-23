@@ -25,7 +25,7 @@ internal sealed record ClaudeResetGrant(string Id, ClaudeResetKind Kind, int Res
 internal sealed record ClaudeResetResult(bool Success, string? Reason = null);
 
 internal sealed record ClaudeLimits(ClaudeLimitWindow? FiveHour, ClaudeLimitWindow? Week,
-    IReadOnlyList<ClaudeResetGrant>? ResetGrants = null)
+    IReadOnlyList<ClaudeResetGrant>? ResetGrants = null, string? Plan = null)
 {
     public IReadOnlyList<ClaudeResetGrant> Grants => ResetGrants ?? Array.Empty<ClaudeResetGrant>();
 }
@@ -88,7 +88,7 @@ internal sealed class ClaudeUsageClient : IDisposable
             if (!afterClaim && (now < _blockedUntilUtc || now - _lastAttemptUtc < minAge)) return null;
             if (afterClaim) _blockedUntilUtc = DateTime.MinValue;
             _lastAttemptUtc = now;
-            string? token = ReadAccessToken(out bool expired);
+            string? token = ReadAccessToken(out bool expired, out string? plan);
             if (token == null && expired)
                 token = await ClaudeTokenRefresher.RefreshAsync(_http, _credentialsPath, ct).ConfigureAwait(false);
             if (token == null)
@@ -112,7 +112,7 @@ internal sealed class ClaudeUsageClient : IDisposable
             string json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             var limits = Parse(json);
             if (cliVersion == null && limits != null) limits = limits with { ResetGrants = null };
-            if (limits != null) Latest = limits;
+            if (limits != null) Latest = limits = limits with { Plan = plan };
             return limits;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or UnauthorizedAccessException or JsonException)
@@ -160,7 +160,7 @@ internal sealed class ClaudeUsageClient : IDisposable
         {
             string? version = FindCliVersion(_versionsPath);
             if (version == null) return new(false, "unavailable");
-            string? token = ReadAccessToken(out bool expired);
+            string? token = ReadAccessToken(out bool expired, out _);
             if (token == null && expired)
                 token = await ClaudeTokenRefresher.RefreshAsync(_http, _credentialsPath, ct).ConfigureAwait(false);
             if (token == null) return new(false, "auth");
@@ -274,15 +274,17 @@ internal sealed class ClaudeUsageClient : IDisposable
     }
 
     /// <summary>The current access token; <paramref name="expired"/> says a renewal could help when there is none.</summary>
-    private string? ReadAccessToken(out bool expired)
+    private string? ReadAccessToken(out bool expired, out string? plan)
     {
         expired = false;
+        plan = null;
         try
         {
             if (JsonNode.Parse(File.ReadAllText(_credentialsPath)) is not JsonObject root ||
                 root["claudeAiOauth"] is not JsonObject oauth)
                 return null;
             string? token = ClaudeTokenRefresher.UsableAccessToken(oauth, DateTimeOffset.UtcNow);
+            plan = CodexUsageClient.PlanName(String(oauth["subscriptionType"]));
             expired = token == null && oauth["refreshToken"] != null;
             return token;
         }

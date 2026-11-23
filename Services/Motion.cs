@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Windows;
@@ -32,6 +32,25 @@ internal static partial class Motion
     public static readonly SpringMotion Glide = Ms(420, 0.28);
     public static readonly SpringMotion Shift = Ms(380, 0.05);
     public static readonly SpringMotion Flick = Ms(480, 0.30);
+    public static readonly SpringMotion DrawerScrub = Ms(440, 0);
+    public static readonly TimeSpan DrawerWheelIdle = TimeSpan.FromMilliseconds(120);
+    public static readonly TimeSpan HomePeakSample = TimeSpan.FromMilliseconds(50);
+    public static readonly TimeSpan HomePeakRefresh = TimeSpan.FromSeconds(2);
+    public static readonly TimeSpan HomeHeatCycle = TimeSpan.FromSeconds(6);
+
+    // Exact step for a critically damped spring with a target held constant during this frame.
+    public static (double Position, double Velocity) FollowCritical(double position, double velocity,
+        double target, double seconds, SpringMotion spring)
+    {
+        double omega = spring.AngularFrequency;
+        double offset = position - target;
+        double slope = velocity + omega * offset;
+        double decay = Math.Exp(-omega * seconds);
+        double rest = offset + slope * seconds;
+        return (target + decay * rest, decay * (slope - omega * rest));
+    }
+
+    public static readonly SpringMotion Breath = Ms(1850, 0);
 
     // Tile: content arriving, staggered by StaggerMs from TileFromScale.
     public static readonly SpringMotion Tile = Ms(450, 0.50);

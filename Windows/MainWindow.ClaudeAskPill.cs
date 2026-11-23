@@ -44,8 +44,7 @@ public partial class MainWindow
         if (_cleanedUp || _isExpanded || _isAnimating || _isGreetingActive || _isMusicExpanded || !CanShowClaudeAttention) return false;
         string name = _claudeTracker?.GetSessions().FirstOrDefault(s => s.Id == request.SessionId)?.Name ?? "Claude";
         string status = DescribeAsk(request);
-        ShowNotchPill(name, status, null, isClaude: true, tap: OpenClaudeTabFromPill);
-        if (!_isClaudeNotificationVisible) return false;
+        if (!ShowNotchPill(name, status, null, isClaude: true, tap: OpenClaudeTabFromPill)) return false;
         // Stays until it is settled.
         _claudeNotificationTimer?.Stop();
         _askRequest = request;

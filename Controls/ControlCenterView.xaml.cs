@@ -69,21 +69,17 @@ public partial class ControlCenterView : UserControl, IDisposable
     // Picks on a question card, by request id, kept while other sessions redraw the list.
     private readonly Dictionary<string, Dictionary<string, List<string>>> _questionPicks = new(StringComparer.Ordinal);
     // Session and request cards on the page, so only new ones animate in on a rebuild.
-    private readonly HashSet<string> _shownCards = new(StringComparer.Ordinal);
-    private readonly List<(string Key, FrameworkElement Element)> _cardScratch = new();
     // The session a message is being typed for, and what is typed so far (kept across rebuilds).
     private string? _composingSessionId;
     private string _composeDraft = "";
     private TextBox? _composerBox;
     private bool _rebuildAfterComposing;
     // Rings around busy sessions' dots; they ripple only while the tab is on screen.
-    private readonly List<System.Windows.Shapes.Ellipse> _ripples = new();
     private const int RippleFps = 30;
 
     private ClaudeSessionTracker? _claude;
     private ClaudeHookServer? _hookServer;
     private ClaudeUsageClient? _usage;
-    private CodexUsageClient? _codexUsage;
     private Func<bool> _isLocalOnly = () => true;
     private Func<bool> _usesGlass = () => false;
 
@@ -146,6 +142,7 @@ public partial class ControlCenterView : UserControl, IDisposable
                 break;
             case ControlCenterPage.Claude:
                 RefreshUsage(UsageViewMinAge);
+                RefreshCodexUsage();
                 BuildClaudeSection();
                 break;
             default:
@@ -185,15 +182,15 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void RefreshOnceShellIsReady() => Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Refresh));
 
     /// <summary>For the <see cref="ControlCenterPage.Claude"/> page.</summary>
-    internal void AttachClaude(ClaudeSessionTracker tracker, ClaudeHookServer hookServer, ClaudeUsageClient usage, CodexUsageClient codexUsage,
+    internal void AttachClaude(ClaudeSessionTracker tracker, ClaudeHookServer hookServer, ClaudeUsageClient usage,
         Func<bool> isLocalOnly, Func<bool> usesGlass)
     {
         _claude = tracker;
         _hookServer = hookServer;
         _usage = usage;
-        _codexUsage = codexUsage;
         _isLocalOnly = isLocalOnly;
         _usesGlass = usesGlass;
+        ControlScrollViewer.OpacityMask = null;
         tracker.Changed += OnClaudeChanged;
         tracker.PermissionRequested += OnPermissionRequested;
         tracker.UsageMayHaveChanged += OnUsageMayHaveChanged;
@@ -219,20 +216,23 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (_displayApi is IDisposable displayApi) displayApi.Dispose();
         _piTimer?.Stop();
         _schoolCountdownTimer?.Stop();
+        StopDrawerWheel();
         if (_drawerHeight != null) Motion.Stop(_drawerHeight, WeatherTween.ValueProperty);
         StopLiveTexts();
         DetachOutput();
         CoverColorsFile.Changed -= OnCoverColorsChanged;
         _legionTimer?.Stop();
         _legionLoops.StopAll();
-        _homeLoops.StopAll();
+        UpdateHomeRendering();
         _targetSend?.Stop();
         _wifiLoops.StopAll();
         _bluetoothLoops.StopAll();
         _backdrop?.SetDrifting(false);
-        StopClaudeLoops();
         StopTokenClock();
         StopCodexClock();
+        DisposeCodexAccounts();
+        StopClaudeFaceMotion();
+        HideAccountNotice();
         StopResetFeedback();
         SetGpuSampling(false);
         StopPeaks();
@@ -252,11 +252,17 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     #region Lifecycle
 
+    private TabLedger? _seen;
+
+    /// <summary>What this tab last showed; faces ask it which values changed while the tab was away.</summary>
+    internal TabLedger Seen => _seen ??= new TabLedger(() => IsVisible);
+
     private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         if (_disposed) return;
         if (IsVisible)
         {
+            Seen.Shown();
             if (Page == ControlCenterPage.System)
             {
                 ForgetStaleHistory();
@@ -269,8 +275,6 @@ public partial class ControlCenterView : UserControl, IDisposable
             {
                 RefreshUsage(UsageViewMinAge);
                 _clockTimer.Start();
-                StartRipples();
-                ApplyClaudeLoops();
                 StartTokenClock();
                 StartCodexClock();
                 if (_resetStates.Count > 0) StartResetFeedback();
@@ -286,24 +290,21 @@ public partial class ControlCenterView : UserControl, IDisposable
                 OnLegionVisibleChanged(true);
                 DrawSparksIn();
             }
-            // The colour fields drift only while the tab is on screen.
-            if (_backdrop != null)
-            {
-                _backdrop.Suppressed = _usesGlass();
-                _backdrop.SetDrifting(Page == ControlCenterPage.Claude);
-            }
+            if (_backdrop != null) _backdrop.Suppressed = Page != ControlCenterPage.Claude && _usesGlass();
         }
         else
         {
+            Seen.Hidden();
             _refreshTimer.Stop();
             _clockTimer.Stop();
             StopLiveTexts();
             if (_outputOpen) SetOutputOpen(false);
-            StopRipples();
-            StopClaudeLoops();
             StopTokenClock();
             StopCodexClock();
             StopResetFeedback();
+            StopClaudeFaceMotion();
+            HideAccountNotice();
+            if (_accountsOpen) SetAccountsOpen(false, animate: false);
             SetGpuSampling(false);
             if (Page == ControlCenterPage.System)
             {
@@ -426,7 +427,11 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (_usage == null || _isLocalOnly()) return;
         try
         {
-            if (await Task.Run(() => _usage.RefreshAsync(minAge)) != null && !_disposed) BuildClaudeSection();
+            if (await Task.Run(() => _usage.RefreshAsync(minAge)) != null && !_disposed)
+            {
+                BuildClaudeSection();
+                AllowanceDataChanged?.Invoke();
+            }
         }
         catch (Exception ex)
         {
@@ -1313,7 +1318,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         var padding = ControlScrollViewer.Padding;
         var bleed = ControlRoot.Margin;
         ControlRoot.Measure(new Size(Math.Max(0, width - padding.Left - padding.Right + bleed.Left + bleed.Right), double.PositiveInfinity));
-        return Math.Ceiling(Math.Max(0, ControlRoot.DesiredSize.Height - bleed.Top - bleed.Bottom));
+        double height = Math.Max(0, ControlRoot.DesiredSize.Height - bleed.Top - bleed.Bottom);
+        return IsLayoutFollowing ? height : Math.Ceiling(height);
     }
 
     private Func<bool>? _soundsOn;
@@ -1636,41 +1642,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         };
         row.Children.Add(remove);
         return row;
-    }
-
-    private void StartRipples()
-    {
-        if (AnimationConfig.ReduceMotion || !IsVisible || Page != ControlCenterPage.Claude) return;
-        var grow = new DoubleAnimation(0.6, 1.7, new Duration(TimeSpan.FromMilliseconds(1600)))
-        {
-            RepeatBehavior = RepeatBehavior.Forever,
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-        var fade = new DoubleAnimation(0.45, 0, new Duration(TimeSpan.FromMilliseconds(1600)))
-        {
-            RepeatBehavior = RepeatBehavior.Forever,
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-        Timeline.SetDesiredFrameRate(grow, RippleFps);
-        Timeline.SetDesiredFrameRate(fade, RippleFps);
-        foreach (var ring in _ripples)
-        {
-            var scale = (ScaleTransform)ring.RenderTransform;
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
-            ring.BeginAnimation(OpacityProperty, fade);
-        }
-    }
-
-    private void StopRipples()
-    {
-        foreach (var ring in _ripples)
-        {
-            var scale = (ScaleTransform)ring.RenderTransform;
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-            ring.BeginAnimation(OpacityProperty, null);
-        }
     }
 
     private static void Shake(FrameworkElement element)
@@ -2036,6 +2007,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     {
         DateTime now = DateTime.UtcNow;
         foreach (var (label, started) in _elapsedLabels) label.Text = FormatElapsed(now - started);
+        UpdateAccountElapsed();
     }
 
     internal static string FormatElapsed(TimeSpan span)
@@ -2581,7 +2553,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         else ControlScrollViewer.ScrollToTop();
         if (Page == ControlCenterPage.Claude)
         {
-            RevealClaude(baseDelay);
+            // The account face stays still when the tab opens.
             return;
         }
         if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.System) return;
@@ -2597,23 +2569,6 @@ public partial class ControlCenterView : UserControl, IDisposable
         // Placeholders own their motion and keep their dimmed offline opacity.
         if (row is SkeletonPlaceholder) return;
         PopIn(row, delay.TotalMilliseconds);
-    }
-
-    /// <summary>
-    /// While the tab is open, sessions and requests that were not on screen before fall in like the rows
-    /// did when it opened; everything that stayed just stays.
-    /// </summary>
-    private void RevealNewCards(List<(string Key, FrameworkElement Element)> cards)
-    {
-        bool animate = IsVisible && !AnimationConfig.ReduceMotion;
-        int index = 0;
-        foreach (var (key, element) in cards)
-        {
-            if (animate && !_shownCards.Contains(key))
-                GlideIn(element, Motion.Stagger(index++).TotalMilliseconds);
-        }
-        _shownCards.Clear();
-        foreach (var (key, _) in cards) _shownCards.Add(key);
     }
 
     #endregion

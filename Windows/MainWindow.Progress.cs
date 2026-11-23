@@ -89,6 +89,7 @@ public partial class MainWindow
 
             if (!IsScreenPointInsideNotchVisual(pt))
             {
+                if (ActiveDrawer?.DismissDrawer() == true) return;
                 if (DateTime.UtcNow < _suppressOutsideClickUntilUtc)
                 {
                     RuntimeLog.Log("COLLAPSE-BLOCKED",

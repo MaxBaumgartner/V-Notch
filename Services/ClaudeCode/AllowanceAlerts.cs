@@ -13,6 +13,7 @@ internal static class AllowanceAlerts
 {
     /// <summary>Percent left at which to speak up, highest first.</summary>
     internal static readonly int[] Thresholds = [50, 20];
+    internal static readonly TimeSpan DisplayTime = TimeSpan.FromSeconds(9);
 
     private static readonly TimeSpan SameWindow = TimeSpan.FromMinutes(15);
 
@@ -29,7 +30,7 @@ internal static class AllowanceAlerts
         int threshold = 0;
         foreach (int t in Thresholds)
         {
-            if (left >= t || WasSent(source, kind, t, resets, sent)) continue;
+            if (left > t || WasSent(source, kind, t, resets, sent)) continue;
             (keys ??= new()).Add(Key(source, kind, t, resets));
             threshold = t;
         }
@@ -62,6 +63,8 @@ internal static class AllowanceAlerts
         if (parts.Length != 4 || !int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out threshold) ||
             !long.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out long minutes))
             return false;
+        if (minutes < DateTimeOffset.MinValue.ToUnixTimeSeconds() / 60 ||
+            minutes > DateTimeOffset.MaxValue.ToUnixTimeSeconds() / 60) return false;
         source = parts[0]; kind = parts[1];
         resets = DateTimeOffset.FromUnixTimeSeconds(minutes * 60);
         return true;

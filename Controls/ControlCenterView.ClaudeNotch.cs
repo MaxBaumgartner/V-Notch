@@ -1,5 +1,7 @@
 using System;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
 using VNotch.Services;
 
 namespace VNotch.Controls;
@@ -26,20 +28,37 @@ public partial class ControlCenterView
         BuildClaudeSection();
     }
 
-    /// <summary>An open eye while sessions show in the closed notch; crossed out (and dimmed) while they stay in this tab.</summary>
-    private FrameworkElement? ClaudeNotchButton()
+    private Button? _claudeEye;
+    private TextBlock? _claudeEyeGlyph;
+
+    /// <summary>
+    /// The eye in the face's top right corner, above the turn's timer: open while sessions show in the closed notch,
+    /// crossed out (and dimmed) while they stay in this tab.
+    /// </summary>
+    private void PaintClaudeNotchButton()
     {
-        if (_claudeInNotch == null) return null;
-        bool on = _claudeInNotch();
-        var eye = IconButton(on ? "" : "", Loc.Get(on ? "control.claude.notchOn" : "control.claude.notchOff"), () =>
+        if (_claudeInNotch == null || _claudeFace == null) return;
+        if (_claudeEye == null || _claudeEyeGlyph == null)
         {
-            _setClaudeInNotch?.Invoke(!_claudeInNotch());
-            ClaudeNotchSwitchChanged();
-        });
-        eye.Width = eye.Height = 24;
-        eye.Margin = new Thickness(0, 0, 8, 0);
-        eye.Opacity = on ? 1 : 0.6;
-        return eye;
+            _claudeEyeGlyph = new TextBlock
+            {
+                FontFamily = FluentFont, FontSize = 13, Foreground = AccountWhite,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            };
+            _claudeEye = AccountButton(_claudeEyeGlyph, 30, 26, 13);
+            _claudeEye.Click += (_, _) =>
+            {
+                _setClaudeInNotch?.Invoke(!_claudeInNotch());
+                ClaudeNotchSwitchChanged();
+            };
+            PlaceAccount(_accountFront, _claudeEye, ClaudeFaceWidth - 24 - 30, 3);
+        }
+        bool on = _claudeInNotch();
+        string tip = Loc.Get(on ? "control.claude.notchOn" : "control.claude.notchOff");
+        _claudeEyeGlyph.Text = on ? "\uE7B3" : "\uED1A";
+        _claudeEyeGlyph.Opacity = on ? 1 : .6;
+        _claudeEye.ToolTip = tip;
+        AutomationProperties.SetName(_claudeEye, tip);
     }
 
     #endregion

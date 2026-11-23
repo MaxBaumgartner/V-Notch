@@ -22,13 +22,13 @@ public sealed class ClaudeResetRowTests
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
     [Fact]
-    public void ClaudeAndCodexResetsHaveUniformGridRowsAndAlignedActions() => SharedStaTestRunner.RunAsync(async ct =>
+    public void AdditionalClaudeGrantsHaveUniformGridRowsAndAlignedActions() => SharedStaTestRunner.RunAsync(async ct =>
     {
         using var fixture = new Fixture();
         await Task.Delay(1100, ct);
         fixture.Window.UpdateLayout();
         var rows = Rows(fixture.View).ToArray();
-        Assert.Equal(3, rows.Length);
+        Assert.Equal(2, rows.Length);
         double? actionLeft = null;
         double? actionRight = null;
         foreach (var row in rows)
@@ -195,7 +195,6 @@ public sealed class ClaudeResetRowTests
     {
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "vnotch-reset-test-" + Guid.NewGuid().ToString("N"));
         private readonly ClaudeUsageClient _usage;
-        private readonly CodexUsageClient _codex;
         internal CountingHandler Handler { get; } = new();
         internal ControlCenterView View { get; } = new() { Page = ControlCenterPage.Claude };
         internal Window Window { get; }
@@ -213,17 +212,13 @@ public sealed class ClaudeResetRowTests
             var limit = new ClaudeLimitWindow(35, DateTimeOffset.UtcNow.AddHours(3));
             _usage.Latest = new ClaudeLimits(limit, limit, new[]
             {
+                new ClaudeResetGrant("inline", ClaudeResetKind.FiveHour, 1, true, false, null, DateTimeOffset.UtcNow.AddDays(1)),
                 new ClaudeResetGrant("launch-2610-fable-week", ClaudeResetKind.Fable, 1, true, false, null, DateTimeOffset.Parse("2026-11-17T07:59:00Z")),
                 new ClaudeResetGrant("full-reset-2611", ClaudeResetKind.Full, 1, true, false, null, DateTimeOffset.Parse("2026-12-10T22:00:00Z"))
             });
-            _codex = new CodexUsageClient(new CountingHandler(), Path.Combine(_directory, "codex"))
-            {
-                Latest = new CodexUsage(limit, limit, new[] { new CodexResetCredit("credit", DateTimeOffset.Parse("2026-12-12T22:00:00Z")) })
-            };
-            Set(_codex, "<HasSource>k__BackingField", true);
             Set(View, "_claude", new ClaudeSessionTracker());
+            Set(View, "_claudeInstalled", true);
             Set(View, "_usage", _usage);
-            Set(View, "_codexUsage", _codex);
             Set(View, "_codexReading", true);
             // Show with local-only mode, then enable the fake redeem path after startup refreshes.
             Window = new Window
@@ -234,6 +229,7 @@ public sealed class ClaudeResetRowTests
             };
             Window.Show();
             Set(View, "_isLocalOnly", (Func<bool>)(() => false));
+            typeof(ControlCenterView).GetMethod("SetAccountsOpen", Private)!.Invoke(View, [true, false]);
             Build(View);
             Window.UpdateLayout();
         }
@@ -243,7 +239,6 @@ public sealed class ClaudeResetRowTests
             View.Dispose();
             Window.Close();
             _usage.Dispose();
-            _codex.Dispose();
             Directory.Delete(_directory, recursive: true);
         }
     }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -11,8 +12,9 @@ using System.Threading.Tasks;
 
 namespace VNotch.Services.ClaudeCode;
 
-internal sealed record CodexResetCredit(string Id, DateTimeOffset? ExpiresAt);
-internal sealed record CodexUsage(ClaudeLimitWindow? FiveHour, ClaudeLimitWindow? Week, IReadOnlyList<CodexResetCredit> Credits);
+internal sealed record CodexResetCredit(string Id, DateTimeOffset? ExpiresAt, string? AccountId = null);
+internal sealed record CodexUsage(ClaudeLimitWindow? FiveHour, ClaudeLimitWindow? Week, IReadOnlyList<CodexResetCredit> Credits,
+    string? Plan = null);
 
 /// <summary>Reads Codex's existing sign-in without renewing or changing it. Call from a background thread.</summary>
 internal sealed class CodexUsageClient : IDisposable
@@ -22,15 +24,18 @@ internal sealed class CodexUsageClient : IDisposable
     private static readonly TimeSpan FailureBackoff = TimeSpan.FromMinutes(5);
     private readonly HttpClient _http;
     private readonly string _directory;
+    private readonly bool _useRolloutFallback;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly ConcurrentDictionary<(string Account, string Credit), byte> _spentCredits = new();
     private int _redeeming;
     private DateTime _lastAttemptUtc = DateTime.MinValue;
     private DateTime _blockedUntilUtc = DateTime.MinValue;
 
-    internal CodexUsageClient(HttpMessageHandler? handler = null, string? codexDirectory = null)
+    internal CodexUsageClient(HttpMessageHandler? handler = null, string? codexDirectory = null, bool useRolloutFallback = true)
     {
         _http = new HttpClient(handler ?? new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(10) };
         _directory = codexDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        _useRolloutFallback = useRolloutFallback;
     }
 
     public CodexUsage? Latest { get; internal set; }
@@ -66,12 +71,17 @@ internal sealed class CodexUsageClient : IDisposable
                         using var creditsResponse = await _http.SendAsync(creditsRequest, ct).ConfigureAwait(false);
                         string creditsBody = await creditsResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                         if (creditsResponse.IsSuccessStatusCode)
-                            usage = (usage ?? new CodexUsage(null, null, Array.Empty<CodexResetCredit>())) with { Credits = ParseCredits(creditsBody) };
+                        {
+                            var account = auth.Value.Account;
+                            var credits = ParseCredits(creditsBody).Where(credit => !_spentCredits.ContainsKey((account, credit.Id)))
+                                .Select(credit => credit with { AccountId = account }).ToArray();
+                            usage = (usage ?? new CodexUsage(null, null, Array.Empty<CodexResetCredit>(), ParsePlan(body))) with { Credits = credits };
+                        }
                         else
-                            Failed(creditsResponse, creditsBody, auth.Value.Token);
+                            Failed(creditsResponse);
                     }
                     else
-                        Failed(response, body, auth.Value.Token);
+                        Failed(response);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
                 {
@@ -80,7 +90,7 @@ internal sealed class CodexUsageClient : IDisposable
                 }
             }
 
-            usage ??= ReadRolloutFallback(Path.Combine(_directory, "sessions"));
+            if (_useRolloutFallback) usage ??= ReadRolloutFallback(Path.Combine(_directory, "sessions"));
             HasSource = hasAuth || usage != null;
             Latest = usage ?? (hasAuth ? new CodexUsage(null, null, Array.Empty<CodexResetCredit>()) : null);
             return Latest;
@@ -92,13 +102,15 @@ internal sealed class CodexUsageClient : IDisposable
     }
 
     /// <summary>Only called after the user confirms a specific credit. The sign-in file is always read-only.</summary>
-    public async Task<string> RedeemAsync(string creditId, CancellationToken ct = default)
+    public async Task<string> RedeemAsync(string creditId, CancellationToken ct = default, string? expectedAccountId = null)
     {
         if (string.IsNullOrWhiteSpace(creditId) || Interlocked.Exchange(ref _redeeming, 1) == 1) return "resetFailed";
         try
         {
             var auth = ReadAuth();
-            if (auth == null) return "resetAuth";
+            if (auth == null || (expectedAccountId != null && auth.Value.Account != expectedAccountId)) return "resetAuth";
+            var credit = (auth.Value.Account, creditId);
+            if (_spentCredits.ContainsKey(credit)) return "resetDone";
             using var request = Request(HttpMethod.Post, "rate-limit-reset-credits/consume", auth.Value);
             request.Content = new StringContent(JsonSerializer.Serialize(new
             {
@@ -106,10 +118,9 @@ internal sealed class CodexUsageClient : IDisposable
                 redeem_request_id = Guid.NewGuid().ToString()
             }), Encoding.UTF8, "application/json");
             using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
-            string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                Failed(response, body, auth.Value.Token);
+                Failed(response);
                 return response.StatusCode switch
                 {
                     HttpStatusCode.TooManyRequests => "resetRetry",
@@ -117,6 +128,7 @@ internal sealed class CodexUsageClient : IDisposable
                     _ => "resetFailed"
                 };
             }
+            _spentCredits.TryAdd(credit, 0);
             // Refresh right after spending the credit, even when a previous GET backed off.
             await RefreshAsync(TimeSpan.Zero, ct, allowNetwork: true, afterRedeem: true).ConfigureAwait(false);
             return "resetDone";
@@ -141,11 +153,11 @@ internal sealed class CodexUsageClient : IDisposable
         return request;
     }
 
-    private void Failed(HttpResponseMessage response, string body, string token)
+    private void Failed(HttpResponseMessage response)
     {
         TimeSpan wait = response.Headers.RetryAfter?.Delta ?? FailureBackoff;
         _blockedUntilUtc = DateTime.UtcNow + (wait > TimeSpan.FromHours(1) ? TimeSpan.FromHours(1) : wait);
-        RuntimeLog.Warn(LogTag, $"HTTP {(int)response.StatusCode}: {body.Replace(token, "[redacted]", StringComparison.Ordinal)}");
+        RuntimeLog.Warn(LogTag, $"HTTP {(int)response.StatusCode}");
     }
 
     private (string Token, string Account)? ReadAuth()
@@ -187,8 +199,21 @@ internal sealed class CodexUsageClient : IDisposable
         if (!Object(document.RootElement, "rate_limit", out var limits)) return null;
         var primary = Window(limits, "primary_window", "reset_at");
         var secondary = Window(limits, "secondary_window", "reset_at");
-        return primary == null && secondary == null ? null : new CodexUsage(primary, secondary, Array.Empty<CodexResetCredit>());
+        return primary == null && secondary == null ? null : new CodexUsage(primary, secondary, Array.Empty<CodexResetCredit>(),
+            PlanName(Text(document.RootElement, "plan_type")));
     }
+
+    private static string? ParsePlan(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return PlanName(Text(document.RootElement, "plan_type"));
+    }
+
+    internal static string? PlanName(string? plan) => plan?.ToLowerInvariant() switch
+    {
+        "free" => "Free", "plus" => "Plus", "pro" => "Pro", "max" => "Max", "team" => "Team",
+        "business" => "Business", "enterprise" => "Enterprise", "edu" => "Edu", _ => null
+    };
 
     internal static IReadOnlyList<CodexResetCredit> ParseCredits(string json)
     {

@@ -52,7 +52,7 @@ public partial class MainWindow
         while (source != null && source is not Window)
         {
             if (ReferenceEquals(source, ThumbnailBorder)) return true;
-            source = VisualTreeHelper.GetParent(source);
+            source = ShellInputParent(source);
         }
         return false;
     }

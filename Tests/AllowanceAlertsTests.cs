@@ -33,6 +33,16 @@ public sealed class AllowanceAlertsTests
     }
 
     [Fact]
+    public void Exact_thresholds_apply_to_each_slot_independently()
+    {
+        var sent = AllowanceAlerts.Due("Codex A", "5h", Used(50), [])!.Value.Keys.ToList();
+        Assert.Equal(50, AllowanceAlerts.Due("Codex B", "5h", Used(50), sent)!.Value.Threshold);
+        Assert.Equal(20, AllowanceAlerts.Due("Codex A", "5h", Used(80), sent)!.Value.Threshold);
+        Assert.Null(AllowanceAlerts.Due("Codex A", "5h", Used(50), sent));
+        Assert.True(AllowanceAlerts.DisplayTime >= TimeSpan.FromSeconds(8));
+    }
+
+    [Fact]
     public void Twenty_fires_on_its_own_after_fifty()
     {
         var sent = new List<string>();

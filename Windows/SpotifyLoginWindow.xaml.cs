@@ -318,7 +318,7 @@ public partial class SpotifyLoginWindow : Window
             {
                 return true;
             }
-            source = VisualTreeHelper.GetParent(source);
+            source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
         }
         return false;
     }

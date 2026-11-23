@@ -246,6 +246,51 @@ public sealed class SystemTabTests
         finally { HomeSchoolTabTests.SetField(view, "_gpuSampling", false); host.Close(); }
     });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SystemDrawerRefreshDoesNotStartAHeightAnimationDuringAClosingWheelScrub(bool queueBeforeScrub) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        BackgroundTestWindows.EnsureApplicationResources();
+        bool reduced = AnimationConfig.ReduceMotion;
+        bool? client = AnimationConfig.ClientAreaAnimationOverride;
+        AnimationConfig.ClientAreaAnimationOverride = true;
+        AnimationConfig.SetReduceMotion(true);
+        using var view = CreateView();
+        var host = new BackgroundWindow { Width = 600, Height = 600, Left = -20000, Top = -20000,
+            Content = new Border { Padding = new Thickness(16, 30, 16, 0), Child = view } };
+        try
+        {
+            host.Show();
+            view.SetDrawerOpen(true);
+            double openHeight = view.DrawerHeight;
+            AnimationConfig.SetReduceMotion(false);
+            if (queueBeforeScrub) Refresh();
+            view.ScrubDrawer(480);
+            view.AdvanceDrawerWheel(TimeSpan.FromMilliseconds(32));
+            Assert.InRange(view.DrawerHeight, 1, openHeight - 1);
+            Assert.True(view.DrawerOpen);
+
+            if (!queueBeforeScrub) Refresh();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
+            var height = (WeatherTween)HomeSchoolTabTests.Field(view, "_drawerHeight");
+            Assert.False(Motion.IsRunning(height, WeatherTween.ValueProperty));
+
+            await WpfFrameWaiter.UntilAsync(() => !view.IsLayoutFollowing, "wheel scrub settles closed", ct);
+            Assert.False(view.DrawerOpen);
+            Assert.Equal(0, view.DrawerHeight);
+        }
+        finally
+        {
+            HomeSchoolTabTests.SetField(view, "_gpuSampling", false);
+            host.Close();
+            AnimationConfig.SetReduceMotion(reduced);
+            AnimationConfig.ClientAreaAnimationOverride = client;
+        }
+
+        void Refresh() => HomeSchoolTabTests.Invoke(view, "FillSystemDrawer", HomeSchoolTabTests.Field(view, "_snapshot"));
+    });
+
     internal static ControlCenterView CreateView(bool legion = true)
     {
         var view = new ControlCenterView { Page = ControlCenterPage.System };

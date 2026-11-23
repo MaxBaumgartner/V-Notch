@@ -22,9 +22,19 @@ public partial class ControlCenterView
     private WeatherTween? _drawerHeight;
     private bool _drawerOpen, _drawerDragging, _drawerWasOpen;
     private double _drawerStartHeight;
+    private double _drawerExtent, _drawerWheelTarget, _drawerWheelVelocity;
+    private bool _drawerWheelActive, _drawerWheelSettling;
+    private TimeSpan? _drawerWheelFrame;
+    private TimeSpan _drawerWheelIdle;
     internal bool IsLayoutFollowing { get; private set; }
     internal bool DrawerOpen => _drawerOpen;
     internal double DrawerHeight => _drawerClip?.Height ?? 0;
+    internal bool DismissDrawer()
+    {
+        if (!_drawerOpen && !_drawerWheelActive && !_drawerDragging && DrawerHeight <= 0) return false;
+        SetDrawerOpen(false);
+        return true;
+    }
     internal event Action? StatusChanged;
     internal string CompactStatus { get; private set; } = "";
 
@@ -41,57 +51,74 @@ public partial class ControlCenterView
         ControlRoot.Children.Clear();
         ControlRoot.Children.Add(_compactPage);
         _compactPage.Margin = new Thickness(0, 3, 0, 0);
+        if (Page == ControlCenterPage.Pi)
+            _drawerBody.IsVisibleChanged += (_, _) => { if (_drawerBody.IsVisible && _home is { } home) UpdateHome(home); };
         ControlScrollViewer.PreviewMouseWheel += (_, e) =>
         {
-            if (_drawerClip == null || e.Handled) return;
-            for (var source = e.OriginalSource as DependencyObject; source != null && source != ControlScrollViewer; source = VisualTreeHelper.GetParent(source))
-                // Sliders (sideways and the tall capsules) take the wheel themselves.
-                if (source is FrameworkElement element && element.ReadLocalValue(CursorProperty) is Cursor cursor && (cursor == Cursors.SizeWE || cursor == Cursors.SizeNS)) return;
+            if (_drawerClip == null || e.Handled || e.Delta == 0 || Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+            if (Page != ControlCenterPage.Pi)
+            {
+                // The other pages' sliders take the wheel themselves. A Run inside a label needs its logical parent.
+                for (var source = e.OriginalSource as DependencyObject; source != null && source != ControlScrollViewer;
+                     source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source))
+                    if (source is FrameworkElement element && !ReferenceEquals(element, _drawerGrabber) &&
+                        element.ReadLocalValue(CursorProperty) is Cursor cursor && (cursor == Cursors.SizeWE || cursor == Cursors.SizeNS)) return;
+            }
             // A long drawer keeps scrolling until it reaches its upper boundary.
-            if (_drawerOpen && ControlScrollViewer.ScrollableHeight > 0 &&
+            if (_drawerOpen && !IsLayoutFollowing && ControlScrollViewer.ScrollableHeight > 0 &&
                 (e.Delta < 0 || ControlScrollViewer.VerticalOffset > .5)) return;
-            SetDrawerOpen(e.Delta < 0);
+            ScrubDrawer(e.Delta);
             e.Handled = true;
         };
         IsVisibleChanged += (_, _) =>
         {
             if (IsVisible || _drawerHeight == null) return;
+            StopDrawerWheel();
             _drawerDragging = false;
             IsLayoutFollowing = false;
             // Out of sight means done with it: the tab opens closed again next time, at its compact size.
-            _drawerOpen = false;
+            SetDrawerDestination(false);
             Motion.Stop(_drawerHeight, WeatherTween.ValueProperty, 0);
         };
     }
 
-    private void AddDrawer(FrameworkElement body)
+    private void AddDrawer(FrameworkElement body, bool replaceHomeFace = false)
     {
-        // A refresh can rebuild the drawer while its previous spring is still moving.
+        // A rebuild commits the click destination and keeps an active wheel gesture continuous.
+        double previousHeight = DrawerHeight;
         if (_drawerHeight != null) Motion.Stop(_drawerHeight, WeatherTween.ValueProperty);
         _drawerDragging = false;
-        IsLayoutFollowing = false;
+        IsLayoutFollowing = _drawerWheelActive;
         if (_drawerClip != null) { DetachDrawerBody(); _compactPage.Children.Remove(_drawerClip); }
         if (_drawerGrabber != null) _compactPage.Children.Remove(_drawerGrabber);
         _drawerBody.Children.Clear();
         _drawerBody.Children.Add(body);
-        _drawerBody.Margin = new Thickness(0, 10, 0, 3);
+        _drawerBody.Margin = replaceHomeFace ? new Thickness() : new Thickness(0, 10, 0, 3);
         // The clip reaches DrawerBleed px past the page on both sides (the hairline and rows stay in place), so a
         // row or button at the edge that rises under the pointer keeps its sides.
         _drawerFrame = new Border { Margin = new Thickness(DrawerBleed, 0, DrawerBleed, 0), Child = _drawerBody,
-            BorderBrush = Frozen("#14FFFFFF"), BorderThickness = new Thickness(0, 1, 0, 0) };
+            BorderBrush = Frozen("#14FFFFFF"), BorderThickness = replaceHomeFace ? new Thickness() : new Thickness(0, 1, 0, 0) };
         _drawerClip = new Border { Height = 0, ClipToBounds = true, Child = _drawerFrame,
             Margin = new Thickness(-DrawerBleed, 0, -DrawerBleed, 0) };
-        _drawerHeight = new WeatherTween { Step = height =>
-        {
-            _drawerClip.Height = Math.Max(0, height);
-            _drawerClip.IsHitTestVisible = height > 1;
-            _drawerBody.Visibility = height > 0 ? Visibility.Visible : Visibility.Hidden;
-            ContentHeightChanged?.Invoke();
-        } };
+        _drawerHeight = new WeatherTween { Step = height => PaintDrawer(height, replaceHomeFace) };
         _compactPage.Children.Add(_drawerClip);
         _drawerGrabber = DrawerGrabber();
         _compactPage.Children.Add(_drawerGrabber);
-        Motion.Stop(_drawerHeight, WeatherTween.ValueProperty, _drawerOpen ? MeasureDrawer() : 0);
+        _drawerExtent = MeasureDrawer();
+        if (_drawerWheelActive)
+            _drawerWheelTarget = _drawerWheelSettling ? (_drawerOpen ? _drawerExtent : 0) : Math.Min(_drawerWheelTarget, _drawerExtent);
+        double height = IsLayoutFollowing ? Math.Min(previousHeight, _drawerExtent) : _drawerOpen ? _drawerExtent : 0;
+        _drawerHeight.Value = height;
+        if (height == 0) PaintDrawer(0, replaceHomeFace);
+    }
+
+    private void PaintDrawer(double height, bool replaceHomeFace)
+    {
+        _drawerClip!.Height = Math.Max(0, height);
+        _drawerClip.IsHitTestVisible = height > 1;
+        _drawerBody.Visibility = height > 0 ? Visibility.Visible : Visibility.Hidden;
+        if (replaceHomeFace) RevealHomeDetails(_drawerExtent > 0 ? Math.Clamp(height / _drawerExtent, 0, 1) : 0);
+        ContentHeightChanged?.Invoke();
     }
 
     private FrameworkElement? _drawerGrabber;
@@ -107,15 +134,18 @@ public partial class ControlCenterView
 
     private void RemoveCompactDrawer()
     {
+        StopDrawerWheel();
         if (_drawerHeight != null) Motion.Stop(_drawerHeight, WeatherTween.ValueProperty, 0);
         if (_drawerClip != null) { DetachDrawerBody(); _compactPage.Children.Remove(_drawerClip); }
         if (_drawerGrabber != null) _compactPage.Children.Remove(_drawerGrabber);
         _drawerBody.Children.Clear();
         _drawerClip = null; _drawerHeight = null; _drawerGrabber = null;
+        _drawerOpen = false;
+        IsLayoutFollowing = false;
     }
     private double MeasureDrawer()
     {
-        double width = ActualWidth > 0 ? ActualWidth : Page == ControlCenterPage.School ? 398 : 528;
+        double width = ActualWidth > 0 ? ActualWidth : Page switch { ControlCenterPage.School => 398, ControlCenterPage.Pi => 558, _ => 528 };
         if (_drawerFrame == null)
         {
             _drawerBody.Measure(new Size(width, double.PositiveInfinity));
@@ -127,11 +157,15 @@ public partial class ControlCenterView
 
     private FrameworkElement DrawerGrabber()
     {
-        var line = new Border { Width = 30, Height = 4, CornerRadius = new CornerRadius(2), Background = Frozen("#33FFFFFF") };
-        var grabber = new Border { Height = 17, Background = Brushes.Transparent, Cursor = Cursors.SizeNS,
+        bool home = Page == ControlCenterPage.Pi;
+        double width = home ? 26 : 30;
+        var line = new Border { Width = width, Height = home ? 3 : 4, CornerRadius = new CornerRadius(2),
+            Background = Frozen(home ? "#38FFFFFF" : "#33FFFFFF") };
+        var grabber = new Border { Height = home ? 13 : 17, Background = Brushes.Transparent, Cursor = Cursors.SizeNS,
             Child = line, Tag = "drawer-grabber" };
-        grabber.MouseEnter += (_, _) => { Motion.To(line, WidthProperty, 38, Motion.Press); line.Background = Frozen("#80FFFFFF"); };
-        grabber.MouseLeave += (_, _) => { Motion.To(line, WidthProperty, 30, Motion.Press); line.Background = Frozen("#33FFFFFF"); };
+        grabber.MouseEnter += (_, _) => { Motion.To(line, WidthProperty, width + 8, Motion.Press); line.Background = Frozen("#80FFFFFF"); };
+        grabber.MouseLeave += (_, _) => { Motion.To(line, WidthProperty, width, Motion.Press); line.Background = Frozen(home ? "#38FFFFFF" : "#33FFFFFF"); };
+        grabber.IsVisibleChanged += (_, _) => { if (!grabber.IsVisible) Motion.Stop(line, WidthProperty, width); };
         Point start = new();
         DateTime sample = default;
         double lastY = 0, speed = 0;
@@ -158,7 +192,7 @@ public partial class ControlCenterView
             if (!held) return;
             held = false;
             if (moved) ReleaseDrawer((DateTime.UtcNow - sample).TotalMilliseconds < 60 ? speed : 0, false);
-            else SetDrawerOpen(!_drawerOpen);
+            else SetDrawerOpen(!(_drawerWheelActive ? _drawerWheelTarget > _drawerExtent / 2 : _drawerOpen));
             grabber.ReleaseMouseCapture(); e.Handled = true;
         };
         grabber.LostMouseCapture += (_, _) => { if (held && moved) ReleaseDrawer(0, true); held = false; };
@@ -168,9 +202,12 @@ public partial class ControlCenterView
     internal void SetDrawerOpen(bool open, double? velocity = null)
     {
         if (_drawerHeight == null) return;
-        _drawerOpen = open;
-        if (Page == ControlCenterPage.System) UpdatePeakTimer();
-        double target = open ? MeasureDrawer() : 0;
+        if (_drawerWheelActive) velocity ??= _drawerWheelVelocity;
+        StopDrawerWheel();
+        _drawerDragging = false;
+        SetDrawerDestination(open);
+        _drawerExtent = MeasureDrawer();
+        double target = open ? _drawerExtent : 0;
         if (!IsVisible || AnimationConfig.ReduceMotion)
         {
             Motion.Stop(_drawerHeight, WeatherTween.ValueProperty, target);
@@ -179,9 +216,95 @@ public partial class ControlCenterView
             return;
         }
         IsLayoutFollowing = true;
-        // The drawer's clip reveals its contents as one object, including on reversal.
         Motion.To(_drawerHeight, WeatherTween.ValueProperty, target, Motion.Shift,
             velocity: velocity, done: () => { IsLayoutFollowing = false; ContentHeightChanged?.Invoke(); });
+    }
+
+    private void SetDrawerDestination(bool open)
+    {
+        _drawerOpen = open;
+        if (Page == ControlCenterPage.System) UpdatePeakTimer();
+        if (Page == ControlCenterPage.Pi) UpdateHomeDetailsButton();
+    }
+
+    internal void ScrubDrawer(int delta)
+    {
+        if (_drawerHeight == null || _drawerDragging || !IsVisible || delta == 0) return;
+        if (AnimationConfig.ReduceMotion)
+        {
+            SetDrawerOpen(delta < 0);
+            return;
+        }
+        if (!_drawerWheelActive)
+        {
+            _drawerExtent = MeasureDrawer();
+            _drawerWheelTarget = DrawerHeight;
+            double target = Math.Clamp(_drawerWheelTarget - delta * .55, 0, _drawerExtent);
+            if (target == _drawerWheelTarget) return;
+            _drawerWheelVelocity = Motion.VelocityOf(_drawerHeight, WeatherTween.ValueProperty);
+            Motion.Stop(_drawerHeight, WeatherTween.ValueProperty, DrawerHeight);
+            _drawerWheelActive = true;
+            CompositionTarget.Rendering += RenderDrawerWheel;
+        }
+        else if (_drawerWheelSettling)
+        {
+            _drawerWheelTarget = DrawerHeight;
+        }
+        _drawerWheelTarget = Math.Clamp(_drawerWheelTarget - delta * .55, 0, _drawerExtent);
+        _drawerWheelIdle = TimeSpan.Zero;
+        _drawerWheelSettling = false;
+        IsLayoutFollowing = true;
+    }
+
+    private void RenderDrawerWheel(object? sender, EventArgs e)
+    {
+        if (e is not RenderingEventArgs frame || _drawerWheelFrame == frame.RenderingTime) return;
+        var elapsed = _drawerWheelFrame is { } previous ? frame.RenderingTime - previous : TimeSpan.Zero;
+        _drawerWheelFrame = frame.RenderingTime;
+        AdvanceDrawerWheel(elapsed);
+    }
+
+    internal void AdvanceDrawerWheel(TimeSpan elapsed)
+    {
+        if (!_drawerWheelActive || _drawerHeight == null || elapsed <= TimeSpan.Zero) return;
+        if (AnimationConfig.ReduceMotion) { SetDrawerOpen(_drawerWheelTarget >= _drawerExtent / 2); return; }
+        _drawerWheelIdle += elapsed;
+        double seconds = Math.Min(elapsed.TotalSeconds, .05);
+        if (!_drawerWheelSettling && _drawerWheelIdle >= Motion.DrawerWheelIdle)
+        {
+            // Integrate up to the precise idle deadline before changing the destination.
+            double remaining = Math.Min(seconds, (_drawerWheelIdle - Motion.DrawerWheelIdle).TotalSeconds);
+            StepDrawerWheel(seconds - remaining);
+            seconds = remaining;
+            bool open = DrawerHeight + .12 * _drawerWheelVelocity >= _drawerExtent / 2;
+            SetDrawerDestination(open);
+            _drawerWheelTarget = open ? _drawerExtent : 0;
+            _drawerWheelSettling = true;
+        }
+        StepDrawerWheel(seconds);
+        if (!_drawerWheelSettling || Math.Abs(DrawerHeight - _drawerWheelTarget) > .025 || Math.Abs(_drawerWheelVelocity) > .3) return;
+        _drawerHeight.Value = _drawerWheelTarget;
+        StopDrawerWheel();
+        IsLayoutFollowing = false;
+        ContentHeightChanged?.Invoke();
+        if (Page == ControlCenterPage.System) RefitDrawer();
+    }
+
+    private void StepDrawerWheel(double seconds)
+    {
+        if (seconds <= 0) return;
+        var (position, velocity) = Motion.FollowCritical(DrawerHeight, _drawerWheelVelocity, _drawerWheelTarget, seconds, Motion.DrawerScrub);
+        double visible = Math.Clamp(position, 0, _drawerExtent);
+        _drawerWheelVelocity = visible == position ? velocity : 0;
+        _drawerHeight!.Value = visible;
+    }
+
+    private void StopDrawerWheel()
+    {
+        if (!_drawerWheelActive) return;
+        CompositionTarget.Rendering -= RenderDrawerWheel;
+        _drawerWheelActive = _drawerWheelSettling = false;
+        _drawerWheelFrame = null;
     }
 
     internal bool MoveDrawer(double dy, bool force = false)
@@ -192,6 +315,7 @@ public partial class ControlCenterView
             if (!force && !(_drawerOpen && dy < 0 || !_drawerOpen && dy > 0)) return false;
             _drawerDragging = true; _drawerWasOpen = _drawerOpen;
             _drawerStartHeight = DrawerHeight;
+            StopDrawerWheel();
             Motion.Stop(_drawerHeight, WeatherTween.ValueProperty);
         }
         double limit = MeasureDrawer(), height = _drawerStartHeight + dy;
@@ -323,7 +447,7 @@ public partial class ControlCenterView
             done: () => { IsLayoutFollowing = false; ContentHeightChanged?.Invoke(); });
     }
 
-    private void SwapCompactLabel(Grid holder, string text, bool horizontal = true, int direction = 1, double size = 11)
+    private void SwapCompactLabel(Grid holder, string text, bool horizontal = true, int direction = 1, double size = 11, bool animate = true)
     {
         if (holder.Tag is string previous && previous == text) return;
         if (holder.Tag is not string)
@@ -350,7 +474,7 @@ public partial class ControlCenterView
         var blur = new System.Windows.Media.Effects.BlurEffect { Radius = 0, RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance };
         label.Effect = blur;
         var property = horizontal ? TranslateTransform.XProperty : TranslateTransform.YProperty;
-        if (!holder.IsVisible || AnimationConfig.ReduceMotion)
+        if (!animate || !holder.IsVisible || AnimationConfig.ReduceMotion)
         {
             holder.Children.Clear(); holder.Children.Add(label); return;
         }

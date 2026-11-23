@@ -17,15 +17,13 @@ public partial class MainWindow
     #region Control Center and Claude tabs
 
     private static readonly TimeSpan ClaudeSweepInterval = TimeSpan.FromSeconds(15);
-    // Narrower than the system tab, as tall as its cards up to where the list scrolls.
-    private const double ClaudeViewWidth = 640;
+    private const double ClaudeViewWidth = Controls.ControlCenterView.ClaudeFaceWidth;
     private const double ClaudeViewMinHeight = 120;
-    private const double ClaudeViewMaxHeight = 560;
+    private const double ClaudeViewMaxHeight = CenterViewMaxHeight;
 
     private ClaudeSessionTracker? _claudeTracker;
     private ClaudeHookServer? _claudeHookServer;
     private ClaudeUsageClient? _claudeUsage;
-    private CodexUsageClient? _codexUsage;
     private DispatcherTimer? _claudeSweepTimer;
     private bool _claudeTabAutoOpened;
     private bool _isClaudeView;
@@ -39,7 +37,6 @@ public partial class MainWindow
         _claudeTracker = new ClaudeSessionTracker();
         _claudeHookServer = new ClaudeHookServer(_claudeTracker);
         _claudeUsage = new ClaudeUsageClient();
-        _codexUsage = new CodexUsageClient();
         _claudeHookServer.Start();
 
         // Settings load after this runs, and anything that pumps messages meanwhile can let the views build:
@@ -47,11 +44,13 @@ public partial class MainWindow
         ControlCenter.Attach(() => _settings != null && IsLiquidGlassEnabled);
         ControlCenter.ContentHeightChanged += OnSystemContentHeightChanged;
         ControlCenter.AttachBackdrop(SystemBackdrop);
-        ClaudeCenter.AttachClaude(_claudeTracker, _claudeHookServer, _claudeUsage, _codexUsage,
+        ClaudeCenter.AttachClaude(_claudeTracker, _claudeHookServer, _claudeUsage,
             () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled);
         ClaudeCenter.AttachBackdrop(ClaudeBackdrop);
         ClaudeCenter.AttentionRequested += OpenClaudeTabForAttention;
         ClaudeCenter.ContentHeightChanged += OnClaudeContentHeightChanged;
+        ClaudeCenter.AllowanceDataChanged += CheckAllowanceAlerts;
+        ClaudeNotification.MouseLeave += (_, _) => ResumeAllowancePill();
         ClaudeCenter.SessionOpened += OnClaudeSessionOpened;
         ClaudeCenter.KeyboardInputRequested += OnClaudeKeyboardInputRequested;
         ClaudeCenter.ScreenshotRequested += OnClaudeScreenshotRequested;
@@ -95,6 +94,7 @@ public partial class MainWindow
         DisposeKeepAwake();
         ClaudeCenter.AttentionRequested -= OpenClaudeTabForAttention;
         ClaudeCenter.ContentHeightChanged -= OnClaudeContentHeightChanged;
+        ClaudeCenter.AllowanceDataChanged -= CheckAllowanceAlerts;
         ClaudeCenter.SessionOpened -= OnClaudeSessionOpened;
         ClaudeCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
         ClaudeCenter.ScreenshotRequested -= OnClaudeScreenshotRequested;
@@ -111,7 +111,6 @@ public partial class MainWindow
         // Hands every held request back to Claude Code's own dialog.
         _claudeHookServer?.Dispose();
         _claudeUsage?.Dispose();
-        _codexUsage?.Dispose();
     }
 
     private void ClaudeIconButton_Click(object sender, MouseButtonEventArgs e)
@@ -138,7 +137,7 @@ public partial class MainWindow
             _claudeAttentionRetry?.Stop();
             return;
         }
-        if (_isAnimating || _isGreetingActive || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention)
+        if (_allowancePill || _isAnimating || _isGreetingActive || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention)
         {
             _claudeAttentionRetry ??= CreateClaudeAttentionRetry();
             _claudeAttentionRetry.Start();
@@ -303,7 +302,7 @@ public partial class MainWindow
     private bool ShowNotchPill(string title, string status, ImageSource? appIcon, bool isClaude, Func<bool>? tap,
         string? doneSessionId = null, string? glyph = null, TimeSpan? duration = null, Brush? accent = null)
     {
-        if (_cleanedUp || _isGreetingActive || _isAnimating || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention) return false;
+        if (_allowancePill || _cleanedUp || _isGreetingActive || _isAnimating || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention) return false;
 
         _isClaudePeek = false;
         _isCopiedPillShown = false;
@@ -362,6 +361,11 @@ public partial class MainWindow
         timer.Tick += (_, _) =>
         {
             timer.Stop();
+            if (_allowancePill && ClaudeNotification.IsMouseOver)
+            {
+                _allowancePillPaused = true;
+                return;
+            }
             AnimateClaudeNotificationOut();
         };
         return timer;
@@ -400,6 +404,7 @@ public partial class MainWindow
 
             ClaudeNotification.Visibility = Visibility.Collapsed;
             _isClaudeNotificationVisible = false;
+            if (_allowancePill) SetAllowancePill(null);
             _compactPillArbiter.Release(token);
             RestoreCompactMediaPresentation();
             _claudeNotificationToken = 0;
@@ -420,6 +425,7 @@ public partial class MainWindow
         _claudeDoneShownId = null;
         _isCopiedPillShown = false;
         _askRequest = null;
+        if (_allowancePill) SetAllowancePill(null);
         if (!_isClaudeNotificationVisible) return;
         _isClaudeNotificationVisible = false;
         _claudeNotificationToken = 0;

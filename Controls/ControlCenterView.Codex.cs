@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -20,6 +21,66 @@ public partial class ControlCenterView
     private List<CodexSession> _codexSessions = new();
     private DispatcherTimer? _codexTimer;
     private bool _codexReading;
+    private string _codexAccountsDirectory = CodexAccounts.DirectoryPath;
+    private readonly List<CodexAccount> _codexAccounts = new();
+    private FileSystemWatcher? _codexAccountsWatcher;
+    private IReadOnlyDictionary<string, CodexBudget>? _codexBudgets;
+    internal IReadOnlyList<CodexAccount> AccountSlots => _codexAccounts;
+    internal event Action? AllowanceDataChanged;
+
+    private void WatchCodexAccounts()
+    {
+        if (_codexAccountsWatcher != null || !Directory.Exists(_codexAccountsDirectory)) return;
+        try
+        {
+            var watcher = new FileSystemWatcher(_codexAccountsDirectory, "*.json");
+            watcher.Changed += OnCodexAccountFileChanged;
+            watcher.Created += OnCodexAccountFileChanged;
+            watcher.Deleted += OnCodexAccountFileChanged;
+            watcher.Renamed += OnCodexAccountFileChanged;
+            watcher.EnableRaisingEvents = true;
+            _codexAccountsWatcher = watcher;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            RuntimeLog.Warn("CODEX", $"Account watch unavailable: {ex.GetType().Name}");
+        }
+    }
+
+    private void OnCodexAccountFileChanged(object sender, FileSystemEventArgs e)
+    {
+        if (e.Name is CodexAccounts.SlotsFile or CodexAccounts.BudgetFile ||
+            e is RenamedEventArgs { OldName: CodexAccounts.SlotsFile or CodexAccounts.BudgetFile })
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => RefreshCodexUsage()));
+    }
+
+    private void SyncCodexAccounts()
+    {
+        WatchCodexAccounts();
+        if (CodexAccounts.ReadSlots(_codexAccountsDirectory) is { } slots)
+        {
+            var removed = _codexAccounts.Where(account => !slots.Contains(account.Slot)).ToArray();
+            var current = slots.Select(slot => _codexAccounts.Find(account => account.Slot == slot) ??
+                new CodexAccount(slot, new CodexUsageClient(codexDirectory: slot.Home, useRolloutFallback: false))).ToArray();
+            _codexAccounts.Clear();
+            _codexAccounts.AddRange(current);
+            foreach (var account in removed)
+            {
+                ForgetAccountRow(account);
+                account.Dispose();
+            }
+        }
+        _codexBudgets = CodexAccounts.ReadBudget(_codexAccountsDirectory) ?? _codexBudgets;
+        foreach (var account in _codexAccounts)
+            account.Budget = _codexBudgets?.GetValueOrDefault(account.Slot.Name);
+    }
+
+    private void DisposeCodexAccounts()
+    {
+        _codexAccountsWatcher?.Dispose();
+        foreach (var account in _codexAccounts) account.Dispose();
+        _codexAccounts.Clear();
+    }
 
     private void StartCodexClock()
     {
@@ -53,20 +114,29 @@ public partial class ControlCenterView
 
     private async void RefreshCodexUsage()
     {
-        if (_codexUsage == null || _disposed || !IsVisible || Page != ControlCenterPage.Claude) return;
+        if (_disposed || Page != ControlCenterPage.Claude) return;
+        SyncCodexAccounts();
+        BuildClaudeSection();
+        AllowanceDataChanged?.Invoke();
         bool allowNetwork = !_isLocalOnly();
+        if (!allowNetwork) return;
         try
         {
-            if (await Task.Run(() => _codexUsage.RefreshAsync(UsageViewMinAge, allowNetwork: allowNetwork)) != null && !_disposed)
+            var reads = _codexAccounts.Select(account => Task.Run(() => account.Client.RefreshAsync(UsageViewMinAge))).ToArray();
+            if ((await Task.WhenAll(reads)).Any(usage => usage != null) && !_disposed)
+            {
                 BuildClaudeSection();
+                AllowanceDataChanged?.Invoke();
+            }
         }
-        catch (Exception ex) { RuntimeLog.Warn("CODEX", $"Usage refresh failed: {ex.Message}"); }
+        catch (ObjectDisposedException) { } // A slot was removed while its read was queued.
+        catch (Exception ex) { RuntimeLog.Warn("CODEX", $"Usage refresh failed: {ex.GetType().Name}"); }
     }
 
     private Border CodexChip(CodexSession session)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        row.Children.Add(ChipDot(CodexAccent, session.Status == CodexSessionStatus.Working));
+        row.Children.Add(ChipDot(CodexAccent));
         row.Children.Add(new TextBlock
         {
             Text = session.Title, FontFamily = ControlFont, FontSize = 12, FontWeight = FontWeights.SemiBold,
@@ -92,34 +162,7 @@ public partial class ControlCenterView
             e.Handled = true;
             if (CodexSessionReader.FocusApp()) SessionOpened?.Invoke();
         };
-        _cardScratch.Add(("codex:" + session.Id, chip));
         return chip;
-    }
-
-    private void AddCodexLimits()
-    {
-        var limits = _codexUsage?.Latest;
-        var panel = new StackPanel { Margin = new Thickness(4, 18, 4, 2) };
-        panel.Children.Add(QuietText(Loc.Get("control.claude.codex"), CodexAccent));
-        var grid = new Grid { Margin = new Thickness(0, 10, 0, 0) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        if (limits?.FiveHour is { } fiveHour)
-            grid.Children.Add(MiniLimit("codex:5h", Loc.Get("control.claude.limit5h"), fiveHour, CodexAccent));
-        if (limits?.Week is { } week)
-        {
-            var mini = MiniLimit("codex:week", Loc.Get("control.claude.limitWeek"), week, CodexAccent);
-            Grid.SetColumn(mini, 2);
-            grid.Children.Add(mini);
-        }
-        if (limits?.FiveHour == null && limits?.Week == null)
-            grid.Children.Add(QuietText(Loc.Get("control.claude.limitsUnavailable"), ChipSoft));
-        panel.Children.Add(grid);
-        _claudeSection.Children.Add(panel);
-        if (limits != null)
-            AddResetRow("codex", limits.Credits.Select(c => new ResetOption(c.Id,
-                Loc.Get("control.claude.resetFull"), c.ExpiresAt, true, null)).ToList());
     }
 
     internal static string FormatResetTime(DateTimeOffset resets, DateTimeOffset now)
@@ -130,14 +173,9 @@ public partial class ControlCenterView
 
     private void AppendCodexAndResetKey(StringBuilder sb, ClaudeLimits? limits)
     {
-        sb.Append("|codex|").Append(_codexUsage?.HasSource).Append(_isLocalOnly());
+        sb.Append("|codex|").Append(_isLocalOnly());
         foreach (var s in _codexSessions)
             sb.Append('|').Append(s.Id).Append(s.Status).Append(s.Title).Append(s.Project).Append(s.Cwd);
-        if (_codexUsage?.Latest is { } codex)
-        {
-            sb.Append('|').Append(codex.FiveHour).Append(codex.Week);
-            foreach (var c in codex.Credits) sb.Append('|').Append(c);
-        }
         if (limits != null)
             foreach (var grant in limits.Grants) sb.Append('|').Append(grant);
         foreach (var state in _resetStates.OrderBy(s => s.Key, StringComparer.Ordinal))
@@ -145,13 +183,13 @@ public partial class ControlCenterView
     }
 
     private sealed record ResetOption(string Id, string Name, DateTimeOffset? Expiry, bool Usable, string? Reason);
-    private sealed record ResetState(DateTimeOffset Until, bool Running = false, string? Result = null);
+    private sealed record ResetState(DateTimeOffset Until, bool Running = false, string? Result = null, string? AccountId = null);
     private readonly Dictionary<string, ResetState> _resetStates = new(StringComparer.Ordinal);
     private DispatcherTimer? _resetFeedbackTimer;
 
-    private void AddResetRows(ClaudeLimits? limits)
+    private void AddResetRows(ClaudeLimits? limits, string? inlineGrant = null)
     {
-        var grants = limits?.Grants.Select(g => new ResetOption(g.Id, Loc.Get(g.Kind switch
+        var grants = limits?.Grants.Where(g => g.Id != inlineGrant).Select(g => new ResetOption(g.Id, Loc.Get(g.Kind switch
         {
             ClaudeResetKind.Fable => "control.claude.resetFable",
             ClaudeResetKind.Full => "control.claude.resetFull",
@@ -177,19 +215,24 @@ public partial class ControlCenterView
         Foreground = brush, VerticalAlignment = VerticalAlignment.Center
     };
 
-    private async void RedeemReset(string provider, string id)
+    private async Task RedeemReset(string provider, string id, CodexAccount? account = null, bool inline = false)
     {
         if (_disposed || !IsVisible || Page != ControlCenterPage.Claude || _isLocalOnly()) return;
-        bool usable = provider == "codex"
-            ? _codexUsage?.Latest?.Credits.Any(c => c.Id == id) == true
-            : _usage?.Latest?.Grants.Any(g => g.Id == id && g.UsableNow) == true;
+        if (inline && !_accountsOpen) return;
+        var credit = account?.Client.Latest?.Credits.FirstOrDefault(c => c.Id == id &&
+            (c.ExpiresAt == null || c.ExpiresAt > DateTimeOffset.UtcNow));
+        bool usable = account != null
+            ? _codexAccounts.Contains(account) && credit != null
+            : provider == "claude" && _usage?.Latest?.Grants.Any(g => g.Id == id && g.UsableNow) == true;
         if (!usable) return;
         string key = provider + ":" + id;
         if (_resetStates.Any(s => s.Key.StartsWith(provider + ":", StringComparison.Ordinal) && s.Value.Running)) return;
         if (_resetStates.TryGetValue(key, out var current) && current.Result == "resetDone") return;
-        if (!_resetStates.TryGetValue(key, out var state) || state.Result != null || state.Until <= DateTimeOffset.UtcNow)
+        if (!_resetStates.TryGetValue(key, out var state) || state.Result != null || state.Until <= DateTimeOffset.UtcNow ||
+            state.AccountId != credit?.AccountId)
         {
-            _resetStates[key] = new ResetState(DateTimeOffset.UtcNow.AddSeconds(4));
+            if (inline) DisarmAccountCredits();
+            _resetStates[key] = new ResetState(DateTimeOffset.UtcNow.AddSeconds(inline ? 3 : 4), AccountId: credit?.AccountId);
             StartResetFeedback();
             BuildClaudeSection();
             return;
@@ -199,8 +242,8 @@ public partial class ControlCenterView
         string result = "resetFailed";
         try
         {
-            if (provider == "codex" && _codexUsage != null)
-                result = await Task.Run(() => _codexUsage.RedeemAsync(id));
+            if (account != null)
+                result = await Task.Run(() => account.Client.RedeemAsync(id, expectedAccountId: credit?.AccountId));
             else if (_usage != null)
             {
                 var claimed = await Task.Run(() => _usage.ClaimAsync(id));
@@ -210,11 +253,12 @@ public partial class ControlCenterView
                 };
             }
         }
-        catch (Exception ex) { RuntimeLog.Warn("LIMIT-RESET", $"Reset failed: {ex.Message}"); }
-        if (_disposed) return;
+        catch (Exception ex) { RuntimeLog.Warn("LIMIT-RESET", $"Reset failed: {ex.GetType().Name}"); }
+        if (_disposed || (account != null && !_codexAccounts.Contains(account))) return;
         _resetStates[key] = new ResetState(DateTimeOffset.UtcNow.AddSeconds(result == "resetDone" ? 1.1 : 5), Result: result);
         StartResetFeedback();
         BuildClaudeSection();
+        AllowanceDataChanged?.Invoke();
     }
 
     private void StartResetFeedback()

@@ -1,64 +1,38 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
-using System.Text;
 using System.Text.Json.Nodes;
-using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
-using System.Windows.Shapes;
 using System.Windows.Threading;
 using VNotch.Services;
 using VNotch.Services.ControlCenter;
 
 namespace VNotch.Controls;
 
-/// <summary>
-/// The home tab (<see cref="ControlCenterPage.Pi"/>): the room from the desk, through the Pi dashboard's
-/// /api/notch/zuhause. Round switches that light up when a lamp comes on and fold their glow back in when it goes
-/// off, the strip's colours, the heating with − / +, the air conditioner's remote, sockets with their draw (the PC
-/// and the Pi ask before they switch off), and the Pi's status and fixes. The tab wears the
-/// room's colour: the strip's when it is on, warm sand with a lamp on, night indigo when everything is off.
-/// </summary>
 public partial class ControlCenterView
 {
-    #region Home
-
-    // A rough household price per kWh in Austria, for the "≈ €" next to the PC's day.
     private const double EuroPerKwh = 0.25;
     private static readonly TimeSpan GuardWindow = TimeSpan.FromSeconds(3);
     private const int TargetSendDelayMs = 700;
     private const int HomeSettleMs = 1400;
 
-    private static readonly (Color Main, Color Warmer, Color Cooler) HomeNight =
-        (Color.FromRgb(0x7C, 0x7F, 0xB8), Color.FromRgb(0xA1, 0x9B, 0xD2), Color.FromRgb(0x5F, 0x7F, 0xA8));
-    private static readonly (Color Main, Color Warmer, Color Cooler) HomeLamp =
-        (Color.FromRgb(0xC9, 0xA5, 0x77), Color.FromRgb(0xD2, 0x95, 0x7E), Color.FromRgb(0x8E, 0x7A, 0x62));
-    private static readonly Color LampLight = Color.FromRgb(0xE8, 0xC4, 0x8E);
-    private static readonly Color Grey = Color.FromRgb(0x8E, 0x8E, 0x9A);
+    private static (Color Main, Color Warmer, Color Cooler) HomeNight => (RoomMist, RoomLilac, RoomMist);
+    private static (Color Main, Color Warmer, Color Cooler) HomeLamp => (RoomSand, RoomSand, RoomMist);
 
     private PiHome? _home;
     private string _homeKey = "";
-    private readonly LoopSet _homeLoops = new();
     private readonly StackPanel _homeLightSection = new();
     private readonly StackPanel _homeClimateSection = new();
     private readonly StackPanel _homePlugSection = new();
     private readonly StackPanel _homePiSection = new();
-    private readonly Dictionary<string, LightTile> _lightTiles = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, TextBlock> _plugStatus = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, PlugReadout> _plugReadouts = new(StringComparer.Ordinal);
-    private HeatingParts? _heating;
-    private TextBlock? _piLine;
-    private PiReadout? _piReadout;
+    private readonly List<Action<PiHome>> _homeDrawerUpdates = new();
+    private readonly HashSet<string> _homeDrawerValues = new(StringComparer.Ordinal);
     private bool? _musicSync;
-    // After a tap the room is shown as asked until the dashboard has caught up, so the old state does not flash back.
-    private DateTime _homeQuietUntilUtc;
+    private bool _homeRefreshQueued;
     private string? _guardArmed;
     private double? _targetDraft;
+    private bool _targetSending;
     private DispatcherTimer? _targetSend;
 
     private static string Glyph(int code) => ((char)code).ToString();
@@ -67,12 +41,51 @@ public partial class ControlCenterView
     private void AttachHome()
     {
         MountCompactPage();
+        _compactPage.Margin = new Thickness(5, 6, 5, 0);
         _compactPage.Children.Add(_homeLightSection);
-        SetMoodColors(HomeNight.Main, HomeNight.Warmer, HomeNight.Cooler);
+        _homeDetailsLabel = new StackPanel { Orientation = Orientation.Horizontal };
+        _homeDetailsButton = new Border
+        {
+            Height = 26, Background = Brushes.Transparent, CornerRadius = new CornerRadius(13),
+            Child = _homeDetailsLabel, Cursor = System.Windows.Input.Cursors.Hand, Padding = new Thickness(8, 0, 8, 0),
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, -26, 24, 0), Visibility = Visibility.Collapsed
+        };
+        Pressable(_homeDetailsButton, () => Brushes.Transparent, CardHover);
+        Panel.SetZIndex(_homeDetailsButton, 1);
+        ((Grid)Content).Children.Add(_homeDetailsButton);
+        _homeDetailsButton.MouseLeftButtonUp += (_, e) =>
+        {
+            if (_drawerHeight == null) return;
+            e.Handled = true;
+            SetDrawerOpen(!(_drawerWheelActive ? _drawerWheelTarget > _drawerExtent / 2 : _drawerOpen));
+        };
+        UpdateHomeDetailsButton();
         CoverColorsFile.Changed += OnCoverColorsChanged;
     }
 
-    private async Task RefreshMusicSyncAsync() => _musicSync = await GoveeSync.IsRunningAsync();
+    private void UpdateHomeDetailsButton()
+    {
+        if (_homeDetailsLabel == null || _homeDetailsButton == null) return;
+        string text = _drawerOpen ? Say("Übersicht", "Face") : Say("Details", "Details");
+        if (AutomationProperties.GetName(_homeDetailsButton) == text) return;
+        AutomationProperties.SetName(_homeDetailsButton, text);
+        var icon = HomeOutline(_drawerOpen ? "M15 7 L10 12 L15 17" : "M8 10 L12 14 L16 10", 15);
+        HomeIconPath(icon).Stroke = RoomSub;
+        icon.Margin = _drawerOpen ? new Thickness(0, 0, 5, 0) : new Thickness(5, 0, 0, 0);
+        _homeDetailsLabel.Children.Clear();
+        if (_drawerOpen) _homeDetailsLabel.Children.Add(icon);
+        _homeDetailsLabel.Children.Add(HomeText(text, 12, RoomSub));
+        if (!_drawerOpen) _homeDetailsLabel.Children.Add(icon);
+    }
+
+    private async Task RefreshMusicSyncAsync()
+    {
+        if (_homeModeSending) return;
+        var before = _musicSync;
+        var music = await GoveeSync.IsRunningAsync();
+        if (!_homeModeSending && _musicSync == before) _musicSync = music;
+    }
 
     private void BuildHome()
     {
@@ -84,89 +97,123 @@ public partial class ControlCenterView
             if (emptyKey == _homeKey) return;
             _homeKey = emptyKey;
             RemoveCompactDrawer();
+            if (_homeDetailsButton != null) _homeDetailsButton.Visibility = Visibility.Collapsed;
             SetCompactStatus("");
             ClearHome();
+            ClearHomeFace();
+            Seen.ForgetAll("home.face.");
+            Seen.ForgetAll("home.details.");
+            _homeFaceLastSeen.Clear();
             _homeLightSection.Children.Add(text is "pi.loading" or "pi.unreachable"
                 ? new SkeletonPlaceholder(!_piReachable, Loc.Get(text), 82, 56, 48, 34)
                 : NewRow(Glyph(0xE7BA), Loc.Get(text), muted: true));
             return;
         }
 
-        var mood = HomeMood(home.Lights.Select(AsShown).ToList());
-        SetMoodColors(mood.Main, mood.Warmer, mood.Cooler);
-        string key = HomeKey(home);
-        if (key == _homeKey)
+        UpdateHomeFace(home);
+        var acButtons = ShowHomeAirConditioner(DateTime.Now.Month, home.AirConditionerOn)
+            ? home.AirConditioner.Where(a => a.Icon is "power" or "fan" or "snow").ToArray() : [];
+        string key = HomeKey(home, acButtons);
+        if (key != _homeKey)
         {
-            UpdateHome(home);
-            return;
+            _homeKey = key;
+            var previous = _homeDrawerValues.ToArray();
+            ClearHome();
+            BuildPlugs(home);
+            BuildClimate(home, acButtons);
+            BuildPiLine(home);
+            foreach (string removed in previous)
+            {
+                if (_homeDrawerValues.Contains(removed)) continue;
+                Seen.Forget(removed);
+                _homeFaceLastSeen.Remove(removed);
+            }
+
+            var drawer = new Grid { Name = "HomeDetails", MinHeight = acButtons.Length > 0 ? 191 : 158 };
+            drawer.ColumnDefinitions.Add(new ColumnDefinition());
+            drawer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(25) });
+            drawer.ColumnDefinitions.Add(new ColumnDefinition());
+            drawer.RowDefinitions.Add(new RowDefinition());
+            drawer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var rule = new Border { Width = 1, Background = RoomLine, HorizontalAlignment = HorizontalAlignment.Left };
+            Grid.SetColumn(rule, 2);
+            Grid.SetColumn(_homeClimateSection, 2);
+            _homeClimateSection.Margin = new Thickness(23, 0, 0, 0);
+            drawer.Children.Add(_homePlugSection);
+            drawer.Children.Add(rule);
+            drawer.Children.Add(_homeClimateSection);
+            if (_homePiSection.Children.Count > 0)
+            {
+                Grid.SetRow(_homePiSection, 1);
+                Grid.SetColumnSpan(_homePiSection, 3);
+                drawer.Children.Add(_homePiSection);
+            }
+            AddDrawer(drawer, replaceHomeFace: true);
+            if (_homeDetailsButton != null) _homeDetailsButton.Visibility = Visibility.Visible;
+            QueueHomeLightPlacement();
         }
-        _homeKey = key;
-        ClearHome();
-        _accent = _mood;
-        BuildReadings(home);
-        BuildLights(home);
-        BuildClimate(home);
-        BuildPlugs(home);
-        BuildPiLine(home);
-        var right = new StackPanel { Children = { _homePlugSection, _homePiSection } };
-        AddDrawer(CompactColumns(_homeClimateSection, right));
-        UpdateHomeStatus(home);
+        UpdateHomeDetailsButton();
+        UpdateHome(home);
     }
 
     private void ClearHome()
     {
         foreach (var section in new[] { _homeClimateSection, _homePlugSection, _homePiSection })
-            if (section.Parent is Panel parent) parent.Children.Remove(section);
-        _homeLoops.StopAll();
-        _lightTiles.Clear();
-        _plugStatus.Clear();
-        _plugReadouts.Clear();
-        _heating = null;
-        _piLine = null;
-        _piReadout = null;
-        foreach (var section in new[] { _homeLightSection, _homeClimateSection, _homePlugSection, _homePiSection })
-            section.Children.Clear();
-    }
-
-    /// <summary>What changes the layout; lamps, temperatures and watts only change values in place.</summary>
-    private string HomeKey(PiHome home)
-    {
-        var sb = new StringBuilder();
-        foreach (string section in new[] { "home.lights", "home.climate", "home.plugs", "home.pi" }) sb.Append(IsExpanded(section) ? '1' : '0');
-        sb.Append('|').Append(_musicSync.HasValue).Append('|');
-        foreach (var l in home.Lights) sb.Append(l.Id).Append(l.Name).Append(l.Rgb).Append(l.Available).Append(';');
-        sb.Append('|').Append(home.Climate != null).Append(home.Climate?.WindowOpen).Append('|');
-        foreach (var p in home.Plugs) sb.Append(p.Id).Append(p.Name).Append(p.Guard).Append(p.Available).Append(p.On).Append(';');
-        sb.Append('|').Append(_guardArmed);
-        foreach (var a in home.AirConditioner) sb.Append(a.Id);
-        sb.Append('|');
-        if (home.Pi != null) foreach (var i in home.Pi.Issues) sb.Append(i.Title).Append(i.FixId).Append(';');
-        sb.Append('|');
-        if (home.Readings != null) foreach (var r in home.Readings) sb.Append(r.Id).Append('=').Append(r.Label).Append(r.Display).Append(';');
-        return sb.ToString();
-    }
-
-    /// <summary>A planner dashboard's start page (weather, when to leave, games) as small tiles: what it says, and the value.
-    /// A planner has no lamps, so they take the lights' place in the main area.</summary>
-    private void BuildReadings(PiHome home)
-    {
-        if (home.Readings is not { Count: > 0 } readings) return;
-        int columns = Math.Min(3, readings.Count);
-        var grid = TileGrid(columns, readings.Count);
-        for (int i = 0; i < readings.Count; i++)
         {
-            var label = MakeLabel(readings[i].Label, 11, Muted);
-            label.TextTrimming = TextTrimming.CharacterEllipsis;
-            var value = MakeLabel(readings[i].Display, 14, VNotch.Services.UiPalette.PrimaryBrush);
-            value.FontWeight = FontWeights.SemiBold;
-            value.TextTrimming = TextTrimming.CharacterEllipsis;
-            value.Margin = new Thickness(0, 2, 0, 0);
-            var card = Card();
-            card.Padding = new Thickness(12, 9, 12, 9);
-            card.Child = new StackPanel { Children = { label, value } };
-            PlaceTile(grid, card, i, columns);
+            if (section.Parent is Panel parent) parent.Children.Remove(section);
+            section.Children.Clear();
         }
-        _homeLightSection.Children.Add(grid);
+        _homeDrawerUpdates.Clear();
+        _homeDrawerValues.Clear();
+        _homeDrawerThermostat = null;
+    }
+
+    private static bool ShowHomeAirConditioner(int month, bool? reportedOn) => month is >= 6 and <= 9 || reportedOn == true;
+
+    private string HomeKey(PiHome home, IReadOnlyList<HomeAction> acButtons) => string.Join("|",
+        Loc.CurrentLanguage, home.Climate != null, _guardArmed,
+        string.Join(";", acButtons.Select(a => a.Id)),
+        string.Join(";", home.Plugs.Where(p => !IsHomeMic(p.Id, p.Name)).Select(p => $"{p.Id}:{p.Name}:{p.Guard}:{p.TodayKwh.HasValue}")),
+        home.Pi != null, string.Join(";", home.Pi?.Issues.Select(i => $"{i.Title}:{i.Detail}:{i.FixId}:{i.FixLabel}") ?? []));
+
+    /// <summary>
+    /// A planner dashboard's start page (the weather, when to leave, games) as tiles on the face: a planner has no
+    /// lamps or sockets to show there. The tiles are built once per set of readings; their words change in place.
+    /// </summary>
+    private FrameworkElement? BuildHomeReadings(PiHome home)
+    {
+        if (home.Readings is not { Count: > 0 } readings) return null;
+        const double gap = 8;
+        int count = Math.Min(readings.Count, 6), columns = Math.Min(3, count);
+        var grid = new Grid { Margin = new Thickness(0, 0, -gap, -gap) };
+        for (int i = 0; i < columns; i++) grid.ColumnDefinitions.Add(new ColumnDefinition());
+        for (int i = 0; i < (count + columns - 1) / columns; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (int i = 0; i < count; i++)
+        {
+            string id = readings[i].Id;
+            var label = HomeText(readings[i].Label, 12, RoomLabel);
+            label.TextTrimming = TextTrimming.CharacterEllipsis;
+            var value = HomeText(readings[i].Display, 20, CompactInk, 600);
+            value.TextTrimming = TextTrimming.CharacterEllipsis;
+            value.Margin = new Thickness(0, 3, 0, 0);
+            var tile = new Border
+            {
+                CornerRadius = new CornerRadius(14), Background = RoomTrack, BorderBrush = RoomBorder, BorderThickness = new Thickness(1),
+                Padding = new Thickness(13, 9, 13, 10), Margin = new Thickness(0, 0, gap, gap),
+                Child = new StackPanel { Children = { label, value } }
+            };
+            Grid.SetRow(tile, i / columns);
+            Grid.SetColumn(tile, i % columns);
+            grid.Children.Add(tile);
+            _homeFaceUpdates.Add(now =>
+            {
+                if (now.Readings?.FirstOrDefault(r => r.Id == id) is not { } reading) return;
+                label.Text = reading.Label;
+                value.Text = reading.Display;
+                tile.ToolTip = $"{reading.Label}: {reading.Display}";
+            });
+        }
+        return grid;
     }
 
     /// <summary>
@@ -196,8 +243,8 @@ public partial class ControlCenterView
     private void OnCoverColorsChanged()
     {
         if (_disposed || Page != ControlCenterPage.Pi || _home is not { } home || _musicSync != true) return;
-        UpdateHome(home, force: true);
-        SetHomeMoodFromTiles();
+        UpdateHomeFace(home);
+        UpdateHome(home);
     }
 
     /// <summary>A light's colour as the notch shows it: its hue, but with little saturation and a set lightness.</summary>
@@ -228,519 +275,279 @@ public partial class ControlCenterView
         return Color.FromRgb((byte)Math.Round((r1 + m) * 255), (byte)Math.Round((g1 + m) * 255), (byte)Math.Round((b1 + m) * 255));
     }
 
-    private void UpdateHomeStatus(PiHome home) => SetCompactStatus(home.Climate is { } c
-        ? $"{(c.IsHeating ? "♨ " : "")}{(c.Current is { } current ? Degrees(current) : "–")}  → {(c.Target is { } target ? Degrees(target) : "–")}" : "");
-
-    private void UpdateHome(PiHome home, bool force = false)
+    private void UpdateHome(PiHome home)
     {
-        UpdateHomeStatus(home);
-        bool quiet = !force && DateTime.UtcNow < _homeQuietUntilUtc;
-        if (!quiet)
-        {
-            foreach (var light in home.Lights)
-                if (_lightTiles.TryGetValue(light.Id, out var tile)) tile.Show(AsShown(light), animate: true);
-        }
-        if (_heating != null && home.Climate is { } climate) _heating.Show(climate, keepTarget: quiet || _targetDraft != null);
-        foreach (var plug in home.Plugs)
-            if (_plugReadouts.TryGetValue(plug.Id, out var readout)) readout.Show(plug);
-        if (home.Pi != null) _piReadout?.Show(home.Pi);
+        foreach (var update in _homeDrawerUpdates) update(home);
     }
 
-    /// <summary>Sends a switch to the dashboard and shows the room again once Home Assistant has caught up.</summary>
     private async void SendHome(string action, string? id, JsonNode? value)
     {
-        if (_pi == null) return;
-        _homeQuietUntilUtc = DateTime.UtcNow.AddMilliseconds(HomeSettleMs + 600);
-        bool ok = await _pi.SendHomeAsync(action, id, value);
+        await PostHome(action, id, value);
+        RefreshHomeAfterCommand();
+    }
+
+    private async Task PostHome(string action, string? id, JsonNode? value)
+    {
+        if (_pi == null || _disposed) return;
+        if (await _pi.SendHomeAsync(action, id, value) == HomeCommandResult.Accepted && !_disposed)
+            await Task.Delay(HomeSettleMs);
+    }
+
+    private void RefreshHomeAfterCommand()
+    {
         if (_disposed) return;
-        if (ok) await Task.Delay(HomeSettleMs);
-        _homeQuietUntilUtc = default;
-        // Values change in place (the lamps keep their glow); only a changed layout rebuilds.
-        RefreshPi();
+        if (_piRefreshing) _homeRefreshQueued = true;
+        else RefreshPi();
     }
 
-    #region Lights
-
-    /// <summary>
-    /// A round light switch. Its glow and glyph answer state changes and remain still at rest.
-    /// </summary>
-    private sealed class LightTile
+    private void StepHomeTarget(double step)
     {
-        public required ControlCenterView View;
-        public required Border Card;
-        public required TextBlock Icon, State;
-        public required SolidColorBrush Ink, Fill;
-        public required GradientStop GlowCore, GlowMid;
-        public required ScaleTransform GlowScale;
-        public HomeLight Light = null!;
-        public bool? On;
-        public Color Color;
-        public readonly List<(Ellipse Dot, Color Color)> Dots = new();
-        public FrameworkElement? Controls;
-        public Action? RefreshStrip;
-        public TextBlock? BrightnessLabel;
-        public ScaleTransform? BrightnessFill;
-
-        public Color LitColor => Light.Rgb ? Calm(Color, maxSaturation: 0.45, lightness: 0.66) : LampLight;
-
-        public void Show(HomeLight light, bool animate)
+        if (_home is not { Climate: { } climate } home || (_targetDraft ?? climate.Target) is not { } from) return;
+        double low = Math.Max(5, climate.Min), high = Math.Min(30, climate.Max);
+        if (high <= low) return;
+        double next = Math.Clamp(Math.Round((from + step) * 2) / 2, low, high);
+        if (from == next) return;
+        _targetDraft = next;
+        UpdateHomeFace(home);
+        UpdateHome(home);
+        if (_targetSend == null)
         {
-            Light = light;
-            var color = light.Rgb ? light.Color ?? Color : LampLight;
-            bool changed = On != light.On || (light.On && color != Color);
-            bool turnedOn = On == false && light.On;
-            bool turnedOff = On == true && !light.On;
-            On = light.On;
-            Color = color;
-            if (Controls != null) { Controls.Opacity = light.On ? 1 : .4; Controls.IsEnabled = light.On && light.Available; }
-            RefreshStrip?.Invoke();
-            if (!changed && !animate) return;
-            bool moving = animate && Card.IsVisible && !AnimationConfig.ReduceMotion;
-            double ms = moving ? 180 : 0;
-            var lit = LitColor;
-            SetOrTint(Ink, light.On ? lit : ((SolidColorBrush)Muted).Color, ms);
-            SetOrTint(Fill, light.On ? Alpha(lit, 0.16) : ((SolidColorBrush)CardBg).Color, ms);
-            Fade(GlowCore, light.On ? Alpha(lit, 0.55) : Alpha(lit, 0), ms);
-            Fade(GlowMid, light.On ? Alpha(lit, 0.18) : Alpha(lit, 0), ms);
-            SetDetailText(State, StateText());
-            if (BrightnessLabel != null) BrightnessLabel.Text = $"{light.Brightness ?? 100} %";
-            if (BrightnessFill != null) Motion.Stop(BrightnessFill, ScaleTransform.ScaleXProperty, (light.Brightness ?? 100) / 100d);
-            foreach (var (dot, c) in Dots) dot.Stroke = light.On && Near(c, color) ? Brushes.White : RingOff;
-            if (!moving)
-            {
-                Settle();
-                return;
-            }
-            if (turnedOn)
-            {
-                Motion.To(GlowScale, ScaleTransform.ScaleXProperty, 1, Motion.Shift);
-                Motion.To(GlowScale, ScaleTransform.ScaleYProperty, 1, Motion.Shift);
-                DetailReaction(Icon);
-            }
-            else if (turnedOff)
-            {
-                // The glow folds back into the switch.
-                Motion.To(GlowScale, ScaleTransform.ScaleXProperty, 0.2, Motion.Exit);
-                Motion.To(GlowScale, ScaleTransform.ScaleYProperty, 0.2, Motion.Exit);
-                DetailReaction(Icon);
-            }
+            _targetSend = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(TargetSendDelayMs) };
+            _targetSend.Tick += SendTarget;
         }
-
-        public void Settle()
-        {
-            Motion.Stop(GlowScale, ScaleTransform.ScaleXProperty, On == true ? 1 : 0.2);
-            Motion.Stop(GlowScale, ScaleTransform.ScaleYProperty, On == true ? 1 : 0.2);
-            var lit = LitColor;
-            SetOrTint(Ink, On == true ? lit : ((SolidColorBrush)Muted).Color, 0);
-            SetOrTint(Fill, On == true ? Alpha(lit, 0.16) : ((SolidColorBrush)CardBg).Color, 0);
-            Fade(GlowCore, On == true ? Alpha(lit, 0.55) : Alpha(lit, 0), 0);
-            Fade(GlowMid, On == true ? Alpha(lit, 0.18) : Alpha(lit, 0), 0);
-        }
-
-        public string StateText() =>
-            !Light.Available ? "Offline"
-            : !Light.On ? Loc.Get("control.off")
-            : Loc.Get("control.on");
+        _targetSend.Stop();
+        _targetSend.Start();
     }
 
-    private static readonly Brush RingOff = Frozen("#26FFFFFF");
-
-    private static bool Near(Color a, Color b) => Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B) < 40;
-
-    private void BuildLights(PiHome home)
-    {
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
-        foreach (var light in home.Lights)
-        {
-            var tile = NewLightTile(AsShown(light), home.StripColors);
-            _lightTiles[light.Id] = tile;
-            row.Children.Add(tile.Card);
-            if (light.Rgb) row.Children.Add(StripControls(tile, home.StripColors));
-        }
-        foreach (var plug in home.Plugs.Where(p => !p.Guard).Take(3))
-        {
-            var socket = NewLightTile(new HomeLight(plug.Id, plug.Name, false, plug.Available, plug.On, null, null), Array.Empty<HomeColor>());
-            socket.Icon.Text = Glyph(plug.Name.Contains("Mikrofon", StringComparison.OrdinalIgnoreCase) ? 0xE720 : 0xE945);
-            socket.Card.IsHitTestVisible = false;
-            var hit = new Border { Child = socket.Card, Cursor = Cursors.Hand, Background = Brushes.Transparent };
-            bool on = plug.On;
-            Squish(hit);
-            hit.MouseLeftButtonUp += (_, e) => { e.Handled = true; if (!plug.Available) return; on = !on;
-                socket.Show(socket.Light with { On = on }, true); SendHome("plug", plug.Id, JsonValue.Create(on)); };
-            row.Children.Add(hit);
-        }
-        _homeLightSection.Children.Add(row);
-    }
-
-    private LightTile NewLightTile(HomeLight light, IReadOnlyList<HomeColor> colors)
-    {
-        var ink = new SolidColorBrush(((SolidColorBrush)CompactLabel).Color);
-        var fill = new SolidColorBrush(((SolidColorBrush)CompactTrack).Color);
-        var icon = CompactGlyph(light.Rgb ? 0xE790 : 0xE82F, ink);
-        icon.FontSize = 20; icon.Width = 24;
-        var core = new GradientStop(Colors.Transparent, 0);
-        var mid = new GradientStop(Colors.Transparent, .5);
-        var glowScale = new ScaleTransform(.2, .2);
-        var glow = new Ellipse { Width = 52, Height = 52, IsHitTestVisible = false,
-            Fill = new RadialGradientBrush { GradientStops = { core, mid, new GradientStop(Colors.Transparent, 1) } },
-            RenderTransformOrigin = new Point(.5, .5), RenderTransform = glowScale };
-        var ring = new Border { Width = 52, Height = 52, CornerRadius = new CornerRadius(26), Background = fill, Child = icon };
-        var body = new Grid { Height = 54, Children = { glow, ring } };
-        var name = CompactText(light.Name, 11, CompactLabel); name.TextAlignment = TextAlignment.Center;
-        name.Margin = new Thickness(0, 5, 0, 0);
-        var state = CompactText("", 10.5, CompactLabel); state.TextAlignment = TextAlignment.Center;
-        var card = new Border { Width = 62, Background = Brushes.Transparent, Cursor = Cursors.Hand,
-            Opacity = light.Available ? 1 : .4, Child = new StackPanel { Children = { body, name, state } } };
-        System.Windows.Automation.AutomationProperties.SetName(card, light.Name);
-        var tile = new LightTile { View = this, Card = card, Icon = icon, State = state,
-            Ink = ink, Fill = fill, GlowCore = core, GlowMid = mid, GlowScale = glowScale, Color = light.Color ?? LampLight };
-        Squish(card);
-        card.MouseEnter += (_, _) => ring.BorderThickness = new Thickness(1);
-        card.MouseLeave += (_, _) => ring.BorderThickness = new Thickness(0);
-        ring.BorderBrush = Frozen("#26FFFFFF");
-        card.MouseLeftButtonUp += (_, e) =>
-        {
-            e.Handled = true;
-            if (!tile.Light.Available) return;
-            bool on = tile.On != true;
-            tile.Show(tile.Light with { On = on }, animate: true);
-            SetHomeMoodFromTiles();
-            SendHome("light", tile.Light.Id, JsonValue.Create(on));
-        };
-        card.IsVisibleChanged += (_, _) => { if (!card.IsVisible) tile.Settle(); };
-        tile.Show(light, animate: false);
-        return tile;
-    }
-
-    private FrameworkElement StripControls(LightTile tile, IReadOnlyList<HomeColor> colors)
-    {
-        var panel = new StackPanel { Width = 138, Margin = new Thickness(4, 0, 4, 0),
-            IsEnabled = tile.Light.Available && tile.On == true, Opacity = tile.On == true ? 1 : .4 };
-        var modes = new Grid { Height = 23 };
-        modes.ColumnDefinitions.Add(new ColumnDefinition()); modes.ColumnDefinitions.Add(new ColumnDefinition());
-        var dots = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 2) };
-        foreach (var color in colors.Take(8))
-        {
-            var dot = new Ellipse { Width = 12, Height = 12, Fill = new SolidColorBrush(Mix(color.Color, Grey, .3)),
-                Margin = new Thickness(2, 2, 3, 2), StrokeThickness = 1, ToolTip = color.Name, Cursor = Cursors.Hand };
-            tile.Dots.Add((dot, color.Color)); Squish(dot);
-            dot.MouseLeftButtonUp += (_, e) =>
-            {
-                e.Handled = true;
-                tile.Show(tile.Light with { Color = color.Color }, true);
-                SetHomeMoodFromTiles();
-                SendHome("light", tile.Light.Id, new JsonObject { ["rgb"] = new JsonArray(color.Color.R, color.Color.G, color.Color.B) });
-            };
-            dots.Children.Add(dot);
-        }
-        var fold = new Border { ClipToBounds = true, Height = _musicSync == true ? 0 : 23, Child = dots };
-        var height = new WeatherTween { Step = h => fold.Height = Math.Max(0, h), Value = fold.Height };
-        Border? colorButton = null, musicButton = null;
-        bool? shownMusic = null;
-        void PaintMode()
-        {
-            bool music = _musicSync == true;
-            if (shownMusic == music) return;
-            shownMusic = music;
-            colorButton!.Background = music ? Brushes.Transparent : Frozen("#26FFFFFF");
-            musicButton!.Background = music ? Frozen("#26FFFFFF") : Brushes.Transparent;
-            musicButton.ToolTip = _musicSync == null ? "Musik-Sync ist auf diesem PC nicht eingerichtet" : "Musik";
-            musicButton.IsEnabled = _musicSync != null;
-            if (panel.IsVisible) Motion.To(height, WeatherTween.ValueProperty, music ? 0 : 23, Motion.Shift);
-            else Motion.Stop(height, WeatherTween.ValueProperty, music ? 0 : 23);
-            Motion.Stop(dots, OpacityProperty, music ? 0 : 1);
-        }
-        async void Select(bool music)
-        {
-            if ((_musicSync == true) == music || _musicSync == null && music) return;
-            if (_musicSync != null && !await GoveeSync.SetRunningAsync(music)) return;
-            _musicSync = music; PaintMode(); SetDetailText(tile.State, tile.StateText());
-            if (_home != null) UpdateHome(_home, force: true);
-        }
-        colorButton = CompactPill("Farbe", () => Select(false));
-        musicButton = CompactPill("Musik", () => Select(true));
-        colorButton.HorizontalAlignment = musicButton.HorizontalAlignment = HorizontalAlignment.Stretch;
-        Grid.SetColumn(musicButton, 1);
-        modes.Children.Add(colorButton); modes.Children.Add(musicButton);
-        panel.Children.Add(new Border { CornerRadius = new CornerRadius(9), Background = CompactTrack, Child = modes });
-        var brightness = CompactText($"{tile.Light.Brightness ?? 100} %", 10.5, CompactLabel);
-        brightness.HorizontalAlignment = HorizontalAlignment.Right;
-        brightness.Margin = new Thickness(0, 5, 0, 0);
-        panel.Children.Add(brightness);
-        tile.BrightnessLabel = brightness;
-        var bar = ThinBar((tile.Light.Brightness ?? 100) / 100d, tile.Ink, _ => { });
-        // The current Pi contract exposes brightness as telemetry, but accepts only RGB and on/off for lights.
-        bar.IsEnabled = false;
-        tile.BrightnessFill = (ScaleTransform)bar.Tag;
-        ToolTipService.SetShowOnDisabled(bar, true);
-        bar.ToolTip = "Helligkeit: Der Pi-Steuerweg unterstützt bisher nur Farbe und An/Aus";
-        panel.Children.Add(bar); panel.Children.Add(fold);
-        tile.Controls = panel;
-        tile.RefreshStrip = PaintMode;
-        panel.IsVisibleChanged += (_, _) => { if (!panel.IsVisible) Motion.Stop(height, WeatherTween.ValueProperty, _musicSync == true ? 0 : 23); };
-        PaintMode();
-        return panel;
-    }
-
-    /// <summary>Right after a tap the tab's colour follows what the tiles now show, before the dashboard confirms it.</summary>
-    private void SetHomeMoodFromTiles()
-    {
-        var lights = _lightTiles.Values.Select(t => t.Light with { On = t.On == true, Color = t.Light.Rgb ? t.Color : t.Light.Color }).ToList();
-        var mood = HomeMood(lights);
-        SetMoodColors(mood.Main, mood.Warmer, mood.Cooler);
-    }
-
-    #endregion
-
-    #region Climate
-
-    private sealed class HeatingParts
-    {
-        public required TextBlock Status, Current, Target, Humidity;
-        public required RollingNumber CurrentRoll, TargetRoll, HumidityRoll;
-        public bool HasHumidity;
-
-        public void Show(HomeClimate climate, bool keepTarget)
-        {
-            SetDetailText(Status, climate.Mode == "off" ? Loc.Get("home.heatingOff") : climate.IsHeating ? Loc.Get("home.heatingNow") : "");
-            if (climate.Current is { } current) CurrentRoll.To(current);
-            if (!keepTarget && climate.Target is { } target) TargetRoll.To(target);
-            HasHumidity = climate.Humidity != null;
-            if (!HasHumidity) SetDetailText(Humidity, "");
-            HumidityRoll.To(climate.Humidity ?? 0);
-        }
-    }
-
-    private static string Degrees(double value) => value.ToString(value % 1 == 0 ? "0" : "0.0", CultureInfo.CurrentCulture) + "°";
-
-    private void BuildClimate(PiHome home)
-    {
-        if (home.Climate is { } climate) _homeClimateSection.Children.Add(HeatingCard(climate));
-        if (home.AirConditioner.Count > 0) _homeClimateSection.Children.Add(AirConditionerCard(home.AirConditioner));
-    }
-
-    private FrameworkElement HeatingCard(HomeClimate climate)
-    {
-        var title = CompactText(Loc.Get("home.heating"), 11, Muted);
-        var status = CompactText("", 11, _moodSoft);
-        status.Margin = new Thickness(6, 0, 0, 0);
-        var head = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, status } };
-
-        var current = CompactText("–", 11, CompactLabel);
-        var roll = new RollingNumber(v => current.Text = v.ToString("0.0", CultureInfo.CurrentCulture) + "°", current);
-        var target = CompactText("", 26, CompactInk);
-        target.MinWidth = 62;
-        target.TextAlignment = TextAlignment.Center;
-        target.RenderTransformOrigin = new Point(0.5, 0.5);
-        var targetRoll = new RollingNumber(value => target.Text = Degrees(value), target);
-        var stepper = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children = { StepButton("−", -0.5), target, StepButton("+", 0.5) }
-        };
-        stepper.Margin = new Thickness(0, 6, 0, 5);
-        var humidity = CompactText("", 11, CompactLabel);
-        var room = new WrapPanel { Children =
-        {
-            CompactText("Im Raum ", 11, CompactLabel), current,
-            CompactText(", ", 11, CompactLabel), humidity,
-            CompactText(climate.WindowOpen ? ", Fenster offen" : ", Fenster zu", 11, CompactLabel)
-        } };
-        var card = new Border { Background = Brushes.Transparent, Tag = "drawer-row", Padding = new Thickness(0, 0, 0, 10),
-            Child = new StackPanel { Children = { head, stepper, room } } };
-
-        HeatingParts? parts = null;
-        var humidityRoll = new RollingNumber(value =>
-        {
-            if (parts?.HasHumidity == true) SetRollingDetailText(humidity, Loc.Get("home.humidity", Math.Round(value)));
-        }, humidity);
-        parts = new HeatingParts { Status = status, Current = current, Target = target, Humidity = humidity, CurrentRoll = roll, TargetRoll = targetRoll, HumidityRoll = humidityRoll };
-        _heating = parts;
-        _heating.Show(climate, keepTarget: false);
-        return card;
-
-        Border StepButton(string sign, double step)
-        {
-            var label = CompactText(sign, 15, VNotch.Services.UiPalette.PrimaryBrush);
-            label.HorizontalAlignment = HorizontalAlignment.Center;
-            var button = new Border
-            {
-                Width = 28,
-                Height = 28,
-                CornerRadius = new CornerRadius(14),
-                Background = ComboBg,
-                BorderBrush = ComboBorder,
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                Child = label
-            };
-            button.MouseEnter += (_, _) => button.Background = ComboHover;
-            button.MouseLeave += (_, _) => button.Background = ComboBg;
-            button.MouseLeftButtonDown += (_, e) =>
-            {
-                e.Handled = true;
-                if (_home?.Climate is not { } now) return;
-                double from = _targetDraft ?? now.Target ?? 20;
-                double next = Math.Clamp(Math.Round((from + step) * 2) / 2, now.Min, now.Max);
-                _targetDraft = next;
-                targetRoll.To(next);
-                DetailReaction(target);
-                // Several taps in a row send one change.
-                _targetSend ??= new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(TargetSendDelayMs) };
-                _targetSend.Stop();
-                _targetSend.Tick -= SendTarget;
-                _targetSend.Tick += SendTarget;
-                _targetSend.Start();
-            };
-            Squish(button);
-            DetailHover(button, label, y: step > 0 ? -2 : 2);
-            return button;
-        }
-    }
-
-    private void SendTarget(object? sender, EventArgs e)
+    private async void SendTarget(object? sender, EventArgs e)
     {
         _targetSend?.Stop();
-        if (_targetDraft is not { } value) return;
-        _targetDraft = null;
-        SendHome("temp", null, JsonValue.Create(value));
+        if (_targetSending || _targetDraft is not { } value) return;
+        _targetSending = true;
+        try { await PostHome("temp", null, JsonValue.Create(value)); }
+        finally
+        {
+            _targetSending = false;
+            if (!_disposed && _targetSend?.IsEnabled != true)
+            {
+                if (_targetDraft == value) _targetDraft = null;
+                else SendTarget(null, EventArgs.Empty);
+            }
+            RefreshHomeAfterCommand();
+        }
     }
 
-    /// <summary>The air conditioner's IR remote: one chip per button; it has no state to show, so a press just answers.</summary>
-    private FrameworkElement AirConditionerCard(IReadOnlyList<HomeAction> buttons)
+
+    private void BuildClimate(PiHome home, IReadOnlyList<HomeAction> ac)
     {
-        var title = CompactText(Loc.Get("home.ac"), 11, Muted);
-        var chips = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-        foreach (var button in buttons)
+        if (home.Climate != null)
         {
-            bool power = button.Icon == "power";
-            var label = new StackPanel { Orientation = Orientation.Horizontal };
-            if (power)
-                label.Children.Add(new TextBlock { Text = Glyph(0xE7E8), FontFamily = SegoeSymbolFont, FontSize = 11, Foreground = _moodInk, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 6, 0) });
-            label.Children.Add(CompactText(button.Name, 11.5, power ? _moodInk : VNotch.Services.UiPalette.PrimaryBrush));
-            var chip = new Border
+            _homeClimateSection.Children.Add(HomeText(Say("Raumklima", "Room climate"), 20, CompactInk, 550));
+            var current = HomeText("–", 34, CompactInk, 500);
+            var state = HomeText("", 13, RoomLabel);
+            state.Margin = new Thickness(9, 0, 0, 4);
+            state.VerticalAlignment = VerticalAlignment.Bottom;
+            var room = new StackPanel
             {
-                CornerRadius = new CornerRadius(11),
-                Padding = new Thickness(10, 4, 10, 4),
-                Margin = new Thickness(0, 0, 6, 6),
-                Background = power ? new SolidColorBrush(Alpha(_mood.Color, 0.22)) : new SolidColorBrush(((SolidColorBrush)ComboBg).Color),
-                Cursor = Cursors.Hand,
-                Child = label
+                Height = 41, Margin = new Thickness(0, 8, 0, 5), Orientation = Orientation.Horizontal, Children = { current, state }
             };
-            string id = button.Id;
-            chip.MouseLeftButtonDown += (_, e) =>
+            _homeDrawerThermostat = current;
+            _homeClimateSection.Children.Add(room);
+
+            var target = HomeText("–", 13, CompactInk);
+            target.MinWidth = 31;
+            target.TextAlignment = TextAlignment.Center;
+            target.Margin = new Thickness(9, 0, 9, 0);
+            var minus = TargetButton("−", -.5);
+            var plus = TargetButton("+", .5);
+            var caption = HomeText(Say("Ziel", "Target"), 13, RoomLabel);
+            caption.Margin = new Thickness(0, 0, 9, 0);
+            _homeClimateSection.Children.Add(new StackPanel
+            {
+                Orientation = Orientation.Horizontal, Children = { caption, minus, target, plus }
+            });
+            var humidity = HomeText("", 13, CompactInk);
+            humidity.Margin = new Thickness(8, 0, 0, 0);
+            var window = HomeText("", 13, RoomSub);
+            window.Margin = new Thickness(8, 0, 0, 0);
+            var drop = HomeOutline("M12 3 C12 3 6 10 6 14 A6 6 0 0 0 18 14 C18 10 12 3 12 3 Z", 15);
+            HomeIconPath(drop).Stroke = RoomLabel;
+            var readings = new DockPanel { Height = 27, LastChildFill = true, Children = { drop, window, humidity } };
+            DockPanel.SetDock(window, Dock.Right);
+            _homeClimateSection.Children.Add(HomeDataLine(readings, 28));
+
+            var showCurrent = TrackHomeValue(current, "temperature:room", value => current.Text = HomeTemperature(value), smooth: true, drawer: true);
+            var showTarget = TrackHomeValue(target, "temperature:target", value => target.Text = HomeTemperature(value), smooth: true, drawer: true);
+            var showHumidity = TrackHomeValue(humidity, "humidity", value =>
+                humidity.Text = value is { } rh ? Say($"{Math.Round(rh)} % Luftfeuchte", $"{Math.Round(rh)}% humidity") : "", drawer: true);
+            _homeDrawerUpdates.Add(data =>
+            {
+                var climate = data.Climate!;
+                double? setpoint = _targetDraft ?? climate.Target;
+                showCurrent(climate.Current);
+                showTarget(setpoint);
+                showHumidity(climate.Humidity);
+                drop.Visibility = climate.Humidity.HasValue ? Visibility.Visible : Visibility.Collapsed;
+                ShowHomeText(state, "heating", climate.Action == null ? "" :
+                    climate.IsHeating ? Say("heizt", "Heating") : Say("Inaktiv", "Idle"));
+                ShowHomeText(window, "window", climate.WindowOpen ? Say("Fenster offen", "Window open") : Say("Fenster zu", "Window closed"));
+                minus.IsEnabled = setpoint > Math.Max(5, climate.Min);
+                plus.IsEnabled = setpoint < Math.Min(30, climate.Max);
+                minus.Opacity = minus.IsEnabled ? 1 : .4;
+                plus.Opacity = plus.IsEnabled ? 1 : .4;
+            });
+        }
+        if (ac.Count == 0) return;
+        var buttons = new WrapPanel { Margin = new Thickness(0, 9, 0, 0) };
+        foreach (var action in ac)
+        {
+            var label = HomeText(action.Icon switch
+            {
+                "power" => Say("Klima An/Aus", "A/C power"),
+                "fan" => Say("Stufe", "Fan"),
+                _ => Say("Kühl", "Cool")
+            }, 12, RoomLabel);
+            var button = HomeChip(label, new Thickness(8, 0, 8, 0));
+            button.MinHeight = 24;
+            button.Margin = new Thickness(0, 0, 5, 0);
+            button.MouseLeftButtonUp += (_, e) => { e.Handled = true; SendHome("ac", action.Id, null); };
+            buttons.Children.Add(button);
+        }
+        _homeClimateSection.Children.Add(buttons);
+
+        Border TargetButton(string sign, double step)
+        {
+            var button = HomeDisc(25, HomeText(sign, 13, CompactInk));
+            ((TextBlock)button.Child).TextAlignment = TextAlignment.Center;
+            button.Cursor = System.Windows.Input.Cursors.Hand;
+            button.ToolTip = Say($"Ziel {sign}0,5°", $"Target {sign}0.5°");
+            AutomationProperties.SetName(button, (string)button.ToolTip);
+            Pressable(button, () => RoomTrack, CardHover);
+            button.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
-                Flash(chip);
-                SendHome("ac", id, null);
+                if (button.IsEnabled) StepHomeTarget(step);
             };
-            Squish(chip);
-            chips.Children.Add(chip);
-        }
-        var card = new Border { Background = Brushes.Transparent, Tag = "drawer-row" };
-        card.Padding = new Thickness(0, 0, 0, 3);
-        card.Child = new StackPanel { Children = { title, chips } };
-        return card;
-
-        void Flash(Border chip)
-        {
-            if (chip.Background is not SolidColorBrush { IsFrozen: false } fill) return;
-            var rest = fill.Color;
-            SetOrTint(fill, Alpha(_mood.Color, 0.55), 0);
-            WeatherMotion.Tint(fill, rest, 220);
-        }
-    }
-
-    #endregion
-
-    #region Sockets and Pi
-
-    private static string PlugText(HomePlug plug)
-    {
-        if (!plug.Available) return Loc.Get("control.noAdapter");
-        var text = new StringBuilder(Loc.Get(plug.On ? "control.on" : "control.off"));
-        if (plug.On && plug.Watts is { } watts) text.Append(" · ").Append(Math.Round(watts)).Append(" W");
-        if (plug.TodayKwh is { } kwh && kwh > 0)
-            text.Append(" · ").Append(Loc.Get("home.today", kwh.ToString("0.00", CultureInfo.CurrentCulture), (kwh * EuroPerKwh).ToString("0.00", CultureInfo.CurrentCulture)));
-        return text.ToString();
-    }
-
-    private sealed class PlugReadout
-    {
-        private readonly TextBlock _text;
-        private readonly RollingNumber _wattsRoll, _energyRoll;
-        private HomePlug _plug;
-        private double _watts, _energy;
-
-        public PlugReadout(TextBlock text, HomePlug plug)
-        {
-            _text = text;
-            _plug = plug;
-            _watts = plug.Watts ?? 0;
-            _energy = plug.TodayKwh ?? 0;
-            _wattsRoll = new RollingNumber(value => { _watts = value; Paint(); }, text);
-            _energyRoll = new RollingNumber(value => { _energy = value; Paint(); }, text);
-            _wattsRoll.To(_watts, 0);
-            _energyRoll.To(_energy, 0);
-            text.IsVisibleChanged += (_, _) =>
-            {
-                if (!text.IsVisible) return;
-                _wattsRoll.Reveal();
-                _energyRoll.Reveal();
-            };
-        }
-
-        public void Show(HomePlug plug)
-        {
-            _plug = plug;
-            _wattsRoll.To(plug.Watts ?? 0);
-            _energyRoll.To(plug.TodayKwh ?? 0);
-        }
-
-        private void Paint()
-        {
-            _text.Text = PlugText(_plug with
-        {
-            Watts = _plug.Watts == null ? null : Math.Max(0, _watts),
-            TodayKwh = _plug.TodayKwh == null ? null : Math.Max(0, _energy)
-            });
-            _text.ToolTip = _text.Text;
+            return button;
         }
     }
 
     private void BuildPlugs(PiHome home)
     {
-        foreach (var plug in home.Plugs)
+        var plugs = home.Plugs.Where(p => !IsHomeMic(p.Id, p.Name)).ToArray();
+        if (plugs.Length == 0) return;
+        _homePlugSection.Children.Add(HomeText(Say("Strom", "Power"), 20, CompactInk, 550));
+        if (plugs.FirstOrDefault(p => p.TodayKwh.HasValue) is { } metered)
+        {
+            var kwh = HomeText("", 27, CompactInk, 500);
+            var cost = HomeText("", 12, RoomLabel);
+            cost.Margin = new Thickness(4, 0, 0, 4);
+            cost.VerticalAlignment = VerticalAlignment.Bottom;
+            _homePlugSection.Children.Add(new StackPanel
+            {
+                Orientation = Orientation.Horizontal, Margin = new Thickness(0, 3, 0, 3),
+                Children = { kwh, cost }
+            });
+            var showEnergy = TrackHomeValue(kwh, "energy:" + metered.Id, number =>
+            {
+                if (number is not { } energy) return;
+                energy = Math.Max(0, energy);
+                kwh.Text = energy.ToString("0.00", HomeCulture) + " kWh";
+                decimal estimate = Math.Round((decimal)energy * (decimal)EuroPerKwh, 2);
+                cost.Text = $"{metered.Name} {Say("heute", "today")} · €" + estimate.ToString("0.00", HomeCulture);
+            }, drawer: true);
+            _homeDrawerUpdates.Add(data => showEnergy(data.Plugs.First(p => p.Id == metered.Id).TodayKwh));
+        }
+        foreach (var plug in plugs)
         {
             string id = plug.Id;
-            var watts = CompactText(PlugText(plug), 10.5, CompactLabel);
-            watts.MaxWidth = 95; watts.ToolTip = PlugText(plug);
-            _plugStatus[id] = watts; _plugReadouts[id] = new PlugReadout(watts, plug);
-            var action = new StackPanel { Orientation = Orientation.Horizontal };
+            var name = HomeText(plug.Name, 13, CompactInk);
+            name.Margin = new Thickness(8, 0, 0, 0);
+            var status = HomeText("", 13, RoomSub);
+            status.IsVisibleChanged += (_, _) => { if (!status.IsVisible) Motion.Stop(status, OpacityProperty, 1); };
+            var icon = HomeOutline(plug.Guard ? HomeLockIcon : HomePlugIcon, 15);
+            HomeIconPath(icon).Stroke = RoomLabel;
+            var line = new DockPanel { Background = Brushes.Transparent };
+            line.Children.Add(icon);
+            var row = HomeDataLine(line, 24);
             if (_guardArmed == id)
             {
-                action.Children.Add(CompactText("Wirklich aus?", 10.5, CompactInk));
-                action.Children.Add(CompactPill("Aus", () => { _guardArmed = null; SendHome("plug", id, JsonValue.Create(false)); RedrawHome(); }));
-                action.Children.Add(CompactPill("Nein", () => { _guardArmed = null; RedrawHome(); }));
+                var confirm = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal, Children =
+                    {
+                        HomeText(Say("Wirklich aus?", "Turn off?"), 11, RoomLabel),
+                        CompactPill(Say("Aus", "Off"), () => { _guardArmed = null; SendHome("plug", id, JsonValue.Create(false)); RedrawHome(); }),
+                        CompactPill(Say("Nein", "Cancel"), () => { _guardArmed = null; RedrawHome(); })
+                    }
+                };
+                DockPanel.SetDock(confirm, Dock.Right);
+                line.Children.Add(confirm);
             }
             else
             {
-                action.Children.Add(watts);
-                if (plug.Guard) action.Children.Add(CompactGlyph(0xE72E));
-                var toggle = Toggle(plug.On, on =>
+                DockPanel.SetDock(status, Dock.Right);
+                line.Children.Add(status);
+                row.Cursor = System.Windows.Input.Cursors.Hand;
+                row.MouseLeftButtonUp += (_, e) =>
                 {
-                    if (plug.Guard && !on) { _guardArmed = id; RedrawHome(); DisarmLater(id); }
-                    else SendHome("plug", id, JsonValue.Create(on));
-                });
-                toggle.IsEnabled = plug.Available;
-                toggle.Margin = new Thickness(7, 0, 0, 0); action.Children.Add(toggle);
+                    if (_home?.Plugs.FirstOrDefault(p => p.Id == id) is not { Available: true } state) return;
+                    e.Handled = true;
+                    if (state.Guard && state.On) { _guardArmed = id; RedrawHome(); DisarmLater(id); }
+                    else SendHome("plug", id, JsonValue.Create(!state.On));
+                };
             }
-            var row = CompactLine(plug.Name == "PC" ? 0xE7F4 : plug.Name == "Pi" ? 0xE950 : 0xE945, plug.Name, action);
-            if (!plug.Available) row.Opacity = .4;
+            line.Children.Add(name);
             _homePlugSection.Children.Add(row);
+
+            HomePlug shown = plug;
+            void Paint(double? watts)
+            {
+                status.Text = !shown.Available ? Say("Offline", "Offline") :
+                    shown.On && watts.HasValue ? $"{Math.Max(0, watts.Value):0} W" : Loc.Get(shown.On ? "control.on" : "control.off");
+            }
+            var showWatts = TrackHomeValue(status, "plug:" + id + ":watts", Paint, drawer: true);
+            _homeDrawerUpdates.Add(data =>
+            {
+                shown = data.Plugs.First(p => p.Id == id);
+                row.IsEnabled = shown.Available;
+                row.Opacity = shown.Available ? 1 : .4;
+                showWatts(shown.Available && shown.On ? shown.Watts : null);
+                if (!HomeDetailChanged("plug:" + id + ":state", $"{shown.Available}:{shown.On}"))
+                {
+                    if (!shown.Available || !shown.On || shown.Watts == null) Paint(null);
+                }
+                else
+                {
+                    Paint(shown.Watts);
+                    Motion.To(status, OpacityProperty, 1, Motion.Shift, from: .65);
+                }
+            });
         }
+    }
+
+    private Border HomeDataLine(FrameworkElement line, double height) => new()
+    {
+        MinHeight = height, BorderThickness = new Thickness(0, 0, 0, 1), BorderBrush = RoomLine,
+        Background = Brushes.Transparent, Tag = "drawer-row", Child = line
+    };
+
+    private void ShowHomeText(TextBlock label, string key, string value)
+    {
+        if (label.Tag == null)
+        {
+            label.Tag = key;
+            label.IsVisibleChanged += (_, _) => { if (!label.IsVisible) Motion.Stop(label, OpacityProperty, 1); };
+        }
+        if (HomeDetailChanged(key, value)) Motion.To(label, OpacityProperty, 1, Motion.Shift, from: .65);
+        label.Text = value;
+    }
+
+    private bool HomeDetailChanged(string key, string value)
+    {
+        key = "home.details." + key;
+        _homeDrawerValues.Add(key);
+        return HomeValuesVisible(drawer: true) && Seen.Changed(key, value) && !AnimationConfig.ReduceMotion;
     }
 
     private void RedrawHome() { _homeKey = ""; BuildHome(); ContentHeightChanged?.Invoke(); }
@@ -753,78 +560,51 @@ public partial class ControlCenterView
             timer.Stop();
             if (_guardArmed != id) return;
             _guardArmed = null;
-            _homeKey = "";
-            BuildHome();
+            RedrawHome();
         };
         timer.Start();
     }
 
-    private static string PiText(HomePi pi)
-    {
-        var parts = new List<string>();
-        if (pi.Temp is { } temp) parts.Add(Math.Round(temp) + "°");
-        if (pi.UptimeSeconds is { } up) parts.Add(Loc.Get("home.piUp", FormatDuration(TimeSpan.FromSeconds(up))));
-        if (pi.Issues.Count == 0) parts.Add(Loc.Get("home.piOk"));
-        return string.Join(" · ", parts);
-    }
-
-    private sealed class PiReadout
-    {
-        private readonly TextBlock _text;
-        private readonly RollingNumber _temperatureRoll, _uptimeRoll;
-        private HomePi _pi;
-        private double _temperature, _uptime;
-
-        public PiReadout(TextBlock text, HomePi pi)
-        {
-            _text = text;
-            _pi = pi;
-            _temperature = pi.Temp ?? 0;
-            _uptime = pi.UptimeSeconds ?? 0;
-            _temperatureRoll = new RollingNumber(value => { _temperature = value; Paint(); }, text);
-            _uptimeRoll = new RollingNumber(value => { _uptime = value; Paint(); }, text);
-            _temperatureRoll.To(_temperature, 0);
-            _uptimeRoll.To(_uptime, 0);
-            text.IsVisibleChanged += (_, _) =>
-            {
-                if (text.IsVisible) _temperatureRoll.Reveal();
-            };
-        }
-
-        public void Show(HomePi pi)
-        {
-            _pi = pi;
-            _temperatureRoll.To(pi.Temp ?? 0);
-            _uptimeRoll.To(pi.UptimeSeconds ?? 0);
-        }
-
-        private void Paint() => _text.Text = "Pi " + PiText(_pi with
-        {
-            Temp = _pi.Temp == null ? null : _temperature,
-            UptimeSeconds = _pi.UptimeSeconds == null ? null : (long)Math.Max(0, _uptime)
-        });
-    }
-
-    /// <summary>The Pi in one quiet line; checks that are not green get a row each, with their fix when there is one.</summary>
     private void BuildPiLine(PiHome home)
     {
         if (home.Pi is not { } pi) return;
-        _piLine = CompactText("Pi " + PiText(pi), 11, CompactLabel);
-        _piLine.TextWrapping = TextWrapping.Wrap;
-        _piLine.Tag = "drawer-row";
-        _piReadout = new PiReadout(_piLine, pi);
-        _homePiSection.Children.Add(_piLine);
+        var line = HomeText("", 11, RoomLabel);
+        line.TextWrapping = TextWrapping.Wrap;
+        _homePiSection.Margin = new Thickness(0, 8, 0, 0);
+        _homePiSection.Children.Add(line);
+        HomePi reported = pi;
+        double? temperature = pi.Temp;
+        void Paint()
+        {
+            var parts = new List<string>();
+            if (temperature is { } temp) parts.Add(temp.ToString("0", HomeCulture) + "°");
+            if (reported.UptimeSeconds is { } up) parts.Add(Loc.Get("home.piUp", FormatDuration(TimeSpan.FromSeconds(up))));
+            if (reported.Issues.Count == 0) parts.Add(Loc.Get("home.piOk"));
+            line.Text = "Pi " + string.Join(" · ", parts);
+        }
+        var showTemperature = TrackHomeValue(line, "pi.temperature", value => { temperature = value; Paint(); }, drawer: true);
+        _homeDrawerUpdates.Add(data =>
+        {
+            reported = data.Pi!;
+            const string uptimeKey = "home.details.pi.uptime";
+            if (reported.UptimeSeconds is { } uptime)
+            {
+                _homeDrawerValues.Add(uptimeKey);
+                if (HomeValuesVisible(drawer: true)) Seen.Changed(uptimeKey, uptime);
+            }
+            else Seen.Forget(uptimeKey);
+            showTemperature(reported.Temp);
+            Paint();
+        });
         foreach (var issue in pi.Issues)
         {
             FrameworkElement? fix = issue.FixId is { } id ? CompactPill(issue.FixLabel ?? Loc.Get("home.fix"), () => SendHome("fix", id, null)) : null;
-            var row = CompactLine(0xE7BA, issue.Title, fix); row.ToolTip = issue.Detail;
+            var row = CompactLine(0xE7BA, issue.Title, fix);
+            row.ToolTip = issue.Detail;
             _homePiSection.Children.Add(row);
-            var detail = CompactText(issue.Detail, 10.5, CompactLabel); detail.TextWrapping = TextWrapping.Wrap;
+            var detail = HomeText(issue.Detail, 11, RoomLabel);
+            detail.TextWrapping = TextWrapping.Wrap;
             _homePiSection.Children.Add(detail);
         }
     }
-
-    #endregion
-
-    #endregion
 }

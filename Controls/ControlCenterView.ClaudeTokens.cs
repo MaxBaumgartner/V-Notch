@@ -34,7 +34,6 @@ public partial class ControlCenterView
         public required RollingNumber Context;
         public required RollingNumber ShareNumber;
         public required TextBlock Share;
-        public bool Filled;
         public bool HasShare;
     }
 
@@ -63,7 +62,7 @@ public partial class ControlCenterView
             Share = share
         };
         _tokenRow = row;
-        if (_tokensSeen.TryGetValue(lead.Id, out var seen)) ShowTokens(row, seen, fromZero: false);
+        if (_tokensSeen.TryGetValue(lead.Id, out var seen)) ShowTokens(row, seen);
         return stack;
     }
 
@@ -96,13 +95,8 @@ public partial class ControlCenterView
         return value;
     }
 
-    private void ShowTokens(TokenRow row, ClaudeSessionTokens tokens, bool fromZero)
+    private void ShowTokens(TokenRow row, ClaudeSessionTokens tokens)
     {
-        if (fromZero && !AnimationConfig.ReduceMotion)
-        {
-            row.Context.To(0, 0);
-            row.ShareNumber.To(0, 0);
-        }
         row.Context.To(tokens.Context, 900);
         if (tokens.TaskLimitPercent is { } percent)
         {
@@ -119,7 +113,6 @@ public partial class ControlCenterView
         var chat = tokens.Chat;
         row.Host.ToolTip = Loc.Get("control.claude.tokensBreakdown",
             FormatTokens(chat.Input), FormatTokens(chat.CacheWrite), FormatTokens(chat.CacheRead), FormatTokens(chat.Output));
-        row.Filled = true;
     }
 
     /// <summary>"812", "48,1k", "266k", "2,4M", in the reader's own decimal sign.</summary>
@@ -175,7 +168,7 @@ public partial class ControlCenterView
             _tokensSeen[row.SessionId] = tokens;
             // The card may have been rebuilt meanwhile: fill whichever row shows this session now.
             if (_tokenRow is { } now && now.SessionId == row.SessionId)
-                ShowTokens(now, tokens, fromZero: !now.Filled && IsVisible);
+                ShowTokens(now, tokens);
         }
         catch (Exception ex)
         {
@@ -185,11 +178,5 @@ public partial class ControlCenterView
         {
             _tokenReading = false;
         }
-    }
-
-    /// <summary>When the tab opens the figures roll up from zero, like the limit bars fill.</summary>
-    private void RollTokensIn()
-    {
-        if (_tokenRow is { } row && _tokensSeen.TryGetValue(row.SessionId, out var tokens)) ShowTokens(row, tokens, fromZero: true);
     }
 }

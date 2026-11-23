@@ -14,15 +14,7 @@ using VNotch.Services.ClaudeCode;
 
 namespace VNotch.Controls;
 
-/// <summary>
-/// The Claude tab in its "focus" layout. The session that matters most right now sits big at the top: one
-/// that waits for you, else the one at work. It shows its state, what it does and a large running time, and
-/// a request with big buttons. The other sessions are small chips under it (a tap brings one up), and the plan
-/// limits are a slim strip at the bottom. One muted mood colour says what Claude is at: warm grey when quiet,
-/// a soft Claude terracotta at work, amber when it waits, rosé when a limit is nearly used up. The backdrop
-/// drifts in it like the system tab's. Everything that moves runs only while the tab is on screen, and the
-/// moving parts outlive a rebuild, so a redraw does not restart them.
-/// </summary>
+/// <summary>The Claude accounts face and session controls below it.</summary>
 public partial class ControlCenterView
 {
     #region Colours
@@ -57,7 +49,6 @@ public partial class ControlCenterView
     /// <summary>From this share of a plan limit on, the tab turns rosé.</summary>
     internal const double NearLimitPercent = 85;
 
-    private const int ClaudeLoopFps = 30;
     private const string ChipsTag = "chips";
 
 
@@ -88,101 +79,8 @@ public partial class ControlCenterView
     // Request cards on the page by id, so an answer can fold its card away before it goes.
     private readonly Dictionary<string, FrameworkElement> _requestCards = new(StringComparer.Ordinal);
 
-    // The moving parts, shared by every rebuild of the hero.
-    private readonly RotateTransform _starSpin = new();
-    private readonly ScaleTransform _starPulse = new(1, 1);
-    private TransformGroup? _starMotion;
-    private readonly TranslateTransform _shimmerShift = new(-1, 0);
-    private LinearGradientBrush? _shimmer;
-    private readonly TranslateTransform _sweepShift = new(-1, 0);
-    private readonly GradientStop _sweepCore = new(ClaudeAtWork.Main, 0.5);
-    private LinearGradientBrush? _sweep;
-    private readonly SolidColorBrush _breathEdge = new(Color.FromArgb(0x8C, 0xD6, 0xB0, 0x7E));
-    private RadialGradientBrush? _breathGlow;
-    private readonly LoopSet _spinLoop = new();
-    private readonly LoopSet _pulseLoop = new();
-    private readonly LoopSet _shimmerLoop = new();
-    private readonly LoopSet _sweepLoop = new();
-    private readonly LoopSet _breathLoop = new();
-    private bool _wantSpin, _wantPulse, _wantShimmer, _wantSweep, _wantBreath;
-
-    // The limit bars: a darker shade at the start, the mood at the tip.
-    private readonly GradientStop _claudeBarBase = new(Dim(ClaudeQuiet.Main, 0.62), 0);
-    private readonly GradientStop _claudeBarTip = new(ClaudeQuiet.Main, 1);
-    private LinearGradientBrush? _claudeBar;
     private Color? _claudeMoodMain;
-    private sealed class LimitBar
-    {
-        public required string Key;
-        public required double Used;
-        public required ScaleTransform Grow;
-        public required WeatherTween Number;
-        public required StackPanel Host;
-        public required TextBlock Label;
-        public required TextBlock Percent;
-        public DateTimeOffset? ResetsAt;
-        public bool AskedAfterReset;
-    }
-    private readonly List<LimitBar> _limitBars = new();
-    private readonly Dictionary<string, LimitBar> _limitVisuals = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, double> _limitShown = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Session, string Part), TextBlock> _claudeTexts = new();
-    private readonly List<FrameworkElement> _heroDetails = new();
-
-    private TransformGroup StarMotion => _starMotion ??= new TransformGroup { Children = { _starPulse, _starSpin } };
-
-    // "Liest MainWindow.xaml…" glints like Claude Code's own spinner text.
-    private LinearGradientBrush Shimmer => _shimmer ??= new LinearGradientBrush
-    {
-        StartPoint = new Point(0, 0.5),
-        EndPoint = new Point(1, 0.5),
-        RelativeTransform = _shimmerShift,
-        GradientStops =
-        {
-            new GradientStop(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF), 0),
-            new GradientStop(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF), 0.38),
-            new GradientStop(Color.FromArgb(0xF2, 0xFF, 0xFF, 0xFF), 0.5),
-            new GradientStop(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF), 0.62),
-            new GradientStop(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF), 1)
-        }
-    };
-
-    // A streak of light that runs along the bottom of the hero while it works.
-    private LinearGradientBrush Sweep => _sweep ??= new LinearGradientBrush
-    {
-        StartPoint = new Point(0, 0.5),
-        EndPoint = new Point(1, 0.5),
-        RelativeTransform = _sweepShift,
-        GradientStops =
-        {
-            new GradientStop(Colors.Transparent, 0),
-            new GradientStop(Colors.Transparent, 0.325),
-            _sweepCore,
-            new GradientStop(Colors.Transparent, 0.675),
-            new GradientStop(Colors.Transparent, 1)
-        }
-    };
-
-    // A waiting hero glows softly from its top edge.
-    private RadialGradientBrush BreathGlow => _breathGlow ??= new RadialGradientBrush
-    {
-        Center = new Point(0.5, 0),
-        GradientOrigin = new Point(0.5, 0),
-        RadiusX = 0.85,
-        RadiusY = 1.3,
-        GradientStops =
-        {
-            new GradientStop(Color.FromArgb(0x2E, 0xD6, 0xB0, 0x7E), 0),
-            new GradientStop(Color.FromArgb(0x00, 0xD6, 0xB0, 0x7E), 1)
-        }
-    };
-
-    private LinearGradientBrush ClaudeBar => _claudeBar ??= new LinearGradientBrush
-    {
-        StartPoint = new Point(0, 0),
-        EndPoint = new Point(1, 0),
-        GradientStops = { _claudeBarBase, _claudeBarTip }
-    };
 
     #endregion
 
@@ -192,19 +90,20 @@ public partial class ControlCenterView
     {
         _accent = _mood;
         if (_disposed || _claude == null) return;
+        var sessions = _claude.GetSessions();
+        var pending = _claude.GetPending();
+        var limits = _usage?.Latest;
+        TrackFocus(sessions);
+        var order = FocusOrder(sessions, _composingSessionId ?? _focusedSessionId);
+        var lead = order.Count > 0 ? order[0] : null;
+        RefreshClaudeFace(lead, limits);
         // A rebuild would take the text box from under the typing; catch up once the message is sent.
         if (_composerBox?.IsKeyboardFocusWithin == true)
         {
             _rebuildAfterComposing = true;
             return;
         }
-        var sessions = _claude.GetSessions();
-        var pending = _claude.GetPending();
-        var limits = _usage?.Latest;
         bool listening = _hookServer?.IsListening == true;
-
-        TrackFocus(sessions);
-        var order = FocusOrder(sessions, _composingSessionId ?? _focusedSessionId);
         string key = ClaudeKey(order, pending, limits, listening);
         if (key == _claudeKey) return;
         _claudeKey = key;
@@ -215,51 +114,34 @@ public partial class ControlCenterView
         {
             _workColor = work;
             SetOrTint(_workDot, work, IsVisible ? MoodFadeMs : 0);
-            Fade(_sweepCore, work, IsVisible ? MoodFadeMs : 0);
         }
-        var lead = order.Count > 0 ? order[0] : null;
-        bool anyWaiting = sessions.Any(s => s.Status == ClaudeSessionStatus.Waiting);
-        _wantPulse = anyWaiting;
-        _wantSpin = !anyWaiting && sessions.Any(s => s.Status == ClaudeSessionStatus.Working);
-        _wantShimmer = _wantSweep = lead?.Status == ClaudeSessionStatus.Working;
-        _wantBreath = lead?.Status == ClaudeSessionStatus.Waiting;
 
         _elapsedLabels.Clear();
         _firstRequestCard = null;
         _requestCards.Clear();
-        _limitBars.Clear();
         _heroTick = null;
-        _heroDetails.Clear();
         _tokenRow = null;
         foreach (var seen in new List<string>(_tokensSeen.Keys))
             if (!sessions.Exists(s => s.Id == seen)) _tokensSeen.Remove(seen);
         ForgetAnsweredQuestions(pending);
-        StopRipples();
-        _ripples.Clear();
         _rebuildingResetRows = true;
-        _claudeSection.Children.Clear();
+        while (_claudeSection.Children.Count > 1) _claudeSection.Children.RemoveAt(_claudeSection.Children.Count - 1);
 
         if (!_claudeInstalled) _claudeSection.Children.Add(SetupCard(listening));
         // Hooks in a project's own settings report here too, without our entry in the user settings.
         if ((_claudeInstalled || sessions.Count > 0) && !listening)
             _claudeSection.Children.Add(HintCard("", Loc.Get("control.claude.portBusy", ClaudeHookServer.DefaultPort)));
-        if (lead != null) _claudeSection.Children.Add(Hero(lead, pending));
-        else if (_claudeInstalled || _codexSessions.Count > 0) _claudeSection.Children.Add(EmptyHero());
+        if (lead != null && (lead.Cwd.Length > 0 || pending.Count > 0 || _composingSessionId != null ||
+            !string.IsNullOrEmpty(lead.Activity ?? lead.Prompt ?? lead.Summary)))
+            _claudeSection.Children.Add(Hero(lead, pending));
         if (order.Count > 1 || _codexSessions.Count > 0) _claudeSection.Children.Add(Chips(order));
-        _claudeSection.Children.Add(LimitStrip(limits));
-        AddResetRows(limits);
-        if (_codexUsage?.HasSource == true) AddCodexLimits();
-        foreach (var stale in _limitVisuals.Values.Where(bar => !_limitBars.Contains(bar)).ToList())
+        if (_accountsOpen) AddResetRows(limits, _inlineClaudeGrant);
+        foreach (var detail in _claudeSection.Children.OfType<FrameworkElement>().Skip(1))
         {
-            Motion.Stop(stale.Grow, ScaleTransform.ScaleXProperty, stale.Used / 100);
-            stale.Number.Stop(stale.Used);
-            if (DetailTexts.TryGetValue(stale.Label, out var staleCaptionState)) SettleDetailText(stale.Label, staleCaptionState);
-            _limitVisuals.Remove(stale.Key);
+            var margin = detail.Margin;
+            detail.Margin = new Thickness(margin.Left + 20, margin.Top, margin.Right + 20, margin.Bottom);
         }
         _rebuildingResetRows = false;
-        foreach (var bar in _limitBars)
-            if (!bar.Label.IsVisible && DetailTexts.TryGetValue(bar.Label, out var hiddenCaptionState))
-                SettleDetailText(bar.Label, hiddenCaptionState);
         foreach (var pair in _claudeTexts.ToList())
         {
             if (!pair.Value.IsVisible && DetailTexts.TryGetValue(pair.Value, out var state))
@@ -267,15 +149,11 @@ public partial class ControlCenterView
             if (!sessions.Exists(s => s.Id == pair.Key.Session)) _claudeTexts.Remove(pair.Key);
         }
 
-        RevealNewCards(_cardScratch);
-        _cardScratch.Clear();
         if (IsVisible)
         {
-            StartRipples();
             PopTick(0);
             RefreshTokens();
         }
-        ApplyClaudeLoops();
         ContentHeightChanged?.Invoke();
     }
 
@@ -369,11 +247,8 @@ public partial class ControlCenterView
     private void ApplyClaudeMood((Color Main, Color Warmer, Color Cooler) mood)
     {
         if (_claudeMoodMain == mood.Main) return;
-        double ms = _claudeMoodMain == null || !IsVisible ? 0 : MoodFadeMs;
         _claudeMoodMain = mood.Main;
         SetMoodColors(mood.Main, mood.Warmer, mood.Cooler);
-        Fade(_claudeBarTip, mood.Main, ms);
-        Fade(_claudeBarBase, Dim(mood.Main, 0.62), ms);
     }
 
     private Color StatusColor(ClaudeSessionStatus status) => status switch
@@ -427,9 +302,7 @@ public partial class ControlCenterView
         Width = size,
         Height = size,
         Stretch = Stretch.Uniform,
-        VerticalAlignment = VerticalAlignment.Center,
-        RenderTransformOrigin = new Point(0.5, 0.5),
-        RenderTransform = StarMotion
+        VerticalAlignment = VerticalAlignment.Center
     };
 
     /// <summary>
@@ -441,7 +314,6 @@ public partial class ControlCenterView
         bool sameLead = lead.Id == _heroSessionId;
         _heroSessionId = lead.Id;
         SetOrTint(_heroInk, StatusColor(lead.Status), sameLead && IsVisible ? 900 : 0);
-        bool working = lead.Status == ClaudeSessionStatus.Working;
         bool waiting = lead.Status == ClaudeSessionStatus.Waiting;
 
         var top = new Grid();
@@ -451,7 +323,6 @@ public partial class ControlCenterView
 
         var who = WhoRow(lead.Name, lead.Title is { Length: > 0 } && lead.Project != lead.Title ? lead.Project : null, lead.Cwd);
         top.Children.Add(who);
-        _heroDetails.Add(who);
 
         var state = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 4) };
         state.Children.Add(ClaudeText(lead.Id, "state", new TextBlock
@@ -481,7 +352,6 @@ public partial class ControlCenterView
         }
         Grid.SetRow(state, 1);
         top.Children.Add(state);
-        _heroDetails.Add(state);
 
         if (HeroLine(lead) is { Length: > 0 } line)
         {
@@ -491,14 +361,13 @@ public partial class ControlCenterView
                 FontFamily = ControlFont,
                 FontSize = 12.5,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = working && !AnimationConfig.ReduceMotion ? Shimmer : HeroSoft,
+                Foreground = HeroSoft,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 12, 0)
             });
             Grid.SetRow(doing, 2);
             top.Children.Add(doing);
-            _heroDetails.Add(doing);
         }
 
         if (HeroTimeLabel(lead) is { } time)
@@ -506,7 +375,6 @@ public partial class ControlCenterView
             Grid.SetColumn(time, 1);
             Grid.SetRowSpan(time, 2);
             top.Children.Add(time);
-            _heroDetails.Add(time);
         }
 
         // Shown on hover with the open arrow; a waiting session wants its request answered first.
@@ -562,7 +430,6 @@ public partial class ControlCenterView
                 : PermissionCard(request);
             _firstRequestCard ??= requestCard;
             _requestCards[request.Id] = requestCard;
-            _cardScratch.Add(("request:" + request.Id, requestCard));
             requests ??= new StackPanel { Margin = new Thickness(0, 14, 0, 0) };
             requests.Children.Add(requestCard);
         }
@@ -574,32 +441,6 @@ public partial class ControlCenterView
         }
         if (requests != null) content.Children.Add(requests);
 
-        var layers = new Grid();
-        if (waiting)
-        {
-            layers.Children.Add(new Border
-            {
-                CornerRadius = new CornerRadius(18),
-                BorderThickness = new Thickness(1.2),
-                BorderBrush = _breathEdge,
-                Background = BreathGlow,
-                IsHitTestVisible = false
-            });
-        }
-        layers.Children.Add(content);
-        if (working && !AnimationConfig.ReduceMotion)
-        {
-            layers.Children.Add(new Border
-            {
-                Height = 2,
-                CornerRadius = new CornerRadius(1),
-                Background = Sweep,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Margin = new Thickness(18, 0, 18, 0),
-                IsHitTestVisible = false
-            });
-        }
-
         var fill = new SolidColorBrush(CardRest);
         var hero = new Border
         {
@@ -607,7 +448,7 @@ public partial class ControlCenterView
             Background = fill,
             Margin = new Thickness(0, 0, 0, 14),
             Cursor = Cursors.Hand,
-            Child = layers
+            Child = content
         };
         HoverLift(hero, fill, show =>
         {
@@ -619,7 +460,6 @@ public partial class ControlCenterView
             }
         });
         System.Windows.Automation.AutomationProperties.SetName(hero, lead.Name);
-        _cardScratch.Add(("hero:" + lead.Id, hero));
         string sessionId = lead.Id;
         string? title = lead.Title;
         hero.MouseLeftButtonDown += (_, e) =>
@@ -703,34 +543,6 @@ public partial class ControlCenterView
         return label;
     }
 
-    /// <summary>No session yet: the star and a calm line where the hero would be.</summary>
-    private FrameworkElement EmptyHero()
-    {
-        _heroSessionId = null;
-        SetOrTint(_heroInk, IdleGrey, 0);
-        var stack = new StackPanel { Margin = new Thickness(18, 16, 18, 17) };
-        stack.Children.Add(WhoRow("Claude Code", null, null));
-        stack.Children.Add(new TextBlock
-        {
-            Text = Loc.Get("control.claude.noSessions"),
-            FontFamily = ControlFont,
-            FontSize = 17,
-            FontWeight = FontWeights.Bold,
-            Foreground = _moodInk,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(0, 6, 0, 0)
-        });
-        var hero = new Border
-        {
-            CornerRadius = new CornerRadius(18),
-            Background = new SolidColorBrush(CardRest),
-            Margin = new Thickness(0, 0, 0, 14),
-            Child = stack
-        };
-        _cardScratch.Add(("hero:none", hero));
-        return hero;
-    }
-
     /// <summary>The tick next to "Done" springs up with a little twist, once per finished turn.</summary>
     private void PopTick(double delayMs)
     {
@@ -750,7 +562,7 @@ public partial class ControlCenterView
 
     #endregion
 
-    #region Chips and limits
+    #region Chips
 
     private FrameworkElement Chips(List<ClaudeSession> order)
     {
@@ -763,9 +575,8 @@ public partial class ControlCenterView
     /// <summary>Another session as a small pill: its dot, name and state. A tap brings it up into the hero.</summary>
     private Border Chip(ClaudeSession session)
     {
-        bool live = session.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        row.Children.Add(ChipDot(DotBrush(session.Status), live));
+        row.Children.Add(ChipDot(DotBrush(session.Status)));
         row.Children.Add(ClaudeText(session.Id, "chip-name", new TextBlock
         {
             Text = session.Name,
@@ -803,7 +614,6 @@ public partial class ControlCenterView
         if (session.Cwd.Length > 0) chip.ToolTip = session.Cwd;
         HoverLift(chip, fill, null);
         System.Windows.Automation.AutomationProperties.SetName(chip, session.Name);
-        _cardScratch.Add(("chip:" + session.Id, chip));
         string id = session.Id;
         chip.MouseLeftButtonDown += (_, e) =>
         {
@@ -813,183 +623,18 @@ public partial class ControlCenterView
         return chip;
     }
 
-    /// <summary>A dot in the session's colour; while it works or waits a ring ripples out of it.</summary>
-    private FrameworkElement ChipDot(Brush brush, bool live)
+    private static FrameworkElement ChipDot(Brush brush) => new Grid
     {
-        var dot = new Grid { Width = 12, Height = 12, VerticalAlignment = VerticalAlignment.Center };
-        if (live)
+        Width = 12, Height = 12, VerticalAlignment = VerticalAlignment.Center,
+        Children =
         {
-            var ring = new Ellipse
+            new Ellipse
             {
-                Fill = brush,
-                Opacity = 0.22,
-                RenderTransformOrigin = new Point(0.5, 0.5),
-                RenderTransform = new ScaleTransform(1, 1)
-            };
-            _ripples.Add(ring);
-            dot.Children.Add(ring);
+                Width = 6, Height = 6, Fill = brush,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center
+            }
         }
-        dot.Children.Add(new Ellipse
-        {
-            Width = 6,
-            Height = 6,
-            Fill = brush,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        return dot;
-    }
-
-    /// <summary>The 5-hour and weekly limits as two slim bars.</summary>
-    private FrameworkElement LimitStrip(ClaudeLimits? limits)
-    {
-        var grid = new Grid { Margin = new Thickness(4, 4, 4, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        if (limits?.FiveHour is { } fiveHour) grid.Children.Add(MiniLimit("5h", Loc.Get("control.claude.limit5h"), fiveHour));
-        if (limits?.Week is { } week)
-        {
-            var mini = MiniLimit("week", Loc.Get("control.claude.limitWeek"), week);
-            Grid.SetColumn(mini, 2);
-            grid.Children.Add(mini);
-        }
-
-        // Whether sessions show in the closed notch at all (see ControlCenterView.ClaudeNotch.cs).
-        if (ClaudeNotchButton() is { } eye)
-        {
-            eye.Margin = new Thickness(16, 0, 0, 0);
-            eye.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetColumn(eye, 3);
-            grid.Children.Add(eye);
-        }
-        _cardScratch.Add(("strip", grid));
-        return grid;
-    }
-
-    private FrameworkElement MiniLimit(string key, string label, ClaudeLimitWindow window, Brush? accent = null)
-    {
-        double used = Math.Clamp(window.UsedPercent, 0, 100);
-        if (_limitVisuals.TryGetValue(key, out var previous) && (previous.ResetsAt != null) != (window.ResetsAt != null))
-        {
-            Motion.Stop(previous.Grow, ScaleTransform.ScaleXProperty, previous.Used / 100);
-            previous.Number.Stop(previous.Used);
-            if (DetailTexts.TryGetValue(previous.Label, out var captionState)) SettleDetailText(previous.Label, captionState);
-            _limitVisuals.Remove(key);
-        }
-        if (_limitVisuals.TryGetValue(key, out var existing))
-        {
-            if (existing.Host.Parent is Panel old) old.Children.Remove(existing.Host);
-            existing.Used = used;
-            if (existing.ResetsAt != window.ResetsAt) existing.AskedAfterReset = false;
-            existing.ResetsAt = window.ResetsAt;
-            existing.Percent.Foreground = used >= NearLimitPercent ? _moodInk : LimitValue;
-            Dispatcher.BeginInvoke(new Action(() => SetDetailText(existing.Label, label)));
-            _limitBars.Add(existing);
-            PlayLimit(existing, _limitShown.GetValueOrDefault(key), 0);
-            return existing.Host;
-        }
-        var top = new Grid();
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var caption = new TextBlock
-        {
-            Text = label,
-            FontFamily = ControlFont,
-            FontSize = 11.5,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = LimitLabel,
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-        PreserveClaudeText(caption);
-        top.Children.Add(caption);
-        var percent = new TextBlock
-        {
-            FontFamily = ControlFont,
-            FontSize = 11.5,
-            FontWeight = FontWeights.Bold,
-            Foreground = used >= NearLimitPercent ? _moodInk : LimitValue,
-            Margin = new Thickness(8, 0, 0, 0)
-        };
-        Typography.SetNumeralAlignment(percent, FontNumeralAlignment.Tabular);
-        Grid.SetColumn(percent, 1);
-        top.Children.Add(percent);
-
-        var grow = new ScaleTransform(0, 1);
-        var fill = new Border { Background = accent ?? ClaudeBar, CornerRadius = new CornerRadius(1.5), RenderTransformOrigin = new Point(0, 0.5), RenderTransform = grow };
-        var bar = new Grid
-        {
-            Height = 3,
-            Margin = new Thickness(0, 7, 0, 6),
-            Children = { new Border { Background = LimitTrack, CornerRadius = new CornerRadius(1.5) }, fill }
-        };
-
-        var stack = new StackPanel();
-        stack.Children.Add(top);
-        stack.Children.Add(bar);
-        var limitBar = new LimitBar
-        {
-            Key = key, Used = used, Grow = grow, Host = stack, Label = caption, Percent = percent, ResetsAt = window.ResetsAt,
-            Number = new WeatherTween { Step = v => percent.Text = $"{Math.Round(v)} %" }
-        };
-        stack.IsVisibleChanged += (_, _) =>
-        {
-            if (stack.IsVisible || _rebuildingResetRows) return;
-            Motion.Stop(grow, ScaleTransform.ScaleXProperty, limitBar.Used / 100);
-            limitBar.Number.Stop(limitBar.Used);
-        };
-        if (window.ResetsAt != null)
-        {
-            // Counts down on its own; once the window is over, the limits are read again (only read, nothing is sent
-            // to Claude, so no new window starts).
-            stack.Children.Add(LiveText(new TextBlock
-            {
-                FontFamily = ControlFont,
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = ChipSoft,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            }, () =>
-            {
-                if (limitBar.ResetsAt is not { } resets) return "";
-                var left = resets - DateTimeOffset.UtcNow;
-                if (left <= TimeSpan.Zero && !limitBar.AskedAfterReset)
-                {
-                    limitBar.AskedAfterReset = true;
-                    if (accent == null) RefreshUsage(UsageViewMinAge);
-                    else RefreshCodexUsage();
-                }
-                return Loc.Get("control.claude.resetsIn", FormatDuration(left)) + " · " + FormatResetTime(resets, DateTimeOffset.Now);
-            }));
-        }
-
-        _limitVisuals[key] = limitBar;
-        _limitBars.Add(limitBar);
-        // A changed value moves from where the bar was; the first one seen with the tab open fills from empty.
-        PlayLimit(limitBar, _limitShown.TryGetValue(key, out double was) ? was : 0, 0);
-        return stack;
-    }
-
-    /// <summary>Fills a bar with a spring and rolls its number along; without the tab on screen it just sets them.</summary>
-    private void PlayLimit(LimitBar bar, double from, double delayMs, bool entrance = false)
-    {
-        _limitShown[bar.Key] = bar.Used;
-        bool animate = IsVisible && !AnimationConfig.ReduceMotion &&
-            (entrance || Math.Abs(from - bar.Used) > 0.05 || Motion.IsRunning(bar.Grow, ScaleTransform.ScaleXProperty));
-        if (!animate)
-        {
-            Motion.Stop(bar.Grow, ScaleTransform.ScaleXProperty, bar.Used / 100);
-            bar.Number.Stop(bar.Used);
-            bar.Number.Step?.Invoke(bar.Used);
-            return;
-        }
-        bool fresh = entrance && !Motion.IsRunning(bar.Grow, ScaleTransform.ScaleXProperty);
-        var delay = TimeSpan.FromMilliseconds(delayMs);
-        Motion.To(bar.Grow, ScaleTransform.ScaleXProperty, bar.Used / 100, Motion.Glide,
-            from: fresh ? 0 : null, delay: delay);
-        bar.Number.To(bar.Used, from: fresh ? 0 : null, delay: delay);
-    }
+    };
 
     #endregion
 
@@ -1042,33 +687,6 @@ public partial class ControlCenterView
         Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: delay, fps: fps);
     }
 
-    /// <summary>When the tab opens: the hero, then the chips, then the strip glide in; the bars fill from empty.</summary>
-    private void RevealClaude(TimeSpan baseDelay)
-    {
-        double start = baseDelay.TotalMilliseconds;
-        int index = 0;
-        foreach (UIElement child in _claudeSection.Children)
-        {
-            if (child is not FrameworkElement element || element.Visibility != Visibility.Visible) continue;
-            if (element is WrapPanel { Tag: ChipsTag } chips)
-            {
-                foreach (UIElement chip in chips.Children)
-                    if (chip is FrameworkElement c) GlideIn(c, start + Motion.Stagger(index++).TotalMilliseconds);
-                continue;
-            }
-            if (element is StackPanel resets && resets.Children.OfType<Grid>().Any(g => g.Tag is string tag && tag.StartsWith("reset-row:", StringComparison.Ordinal)))
-            {
-                foreach (var row in resets.Children.OfType<Grid>()) GlideIn(row, start + Motion.Stagger(index++).TotalMilliseconds, 60);
-                continue;
-            }
-            GlideIn(element, start + Motion.Stagger(index++).TotalMilliseconds);
-        }
-        foreach (var bar in _limitBars) PlayLimit(bar, 0, start, entrance: true);
-        for (int i = 0; i < _heroDetails.Count; i++) DetailArrive(_heroDetails[i], i);
-        RollTokensIn();
-        PopTick(start);
-    }
-
     /// <summary>
     /// An answer folds its request card away while it goes to Claude Code.
     /// </summary>
@@ -1092,62 +710,6 @@ public partial class ControlCenterView
         card.BeginAnimation(OpacityProperty, WeatherMotion.To(1, 0, 170, WeatherMotion.Out));
         Motion.To(squash, ScaleTransform.ScaleYProperty, 0, Motion.Exit);
         Send();
-    }
-
-    /// <summary>Starts what the current state needs and stops the rest; only while the tab is on screen.</summary>
-    private void ApplyClaudeLoops()
-    {
-        bool on = IsVisible && !AnimationConfig.ReduceMotion && Page == ControlCenterPage.Claude;
-        Loop(_spinLoop, on && _wantSpin, () =>
-            _spinLoop.Run(_starSpin, RotateTransform.AngleProperty,
-                new DoubleAnimation(0, 360, TimeSpan.FromSeconds(7)) { RepeatBehavior = RepeatBehavior.Forever }, ClaudeLoopFps));
-        Loop(_pulseLoop, on && _wantPulse, () =>
-        {
-            var pulse = new DoubleAnimation(0.9, 1.12, TimeSpan.FromMilliseconds(900))
-            {
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever,
-                EasingFunction = WeatherMotion.Sine
-            };
-            _pulseLoop.Run(_starPulse, ScaleTransform.ScaleXProperty, pulse, ClaudeLoopFps);
-            _pulseLoop.Run(_starPulse, ScaleTransform.ScaleYProperty, pulse, ClaudeLoopFps);
-        });
-        Loop(_shimmerLoop, on && _wantShimmer, () =>
-            _shimmerLoop.Run(_shimmerShift, TranslateTransform.XProperty,
-                new DoubleAnimation(-0.7, 0.7, TimeSpan.FromMilliseconds(2400)) { RepeatBehavior = RepeatBehavior.Forever }, ClaudeLoopFps));
-        Loop(_sweepLoop, on && _wantSweep, () =>
-            _sweepLoop.Run(_sweepShift, TranslateTransform.XProperty,
-                new DoubleAnimation(-0.675, 0.675, TimeSpan.FromMilliseconds(1800))
-                {
-                    RepeatBehavior = RepeatBehavior.Forever,
-                    EasingFunction = WeatherMotion.Sine
-                }, ClaudeLoopFps));
-        Loop(_breathLoop, on && _wantBreath, () =>
-        {
-            var breathe = new DoubleAnimation(0.25, 1, TimeSpan.FromMilliseconds(1300))
-            {
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever,
-                EasingFunction = WeatherMotion.Sine
-            };
-            _breathLoop.Run(_breathEdge, Brush.OpacityProperty, breathe, 24);
-            _breathLoop.Run(BreathGlow, Brush.OpacityProperty, breathe, 24);
-        });
-    }
-
-    private static void Loop(LoopSet loop, bool want, Action start)
-    {
-        if (want && loop.IsEmpty) start();
-        else if (!want && !loop.IsEmpty) loop.StopAll();
-    }
-
-    private void StopClaudeLoops()
-    {
-        _spinLoop.StopAll();
-        _pulseLoop.StopAll();
-        _shimmerLoop.StopAll();
-        _sweepLoop.StopAll();
-        _breathLoop.StopAll();
     }
 
     #endregion

@@ -29,7 +29,7 @@ public sealed class ClaudeDetailMotionTests
             var bar = fixture.Bar;
             var grow = Field<ScaleTransform>(bar, "Grow");
             var number = Field<WeatherTween>(bar, "Number");
-            Assert.True(grow.ScaleX < .25);
+            Assert.Equal(.25, grow.ScaleX, 8);
             await Settled(fixture.Bar, ct);
             Assert.Equal(.25, grow.ScaleX, 8);
             fixture.SetUsage(85);
@@ -92,7 +92,7 @@ public sealed class ClaudeDetailMotionTests
             fixture.Section.Children.Add(host);
             object row = Field<object>(fixture.View, "_tokenRow");
             void Show(double? share) => Invoke(fixture.View, "ShowTokens", row,
-                new ClaudeSessionTokens(default, default, 1000, share), false);
+                new ClaudeSessionTokens(default, default, 1000, share));
             Show(12);
             Show(68);
             var number = Field<WeatherTween>(Field<object>(row, "ShareNumber"), "_tween");
@@ -128,7 +128,7 @@ public sealed class ClaudeDetailMotionTests
             var text = Field<TextBlock>(row, "Share");
             var number = Field<WeatherTween>(Field<object>(row, "ShareNumber"), "_tween");
             void Show(double? share) => Invoke(fixture.View, "ShowTokens", row,
-                new ClaudeSessionTokens(default, default, 1000, share), false);
+                new ClaudeSessionTokens(default, default, 1000, share));
             async Task Settle() => await WpfFrameWaiter.UntilAsync(() =>
                 !Motion.IsRunning(number, WeatherTween.ValueProperty) && !Motion.IsRunning(text, UIElement.OpacityProperty),
                 "latest task share and label settle", ct);
@@ -216,7 +216,7 @@ public sealed class ClaudeDetailMotionTests
             var bar = fixture.Bar;
             var caption = Field<TextBlock>(bar, "Label");
             Loc.SetLanguage(language == "en" ? "de" : "en");
-            string expected = Loc.Get("control.claude.limit5h");
+            string expected = Loc.CurrentLanguage == "de" ? "5-Stunden-Nutzung" : "5-hour usage";
             await WpfFrameWaiter.UntilAsync(() => caption.Text == expected &&
                 !Motion.IsRunning(caption, UIElement.OpacityProperty), "cached limit caption changes language", ct);
             Assert.Same(bar, fixture.Bar);
@@ -235,13 +235,14 @@ public sealed class ClaudeDetailMotionTests
     {
         var grow = Field<ScaleTransform>(bar, "Grow");
         var number = Field<WeatherTween>(bar, "Number");
-        double used = Field<double>(bar, "Used");
+        double used = Field<ClaudeLimitWindow>(bar, "_window").UsedPercent;
         await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(grow, ScaleTransform.ScaleXProperty) &&
             !Motion.IsRunning(number, WeatherTween.ValueProperty) && grow.ScaleX == used / 100 && number.Value == used,
             "Claude limit settles", ct);
     }
 
-    internal static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, Fields)!.GetValue(target)!;
+    internal static T Field<T>(object target, string name) => (T)(target.GetType().GetField(name, Fields)?.GetValue(target) ??
+        target.GetType().GetProperty(name, Fields)?.GetValue(target))!;
     internal static object? Invoke(object target, string name, params object?[] args) =>
         target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, args);
 
@@ -253,7 +254,7 @@ public sealed class ClaudeDetailMotionTests
         private readonly ClaudeSessionTracker _tracker = new();
         private readonly ClaudeUsageClient _usage = new(new FakeHandler(), Path.Combine(Path.GetTempPath(), "vnotch-no-claude-profile"));
         internal StackPanel Section => Field<StackPanel>(View, "_claudeSection");
-        internal object Bar => Field<IDictionary>(View, "_limitVisuals")["5h"]!;
+        internal object Bar => Field<Array>(View, "_claudeFrontMeters").GetValue(0)!;
 
         internal Fixture(double percent)
         {

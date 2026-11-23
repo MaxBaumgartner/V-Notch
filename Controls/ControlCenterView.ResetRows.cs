@@ -20,6 +20,7 @@ public partial class ControlCenterView
     private void OnResetMotionChanged() => Dispatcher.BeginInvoke(new Action(() =>
     {
         if (_disposed) return;
+        StopClaudeFaceMotion();
         foreach (var row in _resetRows.Values)
         {
             row.Stop();
@@ -49,11 +50,7 @@ public partial class ControlCenterView
             bool present = options.Any(o => o.Id == row.Option.Id);
             row.Update(state, busy);
             if (!present && state == null) row.Collapse();
-            else
-            {
-                row.Restore();
-                _cardScratch.Add(("reset:" + pair.Key, row.Grid));
-            }
+            else row.Restore();
         }
     }
 
@@ -153,7 +150,7 @@ public partial class ControlCenterView
             var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
             presenter.SetValue(ContentPresenter.ContentProperty, new TemplateBindingExtension(ContentControl.ContentProperty));
             _button.Template = new ControlTemplate(typeof(Button)) { VisualTree = presenter };
-            _button.Click += (_, _) => view.RedeemReset(provider, Option.Id);
+            _button.Click += async (_, _) => await view.RedeemReset(provider, Option.Id);
             _pill = new Border
             {
                 Child = _button, Background = _fill, CornerRadius = new CornerRadius(12), Height = 24, Width = 82,

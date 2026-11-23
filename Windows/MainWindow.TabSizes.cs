@@ -14,8 +14,8 @@ namespace VNotch;
 /// </summary>
 public partial class MainWindow
 {
-    private const double HomeViewWidth = 560;
-    private const double SchoolViewWidth = 430;
+    private const double HomeViewWidth = 600;
+    private const double SchoolViewWidth = 584;
     private const double CenterViewMinHeight = 82;
     // As tall as the Claude tab may grow, so an open drawer fits instead of scrolling.
     private const double CenterViewMaxHeight = 580;
@@ -29,7 +29,8 @@ public partial class MainWindow
     {
         var margin = host.Margin;
         double content = center.MeasureContentHeight(width - margin.Left - margin.Right);
-        return Math.Clamp(Math.Ceiling(content + margin.Top + margin.Bottom), min, max);
+        double height = content + margin.Top + margin.Bottom;
+        return Math.Clamp(center.IsLayoutFollowing ? height : Math.Ceiling(height), min, max);
     }
 
     private double MeasureHomeViewHeight() =>
@@ -93,7 +94,7 @@ public partial class MainWindow
 
         // Auto-sized content needs a finite initial value; subsequent changes retain the live spring.
         if (!double.IsFinite(content.Height)) content.Height = Math.Max(0, current - chrome);
-        var spring = ReferenceEquals(center, ClaudeCenter) ? Motion.Glide : Motion.Shift;
+        var spring = ReferenceEquals(center, ClaudeCenter) ? Motion.Exit : Motion.Shift;
         Motion.To(content, HeightProperty, Math.Max(0, target - chrome), spring);
         void Arrived()
         {

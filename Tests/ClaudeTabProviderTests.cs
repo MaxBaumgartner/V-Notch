@@ -90,7 +90,7 @@ public sealed class ClaudeTabProviderTests
         {
             using var view = new ControlCenterView();
             using var codex = new CodexUsageClient();
-            Set(view, "_codexUsage", codex);
+            ((List<CodexAccount>)view.AccountSlots).Add(new CodexAccount(new CodexSlot("A", @"C:\Codex"), codex));
             var window = new ClaudeLimitWindow(35, DateTimeOffset.UtcNow.AddHours(3));
             codex.Latest = new CodexUsage(window, window, new[] { new CodexResetCredit("credit", DateTimeOffset.UtcNow.AddDays(10)) });
             Set(view, "_codexSessions", new List<CodexSession>
@@ -103,16 +103,18 @@ public sealed class ClaudeTabProviderTests
                 new ClaudeResetGrant("full", ClaudeResetKind.Full, 1, true, false, null, DateTimeOffset.UtcNow.AddDays(20))
             });
             var panel = (StackPanel)typeof(ControlCenterView).GetField("_claudeSection", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(view)!;
-            panel.Children.Add((UIElement)Call(view, "Hero", new ClaudeSession
+            var session = new ClaudeSession
             {
                 Id = "lead", Title = "V-Notch", Cwd = "C:\\V-Notch", Status = ClaudeSessionStatus.Working, Activity = "Editing the tab"
-            }, new List<ClaudePermissionRequest>())!);
+            };
+            Call(view, "RefreshClaudeFace", session, limits);
+            Call(view, "SetAccountsOpen", true, false);
+            Call(view, "RefreshClaudeFace", session, limits);
+            panel.Children.Add((UIElement)Call(view, "Hero", session, new List<ClaudePermissionRequest>())!);
             panel.Children.Add((UIElement)Call(view, "Chips", new List<ClaudeSession>())!);
-            panel.Children.Add((UIElement)Call(view, "LimitStrip", limits)!);
-            Call(view, "AddResetRows", limits);
-            Call(view, "AddCodexLimits");
-            panel.Measure(new Size(593, double.PositiveInfinity));
-            Assert.InRange(panel.DesiredSize.Height + 48, 1, 560);
+            Call(view, "AddResetRows", limits, "full");
+            panel.Measure(new Size(ControlCenterView.ClaudeFaceWidth, double.PositiveInfinity));
+            Assert.InRange(panel.DesiredSize.Height + 34, 1, 580);
         });
     }
 
