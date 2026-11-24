@@ -1224,7 +1224,7 @@
                         <Grid x:Name="SpotlightReturnContentHost">
                         <ctrl:GlassClipGrid x:Name="NotchContent" Margin="0" SizeChanged="NotchContent_SizeChanged" RenderOptions.ClearTypeHint="Enabled" UseLayoutRounding="False" SnapsToDevicePixels="False">
 
-                    <!-- The colour fields of the system, home, school and Claude tabs, behind everything; each fades in and out with its tab. -->
+                    <!-- The colour fields of the system, home, school, Roblox and Claude tabs, behind everything; each fades in and out with its tab. -->
                     <ctrl:MoodBackdrop x:Name="SystemBackdrop"
                                        Panel.ZIndex="-1"
                                        Opacity="{Binding Opacity, ElementName=TimerContent}"
@@ -1237,6 +1237,10 @@
                                        Panel.ZIndex="-1"
                                        Opacity="{Binding Opacity, ElementName=SchoolContent}"
                                        Visibility="{Binding Visibility, ElementName=SchoolContent}"/>
+                    <ctrl:MoodBackdrop x:Name="RobloxBackdrop"
+                                       Panel.ZIndex="-1"
+                                       Opacity="{Binding Opacity, ElementName=RobloxContent}"
+                                       Visibility="{Binding Visibility, ElementName=RobloxContent}"/>
                     <ctrl:MoodBackdrop x:Name="ClaudeBackdrop"
                                        Panel.ZIndex="-1"
                                        Background="#030303"
@@ -1497,6 +1501,34 @@
                                 <Viewbox Width="15" Height="15" Stretch="Uniform"
                                          HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <Path Data="{x:Static ctrl:SchoolGlyph.Data}"
+                                          Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
+                                </Viewbox>
+                            </ctrl:ActionBorder>
+                            <ctrl:ActionBorder x:Name="RobloxIconButton" AutomationProperties.Name="Roblox"
+                                    Tag="Roblox"
+                                    Width="22" Height="22"
+                                    Background="Transparent"
+                                    Cursor="Hand"
+                                    Margin="0,0,4,0"
+                                    Opacity="0.45"
+                                    RenderTransformOrigin="0.5,0.5"
+                                    PreviewMouseLeftButtonDown="NavIcon_PreviewMouseLeftButtonDown"
+                                    PreviewMouseMove="NavIcon_PreviewMouseMove"
+                                    PreviewMouseLeftButtonUp="NavIcon_PreviewMouseLeftButtonUp"
+                                    LostMouseCapture="NavIcon_LostMouseCapture"
+                                    Click="RobloxIconButton_Click">
+                                <Border.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                        <TranslateTransform X="0" Y="0"/>
+                                    </TransformGroup>
+                                </Border.RenderTransform>
+                                <Border.Effect>
+                                    <DropShadowEffect Color="Black" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/>
+                                </Border.Effect>
+                                <Viewbox Width="15" Height="15" Stretch="Uniform"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Path Data="{x:Static ctrl:RobloxGlyph.Data}"
                                           Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
                                 </Viewbox>
                             </ctrl:ActionBorder>
@@ -3599,6 +3631,17 @@
                           MouseLeftButtonDown="SecondaryContent_Click"
                           RenderOptions.ClearTypeHint="Enabled">
                         <ctrl:ControlCenterView x:Name="SchoolCenter" Page="School"/>
+                    </Grid>
+
+                    <Grid x:Name="RobloxContent"
+                          Opacity="0"
+                          Visibility="Collapsed"
+                          Margin="16,30,16,0"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Top"
+                          MouseLeftButtonDown="SecondaryContent_Click"
+                          RenderOptions.ClearTypeHint="Enabled">
+                        <ctrl:ControlCenterView x:Name="RobloxCenter" Page="Roblox"/>
                     </Grid>
 
 

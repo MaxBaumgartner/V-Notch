@@ -50,9 +50,9 @@ public partial class MainWindow
     {
         var open = new GlassClipGrid { Name = "OpenShellContent", Opacity = 0, UseLayoutRounding = false };
         FrameworkElement[] elements = [ExpandedContent, TimerContent, SecondaryContent, CameraContent,
-            ClaudeContent, PiContent, SchoolContent, AudioContent,
+            ClaudeContent, PiContent, SchoolContent, RobloxContent, AudioContent,
             NavIconsPanel, NavIconsBackground, SharedSettingsHost,
-            SystemBackdrop, HomeBackdrop, SchoolBackdrop, ClaudeBackdrop];
+            SystemBackdrop, HomeBackdrop, SchoolBackdrop, RobloxBackdrop, ClaudeBackdrop];
         foreach (var element in elements)
         {
             ((Panel)element.Parent).Children.Remove(element);
@@ -331,6 +331,7 @@ public partial class MainWindow
     {
         NotchView.Pi => PiCenter,
         NotchView.School => SchoolCenter,
+        NotchView.Roblox => RobloxCenter,
         NotchView.Timer => ControlCenter,
         _ => null
     };
@@ -382,7 +383,8 @@ public partial class MainWindow
         if (ActiveDrawer is not { } center || !center.MoveDrawer(deltaY)) return;
         handled = true;
         _shellAttachment.Detach(true);
-        FrameworkElement host = ReferenceEquals(center, PiCenter) ? PiContent : ReferenceEquals(center, SchoolCenter) ? SchoolContent : TimerContent;
+        FrameworkElement host = ReferenceEquals(center, PiCenter) ? PiContent : ReferenceEquals(center, SchoolCenter) ? SchoolContent :
+            ReferenceEquals(center, RobloxCenter) ? RobloxContent : TimerContent;
         double height = ReferenceEquals(center, PiCenter) ? MeasureHomeViewHeight() :
             Math.Min(CenterViewMaxHeight, _shellDragStartHeight + center.DrawerHeight - _shellDrawerStartHeight);
         Motion.Stop(NotchBorder, HeightProperty, height);

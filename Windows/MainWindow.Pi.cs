@@ -24,6 +24,8 @@ public partial class MainWindow
     private bool _isPiView;
     // The school half of the old Pi tab: deadlines, tests and to-dos, from the same dashboard.
     private bool _isSchoolView;
+    // This fork's Roblox tab: all of the creator's games, from the same dashboard.
+    private bool _isRobloxView;
     private static readonly ImageSource PiPillIcon = CreatePiPillIcon();
 
     private void InitializePi()
@@ -40,6 +42,9 @@ public partial class MainWindow
         SchoolCenter.AttachBackdrop(SchoolBackdrop);
         PiCenter.ContentHeightChanged += OnHomeContentHeightChanged;
         SchoolCenter.ContentHeightChanged += OnSchoolContentHeightChanged;
+        RobloxCenter.AttachRoblox(_piClient, () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled);
+        RobloxCenter.AttachBackdrop(RobloxBackdrop);
+        RobloxCenter.ContentHeightChanged += OnRobloxContentHeightChanged;
         _piReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = PiReminderPoll };
         _piReminderTimer.Tick += async (_, _) => await PollPiRemindersAsync();
         _piReminderTimer.Start();
@@ -54,8 +59,10 @@ public partial class MainWindow
         SchoolCenter.KeyboardInputRequested -= OnClaudeKeyboardInputRequested;
         PiCenter.ContentHeightChanged -= OnHomeContentHeightChanged;
         SchoolCenter.ContentHeightChanged -= OnSchoolContentHeightChanged;
+        RobloxCenter.ContentHeightChanged -= OnRobloxContentHeightChanged;
         PiCenter.Dispose();
         SchoolCenter.Dispose();
+        RobloxCenter.Dispose();
         _piClient?.Dispose();
     }
 
@@ -69,6 +76,12 @@ public partial class MainWindow
     {
         e.Handled = true;
         if (!_isSchoolView) NavigateToNotchView(NotchView.School);
+    }
+
+    private void RobloxIconButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (!_isRobloxView) NavigateToNotchView(NotchView.Roblox);
     }
 
     /// <summary>

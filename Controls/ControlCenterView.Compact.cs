@@ -145,7 +145,7 @@ public partial class ControlCenterView
     }
     private double MeasureDrawer()
     {
-        double width = ActualWidth > 0 ? ActualWidth : Page switch { ControlCenterPage.School => 398, ControlCenterPage.Pi => 558, _ => 528 };
+        double width = ActualWidth > 0 ? ActualWidth : Page switch { ControlCenterPage.School => 398, ControlCenterPage.Pi => 558, ControlCenterPage.Roblox => 552, _ => 528 };
         if (_drawerFrame == null)
         {
             _drawerBody.Measure(new Size(width, double.PositiveInfinity));

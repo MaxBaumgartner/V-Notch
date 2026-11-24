@@ -11,4 +11,5 @@ public enum NotchView
     Claude,
     Pi,
     School,
+    Roblox,
 }

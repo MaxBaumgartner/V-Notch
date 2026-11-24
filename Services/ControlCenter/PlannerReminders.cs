@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json.Nodes;
 
 namespace VNotch.Services.ControlCenter;
@@ -34,14 +35,15 @@ internal sealed class PlannerReminders
         };
     }
 
-    public List<PiReminder> Build(JsonArray? timetable, JsonArray? events, JsonObject? home, JsonObject? health, DateTimeOffset now)
+    public List<PiReminder> Build(JsonArray? timetable, JsonArray? events, JsonObject? home, JsonObject? health, DateTimeOffset now,
+        JsonArray? robloxGames = null)
     {
         _failures = 0;
         var reminders = new List<PiReminder>();
         DateTime local = now.LocalDateTime;
         AddTimetableChanges(reminders, timetable, local, now);
         AddExamsAndHomework(reminders, events, local, now);
-        AddRobloxPlayers(reminders, home, now);
+        AddRobloxPlayers(reminders, home, robloxGames, now);
         AddFailingChecks(reminders, health, now);
         return reminders;
     }
@@ -92,15 +94,20 @@ internal sealed class PlannerReminders
         }
     }
 
-    /// <summary>One reminder per stretch of play: from the moment a game goes from nobody to somebody.</summary>
-    private void AddRobloxPlayers(List<PiReminder> reminders, JsonObject? home, DateTimeOffset now)
+    /// <summary>
+    /// One reminder per stretch of play: from the moment a game goes from nobody to somebody. The start page lists
+    /// the games (older form) or only counts them; then <paramref name="games"/> is the Pi's own list, fetched only
+    /// while somebody plays, and without it the count stands for all games as "Roblox".
+    /// </summary>
+    private void AddRobloxPlayers(List<PiReminder> reminders, JsonObject? home, JsonArray? games, DateTimeOffset now)
     {
-        if (home?["roblox"] is not JsonObject roblox || roblox["games"] is not JsonArray games) return;
-        foreach (var node in games)
+        if (home?["roblox"] is not JsonObject roblox) return;
+        games ??= roblox["games"] as JsonArray;
+        var entries = new List<(string Name, int Playing)>();
+        if (games != null) entries.AddRange(PlannerDashboard.RobloxGames(games).Select(g => (g.Name, g.Playing)));
+        else if (roblox["playing"] is JsonValue) entries.Add(("Roblox", PlannerDashboard.Int(roblox, "playing")));
+        foreach (var (name, playing) in entries)
         {
-            if (node is not JsonObject game) continue;
-            string name = PlannerDashboard.Str(game, "name");
-            int playing = PlannerDashboard.Int(game, "playing");
             bool known = _playing.TryGetValue(name, out int before);
             _playing[name] = playing;
             if (playing <= 0)

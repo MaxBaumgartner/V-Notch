@@ -15,7 +15,7 @@ public partial class MainWindow
 {
 
     #region Notch Expand/Collapse
-    private enum LastExpandedView { Primary, Secondary, Timer, Audio, Camera, Claude, Pi, School }
+    private enum LastExpandedView { Primary, Secondary, Timer, Audio, Camera, Claude, Pi, School, Roblox }
     private LastExpandedView _lastExpandedViewBeforeCollapse = LastExpandedView.Primary;
 
     private const double ExpandedContentHorizontalInset = 16;
@@ -797,6 +797,7 @@ public partial class MainWindow
         _isClaudeView = effectiveTarget == VNotch.Models.NotchView.Claude;
         _isPiView = effectiveTarget == VNotch.Models.NotchView.Pi;
         _isSchoolView = effectiveTarget == VNotch.Models.NotchView.School;
+        _isRobloxView = effectiveTarget == VNotch.Models.NotchView.Roblox;
 
         if (effectiveTarget == VNotch.Models.NotchView.Timer)
         {
@@ -865,6 +866,15 @@ public partial class MainWindow
             VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(SchoolContent);
             ResizeHostWindowHeight(_schoolViewHeight);
             Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, SettleSchoolNotchToFit);
+        }
+        else if (effectiveTarget == VNotch.Models.NotchView.Roblox)
+        {
+            _isTimerView = false;
+            _isSecondaryView = false;
+            _isAudioView = false;
+            VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(RobloxContent);
+            ResizeHostWindowHeight(_robloxViewHeight);
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, SettleRobloxNotchToFit);
         }
         else
         {
@@ -1124,6 +1134,17 @@ public partial class MainWindow
             targetHeight = MeasureSchoolViewHeight();
             SchoolContent.Width = targetWidth - SchoolContent.Margin.Left - SchoolContent.Margin.Right;
             SchoolContent.Height = targetHeight - SchoolContent.Margin.Top - SchoolContent.Margin.Bottom;
+            if (targetHeight > currentHeight)
+                ResizeHostWindowHeight(targetHeight);
+            UpdateNavIconsActiveState();
+        }
+        else if (effectiveTarget == VNotch.Models.NotchView.Roblox)
+        {
+            if (!switchingExpandedViews) VNotch.Presenters.NotchContentTransitionPresenter.ClearTransformAndEffects(RobloxContent);
+            targetWidth = RobloxViewWidth;
+            targetHeight = MeasureRobloxViewHeight();
+            RobloxContent.Width = targetWidth - RobloxContent.Margin.Left - RobloxContent.Margin.Right;
+            RobloxContent.Height = targetHeight - RobloxContent.Margin.Top - RobloxContent.Margin.Bottom;
             if (targetHeight > currentHeight)
                 ResizeHostWindowHeight(targetHeight);
             UpdateNavIconsActiveState();
@@ -1466,6 +1487,7 @@ public partial class MainWindow
         if (_isClaudeView) return LastExpandedView.Claude;
         if (_isPiView) return LastExpandedView.Pi;
         if (_isSchoolView) return LastExpandedView.School;
+        if (_isRobloxView) return LastExpandedView.Roblox;
         if (_isAudioView) return LastExpandedView.Audio;
         if (_isTimerView) return LastExpandedView.Timer;
         if (_isSecondaryView) return LastExpandedView.Secondary;
@@ -1489,6 +1511,7 @@ public partial class MainWindow
                 LastExpandedView.Claude => VNotch.Models.NotchView.Claude,
                 LastExpandedView.Pi => VNotch.Models.NotchView.Pi,
                 LastExpandedView.School => VNotch.Models.NotchView.School,
+                LastExpandedView.Roblox => VNotch.Models.NotchView.Roblox,
                 _ => VNotch.Models.NotchView.Media
             };
         }
@@ -1779,6 +1802,7 @@ public partial class MainWindow
         VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(ClaudeContent);
         VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(PiContent);
         VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(SchoolContent);
+        VNotch.Presenters.NotchContentTransitionPresenter.ResetElementVisualState(RobloxContent);
 
         ResetMediaContentReveal();
         ResetClockViewUnfoldIn();
@@ -1799,6 +1823,7 @@ public partial class MainWindow
         _isClaudeView = false;
         _isPiView = false;
         _isSchoolView = false;
+        _isRobloxView = false;
     }
 
     private void PrepareStateBeforeCollapse()

@@ -345,6 +345,7 @@ public partial class MainWindow
         if (_navDragItem != ClaudeIconButton) AnimateNavIconOpacity(ClaudeIconButton, 0.45, animate: false);
         if (_navDragItem != PiIconButton) AnimateNavIconOpacity(PiIconButton, 0.45, animate: false);
         if (_navDragItem != SchoolIconButton) AnimateNavIconOpacity(SchoolIconButton, 0.45, animate: false);
+        if (_navDragItem != RobloxIconButton) AnimateNavIconOpacity(RobloxIconButton, 0.45, animate: false);
     }
 
     #endregion

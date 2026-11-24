@@ -25,7 +25,9 @@ public enum ControlCenterPage
     /// <summary>Home, from the user's Raspberry Pi dashboard: lights, heating, air conditioner, sockets, scenes, the Pi.</summary>
     Pi,
     /// <summary>School, from the same dashboard: the next deadline, the others, tests and to-dos.</summary>
-    School
+    School,
+    /// <summary>Roblox, from the same dashboard: all of the creator's games added up.</summary>
+    Roblox
 }
 
 /// <summary>
@@ -140,6 +142,9 @@ public partial class ControlCenterView : UserControl, IDisposable
             case ControlCenterPage.Pi or ControlCenterPage.School:
                 RefreshPi();
                 break;
+            case ControlCenterPage.Roblox:
+                RefreshRoblox();
+                break;
             case ControlCenterPage.Claude:
                 RefreshUsage(UsageViewMinAge);
                 RefreshCodexUsage();
@@ -215,6 +220,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         _displayBrightness?.Dispose();
         if (_displayApi is IDisposable displayApi) displayApi.Dispose();
         _piTimer?.Stop();
+        _robloxTimer?.Stop();
         _schoolCountdownTimer?.Stop();
         StopDrawerWheel();
         if (_drawerHeight != null) Motion.Stop(_drawerHeight, WeatherTween.ValueProperty);
@@ -283,6 +289,10 @@ public partial class ControlCenterView : UserControl, IDisposable
             {
                 OnPiVisibleChanged(true);
             }
+            else if (Page == ControlCenterPage.Roblox)
+            {
+                OnRobloxVisibleChanged(true);
+            }
             else
             {
                 _refreshTimer.Start();
@@ -323,6 +333,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             // The next open shows what matters then, not the session picked last time.
             _focusedSessionId = null;
             if (Page is ControlCenterPage.Pi or ControlCenterPage.School) OnPiVisibleChanged(false);
+            if (Page == ControlCenterPage.Roblox) OnRobloxVisibleChanged(false);
         }
     }
 
@@ -335,6 +346,8 @@ public partial class ControlCenterView : UserControl, IDisposable
         BuildClaudeSection();
         BuildPiPage();
         BuildLegionPage();
+        _robloxDrawerKey = "";
+        BuildRoblox();
     });
 
     private void OnClaudeChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Background, BuildClaudeSection);
@@ -379,6 +392,11 @@ public partial class ControlCenterView : UserControl, IDisposable
         if (Page is ControlCenterPage.Pi or ControlCenterPage.School)
         {
             RefreshPi();
+            return;
+        }
+        if (Page == ControlCenterPage.Roblox)
+        {
+            RefreshRoblox();
             return;
         }
         if (_refreshing)
@@ -2561,7 +2579,7 @@ public partial class ControlCenterView : UserControl, IDisposable
             // The account face stays still when the tab opens.
             return;
         }
-        if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.System) return;
+        if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.Roblox or ControlCenterPage.System) return;
         if (AnimationConfig.ReduceMotion) return;
         int index = 0;
         foreach (UIElement child in ControlRoot.Children)

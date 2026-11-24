@@ -227,39 +227,89 @@ internal static class PlannerDashboard
         return new HomePi(null, null, issues);
     }
 
-    /// <summary>The start page as readings: the weather, when to leave for school and each Roblox game.</summary>
+    /// <summary>
+    /// The start page as readings: the weather now, how it feels with today's high and low, the way to school (or
+    /// home, once the morning's is past), the school day, the next sunrise or sunset and Roblox. Each one only while
+    /// the start page has it and it still lies ahead.
+    /// </summary>
     public static List<HomeReading> Readings(JsonObject? home, DateTime now)
     {
-        var tiles = new List<HomeReading>(5);
+        var tiles = new List<HomeReading>(6);
+        string today = Ymd(now);
+        int minute = now.Hour * 60 + now.Minute;
         if (home?["weather"] is JsonObject weather)
         {
-            if (weather["now"] is JsonObject current && Num(current, "temp") is { } temp)
-                tiles.Add(Reading("planner.weather", Str(weather, "place") is { Length: > 0 } place ? place : Loc.Get("pi.weather"),
-                    $"{Math.Round(temp).ToString(Loc.GetCulture())}°"));
-            if (weather["school"] is JsonObject school && school["there"] is JsonObject there &&
-                Str(there, "time") is { Length: > 0 } leave && !Bool(there, "past"))
+            var current = weather["now"] as JsonObject;
+            var day = weather["today"] as JsonObject;
+            if (current != null && Num(current, "temp") is { } temp)
+                tiles.Add(Reading("planner.weather", Str(weather, "place") is { Length: > 0 } place ? place : Loc.Get("pi.weather"), Degrees(temp)));
+            if (current != null && Num(current, "feels") is { } feels && day != null && Num(day, "max") is { } max && Num(day, "min") is { } min)
+                tiles.Add(Reading("planner.feels", Loc.Get("weather.feelsLike", Degrees(feels)), Loc.Get("weather.highLow", Whole(max), Whole(min))));
+            if (weather["school"] is JsonObject school)
             {
                 string date = Str(school, "date");
-                string when = date == Ymd(now) ? leave
-                    : date == Ymd(now.AddDays(1)) ? Loc.Get("pi.tomorrowAt", leave)
-                    : $"{DayLabel(date)} {leave}";
-                tiles.Add(Reading("planner.leave", Loc.Get("pi.leave"), when));
+                if (school["there"] is JsonObject there && Str(there, "time") is { Length: > 0 } leave && !Bool(there, "past"))
+                    tiles.Add(Reading("planner.leave", Loc.Get("pi.leave"), On(date, leave, now)));
+                else if (date == today && school["back"] is JsonObject back && Str(back, "time") is { Length: > 0 } leaving && !Bool(back, "past"))
+                    tiles.Add(Reading("planner.back", Loc.Get("pi.back"), leaving));
+                if (SchoolDay(date, Str(school, "first"), Str(school, "last"), now) is { } span)
+                    tiles.Add(Reading("planner.school", Loc.Get("pi.school"), span));
+            }
+            if (day != null && Str(day, "d") == today)
+            {
+                string rise = Clock(Str(day, "sunrise")), set = Clock(Str(day, "sunset"));
+                if (Minutes(rise) > minute) tiles.Add(Reading("planner.sun", Loc.Get("weather.sunrise"), rise));
+                else if (Minutes(set) > minute) tiles.Add(Reading("planner.sun", Loc.Get("weather.sunset"), set));
             }
         }
-        if (home?["roblox"] is JsonObject roblox && roblox["games"] is JsonArray games)
+        if (home?["roblox"] is JsonObject roblox)
         {
-            int index = 0;
-            foreach (var node in games)
+            if (roblox["games"] is JsonArray games)
             {
-                if (node is not JsonObject game) continue;
-                index++;
-                int playing = Int(game, "playing");
-                string display = playing > 0 ? Loc.Get("pi.roblox.playing", playing) : Loc.Get("pi.roblox.visits", Int(game, "visits"));
-                tiles.Add(Reading($"planner.roblox{index}", Str(game, "name"), display));
+                // The start page's older form: every game on its own.
+                int index = 0;
+                foreach (var (name, playing, visits) in RobloxGames(games))
+                    tiles.Add(Reading($"planner.roblox{++index}", name, RobloxLine(playing, visits)));
             }
+            else if (roblox["visits"] is JsonValue)
+                tiles.Add(Reading("planner.roblox", "Roblox", RobloxLine(Int(roblox, "playing"), Int(roblox, "visits"))));
         }
         return tiles;
     }
+
+    /// <summary>The games of the start page's older form, or of the Pi's own game list.</summary>
+    internal static IEnumerable<(string Name, int Playing, int Visits)> RobloxGames(JsonArray games)
+    {
+        foreach (var node in games)
+            if (node is JsonObject game) yield return (Str(game, "name"), Int(game, "playing"), Int(game, "visits"));
+    }
+
+    private static string RobloxLine(int playing, int visits) =>
+        playing > 0 ? Loc.Get("pi.roblox.playing", playing) : Loc.Get("pi.roblox.visits", visits);
+
+    /// <summary>Today "08:00–16:20" until the first lesson, then "until 16:20"; another day's first lesson.</summary>
+    private static string? SchoolDay(string date, string first, string last, DateTime now)
+    {
+        if (Minutes(first) <= 0 || string.CompareOrdinal(date, Ymd(now)) < 0) return null;
+        if (date != Ymd(now)) return On(date, first, now);
+        int minute = now.Hour * 60 + now.Minute;
+        if (minute < Minutes(first)) return Minutes(last) > 0 ? $"{first}–{last}" : first;
+        return Minutes(last) > minute ? Loc.Get("school.until", last) : null;
+    }
+
+    /// <summary>"07:30" today, "Tomorrow 07:30", else "Thu 5.11. 07:30".</summary>
+    private static string On(string date, string time, DateTime now) =>
+        date == Ymd(now) ? time
+        : date == Ymd(now.AddDays(1)) ? Loc.Get("pi.tomorrowAt", time)
+        : $"{DayLabel(date)} {time}";
+
+    /// <summary>"2026-11-24T16:15" → "16:15".</summary>
+    private static string Clock(string stamp) => stamp.Length >= 16 && stamp[10] == 'T' ? stamp.Substring(11, 5) : "";
+
+    /// <summary>Whole degrees, never "-0".</summary>
+    private static string Whole(double value) => ((int)Math.Round(value)).ToString(Loc.GetCulture());
+
+    private static string Degrees(double value) => $"{Whole(value)}°";
 
     private static HomeReading Reading(string id, string label, string display) => new(id, label, display);
 

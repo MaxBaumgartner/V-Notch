@@ -349,7 +349,8 @@ public sealed partial class SettingsService : ISettingsService, IAsyncDisposable
         {
             var (settings, migrated) = SettingsMigrator.Migrate(raw);
             _settingsLoadFailed = false;
-            bool normalized = NormalizeSettings(settings);
+            // This fork's own tabs join an older saved order once (see ForkTabs); upstream's versions stay its own.
+            bool normalized = NormalizeSettings(settings) | ForkTabs.AddRobloxOnce(settings);
             bool migrationSaved = true;
 
             if (settings.SettingsVersion <= SettingsMigrator.CurrentVersion && (migrated || normalized))

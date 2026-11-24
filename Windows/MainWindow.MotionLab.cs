@@ -107,7 +107,7 @@ public partial class MainWindow
                         CollectRunningClocks(root, lines);
             var shown = new List<string>();
             foreach (var (name, element) in new (string, System.Windows.UIElement?)[]
-                     { ("Media", ExpandedContent), ("System", TimerContent), ("Home", PiContent), ("School", SchoolContent),
+                     { ("Media", ExpandedContent), ("System", TimerContent), ("Home", PiContent), ("School", SchoolContent), ("Roblox", RobloxContent),
                        ("Claude", ClaudeContent), ("Audio", AudioContent), ("Shelf", SecondaryContent) })
                 if (element?.IsVisible == true) shown.Add(name);
             RuntimeLog.Info("RENDER-PROBE", $"expanded={_isExpanded} visible tabs=[{string.Join(",", shown)}] {lines.Count} driver(s): " + string.Join(" || ", lines));

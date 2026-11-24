@@ -66,7 +66,7 @@ public partial class MainWindow
         {
             timer.Stop();
             if (_cleanedUp) return;
-            foreach (var center in new[] { PiCenter, SchoolCenter, ControlCenter, ClaudeCenter })
+            foreach (var center in new[] { PiCenter, SchoolCenter, RobloxCenter, ControlCenter, ClaudeCenter })
                 center.Prefetch();
         };
         timer.Start();

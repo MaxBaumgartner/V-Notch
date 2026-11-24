@@ -650,7 +650,7 @@ public partial class MainWindow
         bool showBackground = show && targetView is VNotch.Models.NotchView.Secondary
             or VNotch.Models.NotchView.Timer or VNotch.Models.NotchView.AudioMixer
             or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi
-            or VNotch.Models.NotchView.School;
+            or VNotch.Models.NotchView.School or VNotch.Models.NotchView.Roblox;
         double restY = _settings.EnableDynamicIslandMode ? 5 : 0;
         double settingsY = targetView == VNotch.Models.NotchView.Secondary ? 0 : restY;
         var duration = new Duration(TimeSpan.FromMilliseconds(show ? 340 : 220));

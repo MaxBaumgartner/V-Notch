@@ -89,7 +89,7 @@ public partial class ControlCenterView
     internal void AttachBackdrop(MoodBackdrop backdrop)
     {
         _backdrop = backdrop;
-        if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.System) backdrop.Intensity = .25;
+        if (Page is ControlCenterPage.Pi or ControlCenterPage.School or ControlCenterPage.Roblox or ControlCenterPage.System) backdrop.Intensity = .25;
         var (main, warmer, cooler) = _moodColors ?? (MoodAt(0), MoodAt(22), MoodAt(0));
         backdrop.SetMood(main, warmer, cooler, 0);
     }

@@ -74,6 +74,47 @@ public sealed class PlannerFaceTests
     });
 
     [Fact]
+    public void SixReadingsFillTwoRowsInsideTheHomeFace() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        using var client = new PiDashboardClient(() => "http://127.0.0.1:1");
+        var view = new ControlCenterView { Page = ControlCenterPage.Pi };
+        SetField(view, "_piRefreshing", true);
+        view.AttachPi(client, () => false, () => false, () => "", () => "");
+        var window = new BackgroundWindow { Width = 608, Height = 330, Left = -20000, Top = -20000,
+            Content = new Grid { Background = Brushes.Black, Children = { view } } };
+        try
+        {
+            SetField(view, "_home", new PiHome([], [], null, [], [], [], new(null, null, []),
+            [
+                new("planner.weather", "Town", "-4°"), new("planner.feels", "Feels like -7°", "H:1° L:-4°"),
+                new("planner.back", "Way home", "16:20"), new("planner.school", "School", "until 16:20"),
+                new("planner.sun", "Sunset", "16:15"), new("planner.roblox", "Roblox", "22 visits")
+            ]));
+            Invoke(view, "BuildHome");
+            window.Show();
+            window.UpdateLayout();
+            await Task.Yield();
+
+            var face = (Grid)Field(view, "_homeFace");
+            var bounds = new Rect(face.RenderSize);
+            var labels = new[] { "Town", "Feels like -7°", "Way home", "School", "Sunset", "Roblox" };
+            var tiles = Descendants<Border>(face)
+                .Where(b => b.Child is StackPanel { Children.Count: 2 } panel && panel.Children[0] is TextBlock label && labels.Contains(label.Text))
+                .ToList();
+            Assert.Equal(6, tiles.Count);
+            var places = tiles.Select(t => t.TransformToAncestor(face).TransformBounds(new Rect(t.RenderSize))).ToList();
+            Assert.All(places, p => Assert.True(bounds.Contains(p), $"a tile at {p} leaves the face {bounds}"));
+            Assert.Equal(2, places.Select(p => Math.Round(p.Top)).Distinct().Count());
+            Assert.Equal(3, places.Select(p => Math.Round(p.Left)).Distinct().Count());
+        }
+        finally
+        {
+            window.Close();
+            view.Dispose();
+        }
+    });
+
+    [Fact]
     public void APlannersSchoolFillsDavidsSchoolTabInTheAppsLanguage() => SharedStaTestRunner.Run(() =>
     {
         var now = new DateTimeOffset(2026, 11, 24, 9, 0, 0, TimeSpan.FromHours(1));

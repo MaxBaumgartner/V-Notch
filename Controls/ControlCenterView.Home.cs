@@ -184,7 +184,7 @@ public partial class ControlCenterView
     {
         if (home.Readings is not { Count: > 0 } readings) return null;
         const double gap = 8;
-        int count = Math.Min(readings.Count, 6), columns = Math.Min(3, count);
+        int count = Math.Min(readings.Count, 6), columns = count == 4 ? 2 : Math.Min(3, count);
         var grid = new Grid { Margin = new Thickness(0, 0, -gap, -gap) };
         for (int i = 0; i < columns; i++) grid.ColumnDefinitions.Add(new ColumnDefinition());
         for (int i = 0; i < (count + columns - 1) / columns; i++) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });

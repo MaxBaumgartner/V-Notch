@@ -16,12 +16,14 @@ public partial class MainWindow
 {
     private const double HomeViewWidth = 600;
     private const double SchoolViewWidth = 584;
+    private const double RobloxViewWidth = 584;
     private const double CenterViewMinHeight = 82;
     // As tall as the Claude tab may grow, so an open drawer fits instead of scrolling.
     private const double CenterViewMaxHeight = 580;
 
     private double _homeViewHeight = CenterViewMaxHeight;
     private double _schoolViewHeight = CenterViewMaxHeight;
+    private double _robloxViewHeight = CenterViewMaxHeight;
     private int _centerNotchHeightGeneration;
 
     /// <summary>The notch height that fits a control-center page laid out <paramref name="width"/> wide.</summary>
@@ -52,6 +54,18 @@ public partial class MainWindow
 
     private void OnSchoolContentHeightChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, SettleSchoolNotchToFit);
 
+    private double MeasureRobloxViewHeight() =>
+        _robloxViewHeight = FitHeight(RobloxCenter, RobloxContent, RobloxViewWidth, CenterViewMinHeight, CenterViewMaxHeight);
+
+    private void OnRobloxContentHeightChanged() => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, SettleRobloxNotchToFit);
+
+    private void SettleRobloxNotchToFit()
+    {
+        if (_transitionCoordinator.TargetView != VNotch.Models.NotchView.Roblox || _cleanedUp) return;
+        SettleNotchToContent(RobloxContent, MeasureRobloxViewHeight(),
+            () => _transitionCoordinator.TargetView == VNotch.Models.NotchView.Roblox);
+    }
+
     private void SettleHomeNotchToFit()
     {
         if (_transitionCoordinator.TargetView != VNotch.Models.NotchView.Pi || _cleanedUp) return;
@@ -74,6 +88,7 @@ public partial class MainWindow
     {
         if (_shellDragActive) return;
         var center = ReferenceEquals(content, PiContent) ? PiCenter : ReferenceEquals(content, SchoolContent) ? SchoolCenter :
+            ReferenceEquals(content, RobloxContent) ? RobloxCenter :
             ReferenceEquals(content, TimerContent) ? ControlCenter : ClaudeCenter;
         if (center.IsLayoutFollowing && !_shellAttachment.IsAttached)
         {

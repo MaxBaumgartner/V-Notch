@@ -197,8 +197,13 @@ internal sealed partial class PiDashboardClient
         var now = DateTimeOffset.Now;
         if (timetable.Result == null && events.Result == null && home.Result == null && health.Result == null)
             return _plannerReminders.Failed(now);
+        // The start page only counts the players; which game they are in is asked only while somebody plays.
+        JsonArray? games = null;
+        if (home.Result is JsonObject start && start["roblox"] is JsonObject roblox && roblox["games"] is not JsonArray &&
+            PlannerDashboard.Int(roblox, "playing") > 0)
+            games = (await GetAsync("/api/roblox/games").ConfigureAwait(false) as JsonObject)?["games"] as JsonArray;
         return _plannerReminders.Build(timetable.Result as JsonArray, events.Result as JsonArray,
-            home.Result as JsonObject, health.Result as JsonObject, now);
+            home.Result as JsonObject, health.Result as JsonObject, now, games);
     }
 
     /// <summary>A change on the planner (a new to-do, one ticked off): true when it took.</summary>

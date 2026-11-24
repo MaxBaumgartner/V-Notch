@@ -228,7 +228,7 @@ public partial class SettingsWindow : Window
                     return true;
 
                 if (fe.Tag is string tag &&
-                    (tag is "NavTabRow" or NavTabMedia or "Secondary" or "Timer" or "Claude" or "Pi" or "School" or "AudioMixer" ||
+                    (tag is "NavTabRow" or NavTabMedia or "Secondary" or "Timer" or "Claude" or "Pi" or "School" or "Roblox" or "AudioMixer" ||
                      Array.IndexOf(_navOrder, tag) >= 0))
                 {
                     return true;
