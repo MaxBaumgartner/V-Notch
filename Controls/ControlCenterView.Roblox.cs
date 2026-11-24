@@ -228,8 +228,19 @@ public partial class ControlCenterView
         }
         if (board.Profile.Length > 0)
         {
-            string profile = board.Profile;
-            var open = SchoolAction(0xE8A7, Loc.Get("roblox.open"), () => SafeLauncher.TryOpenUrl(profile), iconOnly: false);
+            string profile = board.Profile, label = Loc.Get("roblox.open");
+            var icon = new TextBlock
+            {
+                Text = "", FontFamily = FluentFont, FontSize = 14, Foreground = CompactInk,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 7, 0)
+            };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center,
+                Children = { icon, SchoolText(label, 13, CompactInk) } };
+            var open = SchoolPaintButton(new Border
+            {
+                Height = 30, CornerRadius = new CornerRadius(9), Padding = new Thickness(10, 0, 12, 0), Background = SchoolTile,
+                BorderBrush = SchoolRim, BorderThickness = new Thickness(1), Child = content
+            }, label, () => SafeLauncher.TryOpenUrl(profile), Frozen("#262628"));
             open.HorizontalAlignment = HorizontalAlignment.Left;
             open.Margin = new Thickness(0, 12, 0, 4);
             body.Children.Add(open);

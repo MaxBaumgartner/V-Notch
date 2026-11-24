@@ -1699,6 +1699,11 @@
                                         </Border>
 
                                         <Border Style="{StaticResource SettingRowBorder}">
+                                            <CheckBox x:Name="ShowCodexJobsInNotchCheck" Content="Show Codex jobs in the notch"
+                                                      Checked="ShowCodexJobsInNotchCheck_Changed" Unchecked="ShowCodexJobsInNotchCheck_Changed"/>
+                                        </Border>
+
+                                        <Border Style="{StaticResource SettingRowBorder}">
                                             <StackPanel>
                                                 <CheckBox x:Name="ReopenLastViewCheck" x:Uid="reopenLastView" Content="Reopen last view on expand"/>
                                                 <TextBlock x:Name="ReopenLastViewHint" Text="Restore the view that was open before the last collapse the next time the notch expands."

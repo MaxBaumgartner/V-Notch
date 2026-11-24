@@ -12,52 +12,88 @@ namespace VNotch.Controls;
 
 public partial class ControlCenterView
 {
-    private const int SchoolPageRows = 3;
-    private static readonly Brush SchoolHover = Frozen("#12FFFFFF");
+    private const int SchoolPageRows = 5;
+    private const int SchoolDayPageSize = 6;
+    private const double LessonHeight = 52, LessonStep = 56.8;
+    private static readonly CultureInfo SchoolCulture = CultureInfo.GetCultureInfo("en-GB");
+    private static readonly CultureInfo GermanSchoolCulture = CultureInfo.GetCultureInfo("de-AT");
+    private static CultureInfo SchoolDateCulture => Loc.CurrentLanguage == "de" ? GermanSchoolCulture : SchoolCulture;
+    private static readonly Brush SchoolHover = Frozen("#222225");
+    private static readonly Brush SchoolIconInk = Frozen("#BBBCC1");
+    private static readonly Brush SchoolHandle = Frozen("#88888C");
+    private static readonly IReadOnlyDictionary<string, Color> SchoolPalette = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["DBI"] = Color.FromRgb(157, 189, 177), ["WMC"] = Color.FromRgb(147, 191, 192),
+        ["POSE"] = Color.FromRgb(205, 154, 153), ["AM"] = Color.FromRgb(210, 133, 126),
+        ["SYP"] = Color.FromRgb(199, 183, 138), ["NSCS"] = Color.FromRgb(127, 166, 204),
+        ["D"] = Color.FromRgb(205, 175, 148), ["E"] = Color.FromRgb(190, 156, 118),
+        ["RK"] = Color.FromRgb(177, 195, 160)
+    };
+
+    private enum SchoolDrawerTab { Work, Tests, Day }
+    private SchoolDrawerTab _schoolTab;
     private TextBlock? _schoolDayClock;
-    private Grid? _schoolNowLayer;
-    private Grid? _schoolLessonRows;
+    private Grid[] _schoolDayColumns = [];
+    private readonly Grid?[] _schoolNowMarkers = new Grid?[2];
     private PiLesson[] _schoolDayLessons = [];
     private string? _schoolDayRevision, _schoolMarkerRevision;
     private int? _schoolLessonOffset;
+    private bool _schoolDrawerCoversFace;
     private int _schoolHandInPage, _schoolExamPage;
-    private string? _schoolSelectedExam;
+    private string? _schoolSelectedExam, _schoolSelectedTask, _schoolConfirmTask;
     private readonly HashSet<string> _schoolRowKeys = [];
 
     internal static Color SubjectColor(string subject) => PiDashboardClient.UntisColor(SchoolSubject(subject));
 
-    private Color SchoolColor(string subject)
+    private Color SchoolColor(string subject, Color? eventColor = null)
     {
-        if (_piSchool?.SubjectColors.TryGetValue(subject, out var exact) == true) return exact;
-        return SubjectColor(subject);
+        if (SchoolPalette.TryGetValue(subject, out var softened)) return softened;
+        Color original = eventColor ?? (_piSchool?.SubjectColors.TryGetValue(subject, out var exact) == true ? exact : SubjectColor(subject));
+        return Color.FromRgb(Soften(original.R, 154), Soften(original.G, 154), Soften(original.B, 162));
+
+        static byte Soften(byte value, byte neutral) => (byte)Math.Round(value * .45 + neutral * .55);
     }
 
+    private Color SchoolItemColor(SchoolItem item) => SchoolColor(item.Subject, item.Exam?.Color);
     private static string SchoolSubject(string value) => PiDashboardClient.UntisSubject(value);
-
     private static string DeadlineSubject(PiDeadline deadline) => SchoolSubject(deadline.Course);
     private static string AssignmentKey(PiDeadline deadline) => deadline.Cmid > 0 ? $"cmid:{deadline.Cmid}" : $"{deadline.Course}|{deadline.Name}";
     private static string ExamKey(PiExam exam) => $"{exam.Date:yyyy-MM-dd}|{exam.Start}|{exam.Subject}|{exam.Kind}|{exam.Title}";
     private static string ExamTitle(PiExam exam) => exam.Title.Length > 0 ? exam.Title : exam.Kind;
-    private static string SchoolSource(PiDeadline deadline) => deadline.Kind switch { "classroom" => "Classroom 50", "nw" => "NW", _ => "Moodle" };
+    private static DateTimeOffset? ExamDue(PiExam exam)
+    {
+        var date = exam.Date.Date;
+        if (!TimeOnly.TryParseExact(exam.Start, ["H:mm", "HH:mm"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var time)) return null;
+        date += time.ToTimeSpan();
+        return new DateTimeOffset(date, TimeZoneInfo.Local.GetUtcOffset(date));
+    }
+
+    private bool IsClassroomTask(PiDeadline deadline) =>
+        deadline.Kind == "classroom" || _piAssignments.GetValueOrDefault(deadline.Cmid)?.Mode is "classroom" or "pose";
+
+    private string TaskSource(PiDeadline deadline) =>
+        IsClassroomTask(deadline) ? "Classroom 50" : deadline.Kind == "nw" ? "NW" : "Moodle";
 
     private string DeadlineRevision(PiDeadline deadline)
     {
         _piAssignments.TryGetValue(deadline.Cmid, out var assignment);
         _piTasks.TryGetValue(deadline.Cmid, out var task);
         _schoolPush.TryGetValue(AssignmentKey(deadline), out var push);
-        return $"{AssignmentKey(deadline)}|{deadline}|{SchoolColor(DeadlineSubject(deadline))}|{assignment}|{task}|{push}|{_schoolArmedPush == AssignmentKey(deadline)}";
+        return $"{AssignmentKey(deadline)}|{deadline}|{SchoolColor(DeadlineSubject(deadline))}|{assignment}|{task}|{push}";
     }
 
-    private FrameworkElement SchoolMark(string subject)
-    {
-        var label = SchoolText(subject, 12, CompactInk, FontWeights.SemiBold);
-        var dot = new Ellipse
+    private FrameworkElement SchoolSourceRow(string subject, string source, Color color) =>
+        new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children =
         {
-            Width = 7, Height = 7, Fill = new SolidColorBrush(SchoolColor(subject)),
-            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 7, 0)
-        };
-        return new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { dot, label } };
-    }
+            SchoolDot(color, 9), SchoolText(subject, 15, CompactInk, FontWeights.SemiBold),
+            new Border { Padding = new Thickness(9, 0, 0, 0), Child = SchoolText(source, 15) }
+        } };
+
+    private static Ellipse SchoolDot(Color color, double gap) => new()
+    {
+        Width = 7, Height = 7, Fill = new SolidColorBrush(color),
+        VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, gap, 0)
+    };
 
     private static Button SchoolButton(FrameworkElement content, string label, Action action)
     {
@@ -76,87 +112,82 @@ public partial class ControlCenterView
         return button;
     }
 
-    private Button SchoolAction(int glyph, string label, Action action, bool iconOnly = true)
+    private static Button SchoolPaintButton(Border tile, string label, Action action, Brush hover)
     {
-        FrameworkElement icon = SchoolIcon(glyph);
-        FrameworkElement content = icon;
-        if (!iconOnly)
-        {
-            icon.Margin = new Thickness(0, 0, 6, 0);
-            content = new StackPanel { Orientation = Orientation.Horizontal, Children = { icon, SchoolText(label, 12, CompactInk) } };
-        }
-        var tile = new Border
-        {
-            MinWidth = 26, Height = iconOnly ? 24 : 28, CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(iconOnly ? 4 : 8, 0, iconOnly ? 4 : 8, 0),
-            Background = iconOnly ? Brushes.Transparent : SchoolTile,
-            Child = content
-        };
+        var rest = tile.Background;
         var button = SchoolButton(tile, label, action);
-        void Paint() => tile.Background = button.IsMouseOver || button.IsKeyboardFocusWithin ? SchoolHover : iconOnly ? Brushes.Transparent : SchoolTile;
-        button.IsMouseDirectlyOverChanged += (_, _) => Paint();
+        void Paint() => tile.Background = button.IsEnabled && (button.IsMouseOver || button.IsKeyboardFocusWithin) ? hover : rest;
         button.MouseEnter += (_, _) => Paint();
         button.MouseLeave += (_, _) => Paint();
         button.IsKeyboardFocusWithinChanged += (_, _) => Paint();
+        button.IsEnabledChanged += (_, _) => Paint();
         return button;
     }
 
-    private Button SchoolPager(int glyph, string label, Action click)
+    private Button SchoolPrimary(string? glyph, string label, Action action)
     {
-        var button = SchoolAction(glyph, label, click);
-        button.Margin = new Thickness(0, 0, 4, 0);
-        var tile = (Border)button.Content;
-        tile.Height = 26;
-        tile.MinWidth = 28;
-        tile.BorderBrush = SchoolRim;
-        tile.BorderThickness = new Thickness(1);
-        return button;
-    }
-
-    private FrameworkElement SchoolIcon(int glyph)
-    {
-        string? vector = glyph switch
+        Brush ink = Frozen("#111111");
+        var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        if (glyph != null)
         {
-            0xE896 => "M12,4 V15 M7,10 L12,15 17,10 M5,20 H19",
-            0xE898 => "M12,20 V9 M7,14 L12,9 17,14 M5,4 H19",
-            0xE74A => "M12,19 V5 M6,11 L12,5 18,11",
-            0xE8A7 => "M14,4 H20 V10 M20,4 L11,13 M18,14 V20 H4 V6 H10",
-            0xE72B => "M19,12 H5 M11,6 L5,12 11,18",
-            0xE756 => "M12,3 V7 M12,17 V21 M3,12 H7 M17,12 H21 M6,6 L8.5,8.5 M15.5,15.5 L18,18 M6,18 L8.5,15.5 M15.5,8.5 L18,6",
-            0xE70D => "M6,9 L12,15 18,9",
-            0xE70E => "M6,15 L12,9 18,15",
-            _ => null
-        };
-        if (vector == null)
-        {
-            var glyphBlock = CompactGlyph(glyph, CompactInk);
-            glyphBlock.FontSize = 14;
-            glyphBlock.Width = 24;
-            return glyphBlock;
+            var icon = SchoolIcon(glyph, 20, ink);
+            icon.Margin = new Thickness(0, 0, 8, 0);
+            content.Children.Add(icon);
         }
+        content.Children.Add(SchoolText(label, 15, ink, FontWeight.FromOpenTypeWeight(620)));
+        return SchoolPaintButton(new Border { Height = 38, CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(16, 0, 16, 0), Background = CompactInk, Child = content }, label, action, Frozen("#DDDDDD"));
+    }
 
-        var path = new System.Windows.Shapes.Path
+    private Button SchoolTool(string glyph, string label, Action action) =>
+        SchoolIconButton(glyph, label, action, 40, 38, 20, tile: true);
+
+    private Button SchoolIconButton(string glyph, string label, Action action, double width = 36, double height = 34,
+        double iconSize = 20, bool tile = false)
+    {
+        var button = SchoolPaintButton(new Border
         {
-            Data = Geometry.Parse(vector), Stroke = CompactInk, StrokeThickness = 1.7,
+            Width = width, Height = height, CornerRadius = new CornerRadius(9),
+            Margin = tile ? new Thickness(6, 0, 0, 0) : new Thickness(0),
+            BorderThickness = tile ? new Thickness(1) : new Thickness(0),
+            BorderBrush = SchoolRim, Background = tile ? SchoolTile : Brushes.Transparent,
+            Child = SchoolIcon(glyph, iconSize)
+        }, label, action, tile ? Frozen("#262628") : SchoolHover);
+        button.IsEnabledChanged += (_, _) => button.Opacity = button.IsEnabled ? 1 : .52;
+        return button;
+    }
+
+    private static FrameworkElement SchoolIcon(string glyph, double size = 20, Brush? ink = null)
+    {
+        string vector = glyph switch
+        {
+            "up" => "M12,16V3m-5,5 5,-5 5,5M4,15v5h16v-5",
+            "down" => "M12,3v13m-5,-5 5,5 5,-5M4,16v4h16v-4",
+            "folder" => "M3,7V5h6l2,2h10v12H3z",
+            "chat" => "M4,4h16v12H9l-5,4z M8,9h8m-8,3h5",
+            "left" => "M14,6l-6,6 6,6",
+            "right" => "M10,6l6,6 -6,6",
+            "close" => "M6,14l6,-6 6,6",
+            "mini" => "M6,12h12",
+            "file" => "M6,3h8l4,4v14H6z M14,3v5h4 M9,12h6m-6,4h6",
+            "note" => "M4,5h16v11l-5,4H4z M9,9h7m-7,4h5",
+            "book" => "M12,6c-3,-2 -6,-2 -10,-1v13c4,-1 7,-1 10,1 3,-2 6,-2 10,-1V5c-4,-1 -7,-1 -10,1zm0,0v13",
+            "push" => "M6,5v14m0,-7c6,0 11,-2 11,-8m-3,3 3,-3 3,3",
+            _ => throw new ArgumentOutOfRangeException(nameof(glyph))
+        };
+        var path = new Path
+        {
+            Data = Geometry.Parse(vector), Stroke = ink ?? SchoolIconInk, StrokeThickness = 1.65,
             StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round
         };
-        return new Viewbox
-        {
-            Width = 15, Height = 15, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center,
-            Child = new Canvas { Width = 24, Height = 24, Children = { path } }
-        };
+        return new Viewbox { Width = size, Height = size, VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center, Child = new Canvas { Width = 24, Height = 24, Children = { path } } };
     }
-    private FrameworkElement ExamLight(PiExam exam, DateTimeOffset now)
-    {
-        var glow = new Border { IsHitTestVisible = false, CornerRadius = new CornerRadius(8) };
-        if (exam.Date.Date == now.Date.AddDays(1))
-        {
-            Color color = SchoolColor(ExamSubject(exam));
-            glow.Background = new RadialGradientBrush(Alpha(color, .12), Alpha(color, 0))
-                { Center = new Point(.12, .5), GradientOrigin = new Point(.12, .5), RadiusX = .42, RadiusY = 1 };
-        }
-        return glow;
-    }
+
+    private Button SchoolTab(string label, bool selected, Action action) =>
+        SchoolPaintButton(new Border { Height = 32, Padding = new Thickness(11, 0, 11, 0), CornerRadius = new CornerRadius(8),
+            Margin = new Thickness(0, 0, 8, 0), Background = selected ? Frozen("#272729") : Brushes.Transparent,
+            Child = SchoolText(label, 14, selected ? Brushes.White : SchoolLabel) }, label, action, SchoolHover);
 
     private void ComposeSchoolDrawer(PiDeadline[] deadlines, PiExam[] exams, DateTimeOffset now)
     {
@@ -164,118 +195,215 @@ public partial class ControlCenterView
         foreach (string key in _schoolRowKeys.Except(liveKeys)) Seen.Forget(key);
         _schoolRowKeys.Clear();
         _schoolRowKeys.UnionWith(liveKeys);
-        var body = new StackPanel { Margin = new Thickness(4, 0, 4, 0) };
+        var body = new StackPanel { Margin = new Thickness(23, 17, 23, 18), MinHeight = 205 };
         _schoolDayClock = null;
-        _schoolNowLayer = null;
-        _schoolLessonRows = null;
+        _schoolDayColumns = [];
+        Array.Clear(_schoolNowMarkers);
 
-        if (exams.FirstOrDefault(e => ExamKey(e) == _schoolSelectedExam) is { } selected)
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal };
+        tabs.Children.Add(SchoolTab(Say("Abgaben", "Work"), _schoolTab == SchoolDrawerTab.Work, () => ChangeSchoolTab(SchoolDrawerTab.Work)));
+        tabs.Children.Add(SchoolTab("Tests", _schoolTab == SchoolDrawerTab.Tests, () => ChangeSchoolTab(SchoolDrawerTab.Tests)));
+        tabs.Children.Add(SchoolTab(Say("Tag", "Day"), _schoolTab == SchoolDrawerTab.Day, () => ChangeSchoolTab(SchoolDrawerTab.Day)));
+        var header = SchoolColumns(tabs, SchoolIconButton("close", Say("Erweiterte Ansicht schließen", "Close extended view"), () =>
         {
-            BuildStudyPanel(body, selected);
-        }
+            SetDrawerOpen(false);
+        }));
+        body.Children.Add(new Border { BorderBrush = SchoolRim, BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0, 0, 0, 10), Margin = new Thickness(0, 0, 0, 12), Child = header });
+
+        if (_schoolTab == SchoolDrawerTab.Day) BuildSchoolDay(body, now);
+        else if (_schoolTab == SchoolDrawerTab.Tests && exams.FirstOrDefault(e => ExamKey(e) == _schoolSelectedExam) is { } exam)
+            BuildStudyPanel(body, exam);
+        else if (_schoolTab == SchoolDrawerTab.Work && deadlines.FirstOrDefault(d => AssignmentKey(d) == _schoolSelectedTask) is { } task)
+            BuildTaskPanel(body, task);
         else
         {
-            _schoolSelectedExam = null;
-            int handPages = PageCount(deadlines.Length, SchoolPageRows);
-            int testPages = PageCount(exams.Length, SchoolPageRows);
-            _schoolHandInPage = Math.Clamp(_schoolHandInPage, 0, handPages - 1);
-            _schoolExamPage = Math.Clamp(_schoolExamPage, 0, testPages - 1);
-
-            body.Children.Add(SchoolSection(Say("Abgaben", "Hand-ins"), _schoolHandInPage, handPages, page => { _schoolHandInPage = page; RedrawPi(); }));
-            if (deadlines.Length == 0) body.Children.Add(SchoolText(Say("Keine offenen Abgaben", "No open hand-ins"), 12));
-            foreach (var item in deadlines.Skip(_schoolHandInPage * SchoolPageRows).Take(SchoolPageRows))
+            if (_schoolTab == SchoolDrawerTab.Work)
             {
-                string revision = DeadlineRevision(item);
-                var actions = new StackPanel { Orientation = Orientation.Horizontal };
-                var row = SchoolListRow(DeadlineSubject(item), item.Name, item.Due.ToLocalTime().ToString("ddd d.M.", Loc.GetCulture()), actions);
-                AddSchoolTaskActions(item, actions, (Grid)row.Child, compact: true);
-                row.IsVisibleChanged += (_, _) => { if (row.IsVisible) _ = Dispatcher.BeginInvoke(() => LoadPiAssignment(item.Cmid)); };
-                RevealSchoolActions(row, actions);
-                WatchSchoolRow(row, $"school:hand:{AssignmentKey(item)}", revision);
+                AddSchoolGroup(body, Say("Abgaben", "Hand-ins"), deadlines.Length, ref _schoolHandInPage,
+                    page => { _schoolHandInPage = page; RedrawPi(); });
+                if (deadlines.Length == 0) body.Children.Add(SchoolText(Say("Alles abgegeben", "All handed in"), 13));
+                foreach (var item in deadlines.Skip(_schoolHandInPage * SchoolPageRows).Take(SchoolPageRows))
+                {
+                    string key = AssignmentKey(item);
+                    var actions = new StackPanel { Orientation = Orientation.Horizontal };
+                    var row = SchoolListRow(DeadlineSubject(item), item.Name, TaskWhen(item.Due), SchoolColor(DeadlineSubject(item)),
+                        () => OpenTaskPanel(item), actions);
+                    AddSchoolTaskActions(item, actions, row, compact: true);
+                    row.IsVisibleChanged += (_, _) => { if (row.IsVisible) _ = Dispatcher.BeginInvoke(() => LoadPiAssignment(item.Cmid)); };
+                    WatchSchoolRow(row, "school:hand:" + key, DeadlineRevision(item));
+                    body.Children.Add(row);
+                }
+            }
+            AddSchoolGroup(body, "Tests", exams.Length, ref _schoolExamPage, page => { _schoolExamPage = page; RedrawPi(); });
+            if (exams.Length == 0) body.Children.Add(SchoolText(Say("Keine anstehenden Tests", "No upcoming tests"), 13));
+            foreach (var item in exams.Skip(_schoolExamPage * SchoolPageRows).Take(SchoolPageRows))
+            {
+                string subject = ExamSubject(item);
+                Color color = SchoolColor(subject, item.Color);
+                var actions = new StackPanel { Orientation = Orientation.Horizontal, Children =
+                {
+                    SchoolIconButton("folder", Say("Lernordner öffnen", "Open study folder"), () => OpenStudyFolder(item), 26, 28, 15),
+                    SchoolIconButton("chat", Say("Claude-Sitzung fortsetzen", "Resume Claude session"), () => ResumeStudy(item), 26, 28, 15)
+                } };
+                string when = ExamWhen(item);
+                var row = SchoolListRow(subject, ExamTitle(item), when, color, () => SelectStudy(item), actions);
+                HookStudyDrop(row, item);
+                WatchSchoolRow(row, "school:test:" + ExamKey(item), $"{color}|{item.Date.Date == now.Date.AddDays(1)}");
                 body.Children.Add(row);
             }
-
-            body.Children.Add(SchoolSection(Say("Tests", "Tests"), _schoolExamPage, testPages, page => { _schoolExamPage = page; RedrawPi(); }));
-            if (exams.Length == 0) body.Children.Add(SchoolText(Say("Keine anstehenden Tests", "No upcoming tests"), 12));
-            foreach (var exam in exams.Skip(_schoolExamPage * SchoolPageRows).Take(SchoolPageRows))
-            {
-                string subject = ExamSubject(exam);
-                var open = SchoolAction(0xE70D, Say("Lernmaterial öffnen", "Open study materials"), () => SelectStudy(exam));
-                var row = SchoolListRow(subject, ExamTitle(exam), exam.Date.ToString("ddd d.M.", Loc.GetCulture()), open);
-                var line = (Grid)row.Child;
-                line.Children.Insert(0, ExamLight(exam, now));
-                Grid.SetColumnSpan(line.Children[0], line.ColumnDefinitions.Count);
-                row.Cursor = Cursors.Hand;
-                row.MouseLeftButtonUp += (_, e) => { e.Handled = true; SelectStudy(exam); };
-                HookStudyDrop(row, exam);
-                RevealSchoolActions(row, open);
-                WatchSchoolRow(row, $"school:test:{ExamKey(exam)}", $"{subject}|{SchoolColor(subject)}|{exam.Date.Date == now.Date.AddDays(1)}");
-                body.Children.Add(row);
-            }
-
-            BuildSchoolDay(body, now);
         }
+        MountSchoolDrawer(body);
+    }
+
+    private static string TaskWhen(DateTimeOffset date) => date.ToLocalTime().ToString("ddd HH:mm", SchoolDateCulture);
+
+    private static string ExamWhen(PiExam exam) => exam.Date.ToString("ddd", SchoolDateCulture)
+        + (exam.Start.Length > 0 ? $" {exam.Start}" : "");
+
+    private void ChangeSchoolTab(SchoolDrawerTab tab)
+    {
+        _schoolTab = tab;
+        _schoolSelectedExam = _schoolSelectedTask = _schoolConfirmTask = _schoolArmedPush = null;
+        RedrawPi();
+    }
+
+    private void MountSchoolDrawer(StackPanel body)
+    {
         AddDrawer(body);
-
-        static int PageCount(int count, int size) => Math.Max(1, (count + size - 1) / size);
-    }
-
-    private FrameworkElement SchoolSection(string name, int page, int pages, Action<int> change)
-    {
-        var label = SchoolText(name, 16, CompactInk, FontWeights.SemiBold);
-        var controls = new StackPanel { Orientation = Orientation.Horizontal };
-        if (pages > 1)
+        _drawerBody.Margin = new Thickness(0);
+        _drawerFrame!.BorderThickness = new Thickness(0);
+        _drawerFrame.Background = Brushes.Black;
+        var grabber = (Border)_drawerGrabber!;
+        var line = (Border)grabber.Child;
+        line.Width = 32;
+        line.Background = SchoolHandle;
+        var collapse = SchoolIconButton("mini", Say("Einklappen", "Collapse Schule"), () => SchoolCollapseRequested?.Invoke(), 36, 24);
+        collapse.HorizontalAlignment = HorizontalAlignment.Left;
+        collapse.Margin = new Thickness(25, 0, 0, 0);
+        var handle = new Grid { Height = 24 };
+        grabber.Child = handle;
+        handle.Children.Add(line);
+        handle.Children.Add(collapse);
+        grabber.Margin = new Thickness(0, 0, 0, 14);
+        grabber.MouseLeave += (_, _) =>
         {
-            var back = SchoolAction(0xE76B, Say("Vorherige Seite", "Previous page"), () => change(page - 1));
-            var next = SchoolAction(0xE76C, Say("Nächste Seite", "Next page"), () => change(page + 1));
-            back.IsEnabled = page > 0;
-            next.IsEnabled = page + 1 < pages;
-            back.Opacity = back.IsEnabled ? 1 : .35;
-            next.Opacity = next.IsEnabled ? 1 : .35;
-            controls.Children.Add(back);
-            controls.Children.Add(SchoolText($"{page + 1}/{pages}", 12));
-            controls.Children.Add(next);
-        }
-        var heading = SchoolColumns(label, controls);
-        heading.Height = 24;
-        return heading;
+            line.Background = SchoolHandle;
+            if (AnimateSchool) Motion.To(line, WidthProperty, 32, Motion.Press);
+            else Motion.Stop(line, WidthProperty, 32);
+        };
+        grabber.IsVisibleChanged += (_, _) => { if (!grabber.IsVisible) line.Background = SchoolHandle; };
+
+        var tween = _drawerHeight!;
+        var paint = tween.Step!;
+        tween.Step = height =>
+        {
+            paint(height);
+            ShowSchoolDrawer(height);
+        };
+        _drawerExtent = MeasureDrawer();
+        if (!IsLayoutFollowing) tween.Value = DrawerOpen ? _drawerExtent : 0;
+        ShowSchoolDrawer(tween.Value);
     }
 
-    private Border SchoolListRow(string subject, string title, string when, FrameworkElement actions)
+    private void ShowSchoolDrawer(double height)
     {
-        var text = SchoolText(title, 12, CompactInk);
-        text.ToolTip = title;
-        var date = SchoolText(when, 12);
-        var line = new Grid { Background = Brushes.Transparent };
-        foreach (var width in new[] { new GridLength(62), new GridLength(1, GridUnitType.Star), new GridLength(80), new GridLength(64) })
+        double shown = Math.Clamp(height / Math.Max(1, _drawerExtent), 0, 1);
+        if (shown == 0) _schoolFaceSlot.Height = double.NaN;
+        else
+        {
+            _schoolTestDrop.Measure(new Size(ActualWidth > 0 ? ActualWidth : 600, double.PositiveInfinity));
+            _schoolFaceSlot.Height = _schoolTestDrop.DesiredSize.Height * (1 - shown);
+        }
+        _schoolFaceSlot.ClipToBounds = shown > 0;
+        _schoolFaceSlot.IsHitTestVisible = shown < .01;
+        _schoolFaceSlot.Visibility = shown >= 1 || !SchoolDataAvailable ? Visibility.Collapsed : Visibility.Visible;
+        _drawerGrabber!.Height = 24 * (1 - shown);
+        _drawerGrabber.Margin = new Thickness(0, 0, 0, 14 * (1 - shown));
+        _drawerGrabber.ClipToBounds = true;
+        _drawerGrabber.IsHitTestVisible = shown < 1 || _drawerGrabber.IsMouseCaptured;
+        _drawerGrabber.Opacity = 1 - shown;
+        bool covered = height >= 1;
+        if (covered == _schoolDrawerCoversFace) return;
+        _schoolDrawerCoversFace = covered;
+        if (covered)
+        {
+            StopSchoolDial();
+            Motion.Stop(_schoolHeroShift, TranslateTransform.XProperty, 0);
+            _schoolBreathing = false;
+            _schoolLight.Stop(_schoolLightTarget);
+        }
+        else if (SchoolDataAvailable && IsVisible)
+        {
+            UpdateSchoolClock(_schoolNow());
+            QueueSchoolLight();
+        }
+    }
+
+    private void AddSchoolGroup(StackPanel body, string name, int count, ref int page, Action<int> change)
+    {
+        int pages = Math.Max(1, (count + SchoolPageRows - 1) / SchoolPageRows);
+        page = Math.Clamp(page, 0, pages - 1);
+        var heading = SchoolColumns(SchoolText(name, 12, SchoolLabel, FontWeights.Medium), SchoolPageButtons(page, pages, change));
+        heading.Height = 18;
+        heading.Margin = new Thickness(0, body.Children.Count == 1 ? 0 : 8, 0, 4);
+        body.Children.Add(heading);
+    }
+
+    private StackPanel SchoolPageButtons(int page, int pages, Action<int> change)
+    {
+        var controls = new StackPanel { Orientation = Orientation.Horizontal };
+        if (pages <= 1) return controls;
+        var back = SchoolIconButton("left", Say("Vorherige Seite", "Previous page"), () => change(page - 1), 24, 18, 14);
+        var next = SchoolIconButton("right", Say("Nächste Seite", "Next page"), () => change(page + 1), 24, 18, 14);
+        back.IsEnabled = page > 0;
+        next.IsEnabled = page + 1 < pages;
+        controls.Children.Add(back);
+        controls.Children.Add(SchoolText($"{page + 1} / {pages}", 12));
+        controls.Children.Add(next);
+        return controls;
+    }
+
+    private Grid SchoolListRow(string subject, string title, string when, Color color, Action open, StackPanel actions)
+    {
+        var mark = new StackPanel { Orientation = Orientation.Horizontal, Children =
+        {
+            SchoolDot(color, 6), SchoolText(subject, 12, Frozen("#CDCDCF"))
+        } };
+        var text = SchoolText(title, 15, CompactInk, FontWeight.FromOpenTypeWeight(530));
+        var info = new StackPanel { Orientation = Orientation.Horizontal, Children = { SchoolText(when, 13), SchoolIcon("right", 15) } };
+        info.Children.Insert(1, new Border { Width = 13 });
+        var line = new Grid();
+        foreach (var width in new[] { new GridLength(62), new GridLength(1, GridUnitType.Star), new GridLength(114) })
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
-        foreach (var child in new[] { SchoolMark(subject), text, date, actions })
+        foreach (var child in new FrameworkElement[] { mark, text, info })
         {
             Grid.SetColumn(child, line.Children.Count);
             line.Children.Add(child);
         }
+        info.HorizontalAlignment = HorizontalAlignment.Right;
+
+        var row = new Grid { Height = 33, Background = Brushes.Transparent, Children =
+        {
+            SchoolPaintButton(new Border { Padding = new Thickness(6, 0, 6, 0), CornerRadius = new CornerRadius(5),
+                Background = Brushes.Transparent, Child = line }, $"{subject} {title} · {when}", open, SchoolHover)
+        } };
         actions.HorizontalAlignment = HorizontalAlignment.Right;
         actions.VerticalAlignment = VerticalAlignment.Center;
-        return new Border { Height = 26, BorderThickness = new Thickness(0, 1, 0, 0), BorderBrush = SchoolRim, Background = Brushes.Transparent, Child = line };
-    }
-
-    private void RevealSchoolActions(Border row, FrameworkElement actions)
-    {
+        actions.Margin = new Thickness(0, 0, 6, 0);
+        row.Children.Add(actions);
         void Reveal()
         {
-            bool show = row.IsVisible && (row.IsMouseOver || row.IsKeyboardFocusWithin);
-            actions.IsHitTestVisible = show;
-            double target = show ? 1 : 0;
-            if (AnimateSchool && row.IsVisible && actions.Opacity != target && (show || actions.Opacity > 0))
-                Motion.To(actions, OpacityProperty, target, show ? Motion.PressDown : Motion.Exit);
-            else Motion.Stop(actions, OpacityProperty, target);
+            bool show = row.IsVisible && (row.IsMouseOver || row.IsKeyboardFocusWithin) && actions.Children.Count > 0;
+            actions.Visibility = show ? Visibility.Visible : Visibility.Hidden;
+            info.Visibility = show ? Visibility.Hidden : Visibility.Visible;
         }
-        actions.Opacity = 0;
-        actions.IsHitTestVisible = false;
         row.MouseEnter += (_, _) => Reveal();
         row.MouseLeave += (_, _) => Reveal();
         row.IsKeyboardFocusWithinChanged += (_, _) => Reveal();
         row.IsVisibleChanged += (_, _) => Reveal();
+        Reveal();
+        return row;
     }
 
     private void WatchSchoolRow(FrameworkElement row, string key, string revision)
@@ -292,150 +420,146 @@ public partial class ControlCenterView
         var school = _piSchool!;
         _schoolDayLessons = (school.Days.TryGetValue(date, out var found) ? found : school.Date == date ? school.Lessons : [])
             .OrderBy(l => l.StartMinutes).ToArray();
-
-        var head = SchoolColumns(SchoolText(Say("Heute", "Today"), 16, CompactInk, FontWeights.SemiBold),
-            SchoolText(now.ToString("ddd, d MMM", Loc.GetCulture()), 12));
-        head.Height = 24;
+        _schoolDayClock = SchoolText("", 13);
+        Typography.SetNumeralAlignment(_schoolDayClock, FontNumeralAlignment.Tabular);
+        var nowText = new StackPanel { Orientation = Orientation.Horizontal, Children =
+        {
+            SchoolText(Say("Jetzt", "Now"), 13), new Border { Width = 13 }, _schoolDayClock
+        } };
+        var head = SchoolColumns(SchoolHeading(now.ToString("dddd, d MMM", SchoolDateCulture), 19, 1.45, .94, 550), nowText);
+        head.Margin = new Thickness(0, 0, 0, 10);
         body.Children.Add(head);
         if (_schoolDayLessons.Length == 0)
         {
-            body.Children.Add(SchoolText(school.Break ?? Say("Heute kein Unterricht", "No lessons today"), 12));
+            body.Children.Add(SchoolText(school.Break ?? Say("Heute kein Unterricht", "No lessons today"), 13));
+            UpdateSchoolDayClock(now);
             return;
         }
 
-        _schoolDayClock = SchoolText("", 30, CompactInk, FontWeights.Medium);
-        Typography.SetNumeralAlignment(_schoolDayClock, FontNumeralAlignment.Tabular);
-        var nowLabel = SchoolText(Say("Jetzt", "Now"), 12);
-        var back = SchoolPager(0xE70E, Say("Frühere Stunden", "Earlier lessons"), () => PageLessons(-1));
-        var next = SchoolPager(0xE70D, Say("Spätere Stunden", "Later lessons"), () => PageLessons(1));
-        var navigation = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0), Children = { back, next } };
-        navigation.Visibility = _schoolDayLessons.Length > 3 ? Visibility.Visible : Visibility.Collapsed;
-        var locator = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { nowLabel, _schoolDayClock, navigation } };
-        _schoolLessonRows = new Grid();
-        _schoolNowLayer = new Grid { IsHitTestVisible = false };
-        var layout = new Grid { Height = 108 };
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(129) });
-        layout.ColumnDefinitions.Add(new ColumnDefinition());
-        layout.Children.Add(locator);
-        var timeline = new Grid { VerticalAlignment = VerticalAlignment.Center, Children = { _schoolLessonRows, _schoolNowLayer } };
-        Grid.SetColumn(timeline, 1);
-        layout.Children.Add(timeline);
-        body.Children.Add(layout);
+        _schoolDayColumns = [new Grid(), new Grid()];
+        var timeline = new Grid { Height = LessonStep * 2 + LessonHeight };
+        timeline.ColumnDefinitions.Add(new ColumnDefinition());
+        timeline.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(15) });
+        timeline.ColumnDefinitions.Add(new ColumnDefinition());
+        timeline.Children.Add(_schoolDayColumns[0]);
+        Grid.SetColumn(_schoolDayColumns[1], 2);
+        timeline.Children.Add(_schoolDayColumns[1]);
+        body.Children.Add(timeline);
+        int pages = (_schoolDayLessons.Length + SchoolDayPageSize - 1) / SchoolDayPageSize;
+        int preceding = Array.FindLastIndex(_schoolDayLessons, lesson => lesson.StartMinutes <= now.Hour * 60 + now.Minute);
+        _schoolLessonOffset = Math.Clamp(_schoolLessonOffset ?? preceding / SchoolDayPageSize, 0, pages - 1);
+        var paging = SchoolPageButtons(_schoolLessonOffset.Value, pages, page => { _schoolLessonOffset = page; RedrawPi(); });
+        paging.HorizontalAlignment = HorizontalAlignment.Right;
+        if (pages > 1) body.Children.Add(paging);
         _schoolDayRevision = _schoolMarkerRevision = null;
-        _schoolLessonOffset = _schoolLessonOffset is { } offset ? Math.Clamp(offset, 0, Math.Max(0, _schoolDayLessons.Length - 3)) : null;
+        timeline.IsVisibleChanged += (_, _) => { if (timeline.IsVisible) UpdateSchoolDayClock(_schoolNow()); };
         UpdateSchoolDayClock(now);
-
-        void PageLessons(int step)
-        {
-            _schoolLessonOffset = Math.Clamp(VisibleLessonOffset(_schoolNow()) + step, 0, Math.Max(0, _schoolDayLessons.Length - 3));
-            UpdateSchoolDayClock(_schoolNow());
-        }
-    }
-
-    private int VisibleLessonOffset(DateTimeOffset now)
-    {
-        int minute = now.Hour * 60 + now.Minute;
-        int preceding = Array.FindLastIndex(_schoolDayLessons, l => l.StartMinutes <= minute);
-        return _schoolLessonOffset ?? Math.Clamp(preceding - 1, 0, Math.Max(0, _schoolDayLessons.Length - 3));
     }
 
     private void UpdateSchoolDayClock(DateTimeOffset now)
     {
-        if (_schoolDayClock == null || _schoolLessonRows == null || _schoolNowLayer == null) return;
+        if (_schoolDayClock == null) return;
         string clock = now.ToString("HH:mm", CultureInfo.InvariantCulture);
-        Seen.Changed("school:today-clock", clock);
+        if (_schoolDayClock.IsVisible) Seen.Changed("school:today-clock", clock);
         _schoolDayClock.Text = clock;
+        if (_schoolDayColumns.Length == 0) return;
         int minute = now.Hour * 60 + now.Minute;
-        int offset = VisibleLessonOffset(now);
-        var lessons = _schoolDayLessons.Skip(offset).Take(3).ToArray();
-        int active = Array.FindIndex(lessons, l => !l.Cancelled && minute >= l.StartMinutes && minute < l.EndMinutes);
-        string revision = $"{offset}|{active}|" + string.Join("|", lessons.Select(l => $"{l}:{SchoolColor(SchoolSubject(l.SubjectKey.Length > 0 ? l.SubjectKey : l.Subject))}"));
-        if (_schoolDayRevision != revision)
+        var lessons = _schoolDayLessons.Skip((_schoolLessonOffset ?? 0) * SchoolDayPageSize).Take(SchoolDayPageSize).ToArray();
+        string revision = string.Join("|", lessons.Select(l => $"{l}:{SchoolColor(LessonSubject(l), l.Color)}"));
+        var markerRevision = $"{revision}|{clock}";
+        bool repaint = _schoolDayRevision != revision;
+        if (!repaint && _schoolMarkerRevision == markerRevision)
         {
-            _schoolDayRevision = revision;
-            _schoolLessonRows.Children.Clear();
-            _schoolLessonRows.RowDefinitions.Clear();
-            for (int i = 0; i < lessons.Length; i++)
-            {
-                _schoolLessonRows.RowDefinitions.Add(new RowDefinition { Height = new GridLength(36) });
-                var item = SchoolLesson(lessons[i], i == active);
-                Grid.SetRow(item, i);
-                _schoolLessonRows.Children.Add(item);
-            }
+            if (_schoolDayColumns[0].IsVisible) Seen.Changed("school:lessons", revision);
+            return;
         }
-        bool changed = _schoolLessonRows.IsVisible && Seen.Changed("school:lessons", revision);
-        if (changed) SchoolPulse(_schoolLessonRows);
-        string markerRevision = $"{revision}|{clock}";
-        if (_schoolMarkerRevision == markerRevision) return;
+        _schoolDayRevision = revision;
         _schoolMarkerRevision = markerRevision;
-        _schoolNowLayer.Children.Clear();
-        if (minute < lessons[0].StartMinutes || minute > lessons[^1].EndMinutes) return;
-        // Time within a lesson uses the box height; time in a break uses the gap between boxes.
-        int index = Array.FindLastIndex(lessons, l => l.StartMinutes <= minute);
-        var period = lessons[index];
-        double y = minute <= period.EndMinutes
-            ? index * 36 + 2 + 31 * (minute - period.StartMinutes) / Math.Max(1d, period.EndMinutes - period.StartMinutes)
-            : index * 36 + 33 + 5 * (minute - period.EndMinutes) / Math.Max(1d, lessons[index + 1].StartMinutes - period.EndMinutes);
-        var color = new SolidColorBrush(SchoolMist);
-        var marker = new Ellipse { Width = 6, Height = 6, Fill = color };
-        var tick = new Border
+        if (_schoolDayColumns[0].IsVisible && Seen.Changed("school:lessons", revision))
+            foreach (var column in _schoolDayColumns) SchoolPulse(column);
+
+        for (int c = 0; c < _schoolDayColumns.Length; c++)
         {
-            Height = 1, Margin = new Thickness(38, 0, 0, 0),
-            Background = new LinearGradientBrush
+            var column = _schoolDayColumns[c];
+            var periods = lessons.Skip(c * 3).Take(3).ToArray();
+            if (repaint)
             {
-                StartPoint = new Point(0, .5), EndPoint = new Point(1, .5),
-                GradientStops = { new(SchoolMist, 0), new(SchoolMist, .025), new(Alpha(SchoolMist, 0), .028),
-                    new(Alpha(SchoolMist, 0), .63), new(Alpha(SchoolMist, .16), .64), new(Alpha(SchoolMist, .6), 1) }
+                column.Children.Clear();
+                for (int row = 0; row < periods.Length; row++)
+                {
+                    var lesson = SchoolLesson(periods[row]);
+                    lesson.Margin = new Thickness(0, row * LessonStep, 0, 0);
+                    column.Children.Add(lesson);
+                }
             }
-        };
-        tick.VerticalAlignment = VerticalAlignment.Top;
-        tick.Margin = new Thickness(38, Math.Max(0, y - .5), 0, 0);
-        marker.HorizontalAlignment = HorizontalAlignment.Left;
-        marker.VerticalAlignment = VerticalAlignment.Top;
-        marker.Margin = new Thickness(35, Math.Max(0, y - 3), 0, 0);
-        _schoolNowLayer.Children.Add(tick);
-        _schoolNowLayer.Children.Add(marker);
+            if (_schoolNowMarkers[c]?.Parent is Panel parent) parent.Children.Remove(_schoolNowMarkers[c]);
+            _schoolNowMarkers[c] = null;
+            if (periods.Length == 0 || minute < periods[0].StartMinutes || minute > periods[^1].EndMinutes) continue;
+
+            int index = Array.FindLastIndex(periods, lesson => lesson.StartMinutes <= minute);
+            var period = periods[index];
+            bool duringLesson = minute <= period.EndMinutes;
+            double y = duringLesson
+                ? LessonHeight * (minute - period.StartMinutes) / Math.Max(1, period.EndMinutes - period.StartMinutes)
+                : index * LessonStep + LessonHeight + (LessonStep - LessonHeight) * (minute - period.EndMinutes)
+                    / Math.Max(1, periods[index + 1].StartMinutes - period.EndMinutes);
+            var marker = new Grid { IsHitTestVisible = false, Height = 5, VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(33, y - 2, 0, 0), Children =
+                {
+                    new Border { Height = 1, Background = Frozen("#8CF5F5F7"), Margin = new Thickness(3, 0, 0, 0) },
+                    new Ellipse { Width = 5, Height = 5, Fill = CompactInk, HorizontalAlignment = HorizontalAlignment.Left }
+                } };
+            _schoolNowMarkers[c] = marker;
+            if (duringLesson && column.Children[index] is Grid lessonRow)
+            {
+                Grid.SetColumnSpan(marker, 2);
+                lessonRow.Children.Insert(lessonRow.Children.Count - 1, marker);
+            }
+            else column.Children.Add(marker);
+        }
     }
 
-    private FrameworkElement SchoolLesson(PiLesson lesson, bool active)
+    private static string LessonSubject(PiLesson lesson) => SchoolSubject(lesson.SubjectKey.Length > 0 ? lesson.SubjectKey : lesson.Subject);
+
+    private Grid SchoolLesson(PiLesson lesson)
     {
-        string subject = SchoolSubject(lesson.SubjectKey.Length > 0 ? lesson.SubjectKey : lesson.Subject);
-        var time = SchoolText(lesson.Start, 12);
-        var title = SchoolText(subject, 21, CompactInk, FontWeights.SemiBold);
+        string subject = LessonSubject(lesson);
+        var time = SchoolText(lesson.Start, 11);
+        time.VerticalAlignment = VerticalAlignment.Top;
+        var title = SchoolText(subject, 17, lesson.Cancelled ? SchoolLabel : CompactInk, FontWeight.FromOpenTypeWeight(550));
         if (lesson.Cancelled) title.TextDecorations = TextDecorations.Strikethrough;
-        string roomText = lesson.OriginalRoom.Length > 0 && lesson.OriginalRoom != lesson.Room
-            ? $"{lesson.OriginalRoom} → {lesson.Room}" : lesson.Room;
-        var room = SchoolText(roomText, 12);
-        var left = new StackPanel { Orientation = Orientation.Horizontal, Children =
+        var room = SchoolText("", 12);
+        if (lesson.Cancelled) room.Text = Say("Entfällt", "Cancelled");
+        else if (lesson.OriginalRoom.Length > 0 && lesson.OriginalRoom != lesson.Room)
         {
-            title,
-            new Border { Padding = new Thickness(9, 0, 0, 0), Child = room }
-        } };
-        var detail = lesson.Cancelled ? Say("Entfällt", "Cancelled") : lesson.Change switch
-        {
-            "anderer Raum" => Say("Raumwechsel", "Room change"),
-            "Vertretung" => Say("Vertretung", "Substitute"),
-            "kein Lehrer" => Say("Kein Lehrer", "No teacher"),
-            _ => lesson.Change
-        };
-        var box = new Border
-        {
-            CornerRadius = new CornerRadius(9), Background = active ? Frozen("#1DFFFFFF") : SchoolTile,
-            BorderBrush = active ? Frozen("#45FFFFFF") : SchoolRim, BorderThickness = new Thickness(1),
-            Margin = new Thickness(0, 2, 0, 2), ToolTip = $"{lesson.Subject}  ·  {lesson.Start}–{lesson.End}",
-            Child = new Grid { Children =
-            {
-                new Border { Width = 3, Background = new SolidColorBrush(lesson.Color ?? SchoolColor(subject)), CornerRadius = new CornerRadius(2),
-                    HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 5, 0, 5) },
-                new Border { Padding = new Thickness(11, 0, 10, 0), Child = SchoolColumns(left, SchoolText(detail, 12)) }
-            } }
-        };
-        if (lesson.Cancelled) box.Opacity = .55;
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(50) });
+            room.Inlines.Add(new Run(lesson.OriginalRoom) { TextDecorations = TextDecorations.Strikethrough });
+            room.Inlines.Add(new Run($" → {lesson.Room}"));
+        }
+        else room.Text = lesson.Room;
+        var stripe = new Border { Width = 3, Height = 17, CornerRadius = new CornerRadius(2), Margin = new Thickness(0, 0, 9, 0),
+            Background = new SolidColorBrush(SchoolColor(subject, lesson.Color)) };
+        var roomGroup = new Border { Padding = new Thickness(9, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, Child = room };
+        var contents = new DockPanel { VerticalAlignment = VerticalAlignment.Center, Children = { stripe, title, roomGroup } };
+        var box = new Border { CornerRadius = new CornerRadius(6),
+            Background = Frozen(lesson.Cancelled ? "#080808" : "#141415"),
+            BorderBrush = lesson.Cancelled ? null : SchoolRim, BorderThickness = new Thickness(1) };
+        title.Background = roomGroup.Background = box.Background;
+        var copy = new Border { Padding = new Thickness(9, 0, 9, 0), Child = contents, IsHitTestVisible = false };
+        var row = new Grid { Height = LessonHeight, VerticalAlignment = VerticalAlignment.Top, ToolTip = $"{lesson.Subject} · {lesson.Start}–{lesson.End} · {lesson.Change}" };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
         row.ColumnDefinitions.Add(new ColumnDefinition());
         row.Children.Add(time);
-        Grid.SetColumn(box, 1); row.Children.Add(box);
+        Grid.SetColumn(box, 1);
+        row.Children.Add(box);
+        if (lesson.Cancelled)
+        {
+            var dash = new Rectangle { RadiusX = 6, RadiusY = 6, Stroke = SchoolRim, StrokeDashArray = new DoubleCollection { 2, 2 },
+                StrokeThickness = 1, IsHitTestVisible = false };
+            Grid.SetColumn(dash, 1);
+            row.Children.Add(dash);
+        }
+        Grid.SetColumn(copy, 1);
+        row.Children.Add(copy);
         return row;
     }
 }

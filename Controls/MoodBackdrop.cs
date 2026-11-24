@@ -123,11 +123,11 @@ public sealed class MoodBackdrop : Grid
     /// strength, instead of a faint wash over the whole notch. The rest of the notch stays black.
     /// <paramref name="center"/> is in this backdrop's coordinates.
     /// </summary>
-    public void Gather(Point center, double verticalScale = 1)
+    public void Gather(Point center, double verticalScale = 1, double horizontalScale = 1)
     {
         if (ActualWidth <= 0) return;
         double x = center.X - (ActualWidth - Width0) / 2, y = center.Y;
-        Place(_fields[0], x, y, 360, 220 * verticalScale, 0.62);
+        Place(_fields[0], x, y, 360 * horizontalScale, 220 * verticalScale, 0.62);
         Place(_fields[1], x + 70, y - 110 * verticalScale, 290, 170 * verticalScale, 0.26);
         Place(_fields[2], x - 60, y + 80 * verticalScale, 270, 150 * verticalScale, 0.16);
         Intensity = 1;

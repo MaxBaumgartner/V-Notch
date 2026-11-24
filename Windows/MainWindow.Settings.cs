@@ -98,6 +98,7 @@ public partial class MainWindow
 
         UpdateWindowAndNotchPlacementSettings(oldSettings, newSettings, settingsWindow);
         ApplySettings(oldSettings, sizeChanged);
+        if (oldSettings.ShowCodexJobsInNotch != _settings.ShowCodexJobsInNotch) RefreshCodexJobPill();
         UpdateWeatherAndCanvasSettings(oldSettings, newSettings, spotifyCanvasChanged);
         RefetchSubtitlesIfPriorityChanged(oldSubtitlePriority, oldIgnoreAuto);
 

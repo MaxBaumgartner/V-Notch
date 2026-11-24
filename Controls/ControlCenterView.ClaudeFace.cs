@@ -284,6 +284,7 @@ public partial class ControlCenterView
                 max >= 0 ? AccountSage : AccountNeutral;
             row.Place((i + 1) * rowHeight, rowHeight);
             row.SetIdentity(account.DisplayName, account.Plan, light);
+            if (_accountsOpen && IsVisible) PaintAccountJob(row, account);
             SetMeters(row, AccountProvider(account), account.FiveHour, account.Week, AccountMist, now, blocked);
             var credits = account.Client.Latest?.Credits.Where(c => c.ExpiresAt == null || c.ExpiresAt > now).ToArray() ?? [];
             string provider = AccountProvider(account);
@@ -362,6 +363,30 @@ public partial class ControlCenterView
     }
 
     private static string AccountProvider(CodexAccount slot) => "codex-" + slot.Slot.Name;
+
+    private IReadOnlyList<CodexJob> _runningCodexJobs = [];
+
+    internal void SetRunningCodexJobs(IReadOnlyList<CodexJob> jobs)
+    {
+        _runningCodexJobs = jobs;
+        if (_accountsOpen && IsVisible) BuildClaudeSection();
+    }
+
+    private void PaintAccountJob(AccountRow row, CodexAccount account)
+    {
+        string key = "accounts:" + AccountProvider(account) + ":job";
+        var job = _runningCodexJobs.FirstOrDefault(job => string.Equals(job.Account, account.Slot.Name, StringComparison.OrdinalIgnoreCase));
+        if (job == null)
+        {
+            Seen.Forget(key);
+            row.JobTitle.Visibility = Visibility.Collapsed;
+            return;
+        }
+        bool changed = Seen.Changed(key, job.Title);
+        row.JobTitle.Visibility = Visibility.Visible;
+        if (changed && AnimateAccounts) SetDetailText(row.JobTitle, job.Title);
+        else SetRollingDetailText(row.JobTitle, job.Title);
+    }
 
     private void ForgetAccountRow(CodexAccount account)
     {
@@ -543,6 +568,7 @@ public partial class ControlCenterView
         public Grid Host { get; } = new() { VerticalAlignment = VerticalAlignment.Top, Tag = "account-row" };
         public AccountMeter[] Meters { get; } = [new(true), new(true)];
         public TextBlock CreditLabel { get; } = AccountText("–", 11, AccountLabel);
+        public TextBlock JobTitle { get; } = AccountText("", 11, Frozen("#8CFFFFFF"));
         public Button Credit { get; }
         public string? CreditKey { get; set; }
         public Func<Task>? Redeem { get; set; }
@@ -564,10 +590,19 @@ public partial class ControlCenterView
             _name.MaxWidth = 108;
             _name.TextTrimming = TextTrimming.CharacterEllipsis;
             _plan.Margin = new Thickness(4, 0, 0, 0);
-            Host.Children.Add(new StackPanel
+            var identity = new StackPanel
             {
                 Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left,
                 Children = { _lamp, _name, _plan }
+            };
+            JobTitle.Margin = new Thickness(14, 1, 0, 0);
+            JobTitle.MaxWidth = 106;
+            JobTitle.TextTrimming = TextTrimming.CharacterEllipsis;
+            JobTitle.Visibility = Visibility.Collapsed;
+            Host.Children.Add(new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+                Children = { identity, JobTitle }
             });
             PlaceAccount(Host, Meters[0].Host, 188, 0, 148.5);
             PlaceAccount(Host, Meters[1].Host, 349.5, 0, 148.5);

@@ -52,104 +52,165 @@ public partial class ControlCenterView
         BuildPiPage();
     }
 
-    private void AddSchoolTaskActions(PiDeadline deadline, StackPanel actions, Grid dropTarget, bool compact)
+    private void AddSchoolTaskActions(PiDeadline deadline, StackPanel actions, Grid dropTarget, bool compact = false)
     {
-        void Add(int glyph, string text, Action action, bool enabled = true)
-        {
-            var button = SchoolAction(glyph, text, action, iconOnly: compact);
-            button.Margin = new Thickness(0, 0, compact ? 0 : 6, 0);
-            button.IsEnabled = enabled;
-            button.Opacity = enabled ? 1 : .48;
-            actions.Children.Add(button);
-        }
-
-        void OpenAssignment()
-        {
-            if (DeadlineLink(deadline) is { } target) _ = OpenAsync(target);
-
-            async Task OpenAsync(string url) => Launch(await SignInToSchoolAsync(url));
-        }
-
-        void Message(string text, int glyph = 0xE946)
-        {
-            if (compact) Add(glyph, text, () => { }, enabled: false);
-            else
-            {
-                var label = SchoolText(text, 12);
-                label.MaxWidth = 228;
-                label.ToolTip = text;
-                actions.Children.Add(label);
-            }
-        }
-
         int cmid = deadline.Cmid;
-        _piAssignments.TryGetValue(cmid, out var task);
-        _piTasks.TryGetValue(cmid, out var state);
-        if (task?.Mode is "classroom" or "pose" || deadline.Kind == "classroom")
-        {
-            string key = AssignmentKey(deadline);
-            var push = _schoolPush.GetValueOrDefault(key);
-            if (push?.Busy == true) { Message(Say("Push läuft…", "Pushing…")); return; }
-            bool armed = _schoolArmedPush == key;
-            if (task == null)
-            {
-                if (DeadlineLink(deadline) != null) Add(0xE8A7, Say("Aufgabe", "Assignment"), OpenAssignment);
-                return;
-            }
-            string text = armed ? Say("Push bestätigen", "Confirm push") : push?.Done == true ? Say("Gepusht", "Pushed") : "Push";
-            Add(push?.Done == true ? 0xE73E : 0xE74A, text, () => PushSchoolTask(deadline, task));
-            Add(0xE8A7, Say("In IntelliJ öffnen", "Open in IntelliJ"), () => OpenClassroomTask(deadline, task));
-            if (push?.Message is { } message)
-            {
-                if (compact) actions.ToolTip = message;
-                else Message(message);
-            }
-            return;
-        }
+        var task = _piAssignments.GetValueOrDefault(cmid);
+        var state = _piTasks.GetValueOrDefault(cmid);
+        var push = _schoolPush.GetValueOrDefault(AssignmentKey(deadline));
+        bool classroom = IsClassroomTask(deadline);
+        bool canSubmit = task?.Mode is "upload" or "photo";
+        string primary = classroom ? "Push" : Say("Abgeben", "Submit");
+        Action act = classroom ? () => BeginSchoolPush(deadline) : () => PickSchoolSubmission(deadline, task!);
+        var main = compact ? SchoolIconButton(classroom ? "push" : "up", primary, act, 24, 28, 15)
+            : SchoolPrimary(classroom ? "push" : "up", primary, act);
+        main.IsEnabled = task != null && (classroom || canSubmit && task.Blocked == null)
+            && state?.Step is not (PiTaskStep.Loading or PiTaskStep.Uploading) && push?.Busy != true;
+        main.ToolTip = task?.Blocked ?? push?.Message ?? state?.Message ?? primary;
+        if (classroom || canSubmit || task == null && cmid > 0) actions.Children.Add(main);
+        if (!main.IsEnabled && !compact) main.Opacity = .52;
 
-        if (state?.Step is PiTaskStep.Loading or PiTaskStep.Uploading)
+        if (task?.Attachments.Count > 0 || DeadlineLink(deadline) != null)
         {
-            Message(Loc.Get(state.Step == PiTaskStep.Loading ? "pi.task.loading" : "pi.task.uploading"));
-            return;
+            var label = classroom ? Say("Angabe öffnen", "Open assignment brief") :
+                task?.Attachments.Count > 0 ? Say("Aufgabe laden", "Download task") : Say("Aufgabe öffnen", "Open assignment");
+            AddIcon("down", label, () =>
+            {
+                if (classroom && DeadlineLink(deadline) is { } brief) _ = OpenAsync(brief);
+                else if (task?.Attachments.Count > 0) DownloadPiTask(deadline, task);
+                else if (DeadlineLink(deadline) is { } target) _ = OpenAsync(target);
+            });
         }
-        if (state?.Step == PiTaskStep.Done)
-        {
-            Message(Loc.Get("pi.task.submitted"), 0xE73E);
-            return;
-        }
-        if (state?.File is { } file && state.Step is PiTaskStep.Picked or PiTaskStep.Failed)
-        {
-            Add(0xE898, Say("Abgabe bestätigen", "Confirm submission"), () => SubmitPiFile(deadline, file));
-            Add(0xE711, Loc.Get("pi.task.cancel"), () => SetPiTask(cmid, new(PiTaskStep.Idle)));
-            if (state.Message is { } error && !compact) Message(error);
-            else actions.ToolTip = state.Message ?? Path.GetFileName(file);
-            return;
-        }
-        if (state?.Pages is { Count: > 0 } pages && task != null)
-        {
-            Add(0xE898, Loc.Get("pi.task.submitPages", pages.Count), () => SubmitPiPhotos(deadline, task, pages));
-            Add(0xE711, Loc.Get("pi.task.cancel"), () => SetPiTask(cmid, new(PiTaskStep.Idle)));
-            if (state.Message is { } error && !compact) Message(error);
-            return;
-        }
-        if (task?.Attachments.Count > 0)
-            Add(0xE896, Say("Aufgabe laden", "Download task"), () => DownloadPiTask(deadline, task));
-        else if (DeadlineLink(deadline) != null)
-            Add(0xE8A7, Say("Aufgabe öffnen", "Open assignment"), OpenAssignment);
+        AddIcon("folder", DeadlineSubject(deadline) == "POSE" ? Say("In IntelliJ öffnen", "Open in IntelliJ")
+            : Say("Projektordner öffnen", "Open project folder"), () => OpenTaskFolder(deadline, task));
+        AddIcon("chat", Say("Claude-Sitzung fortsetzen", "Resume Claude session"), () => ResumeTask(deadline, task));
+        if (canSubmit && task!.Blocked == null && state?.Step is not (PiTaskStep.Loading or PiTaskStep.Uploading))
+            HookSubmissionDrop(dropTarget, deadline, task);
 
-        if (task?.Mode is "upload" or "photo")
+        void AddIcon(string glyph, string label, Action click) => actions.Children.Add(compact
+            ? SchoolIconButton(glyph, label, click, 24, 28, 15) : SchoolTool(glyph, label, click));
+
+        async Task OpenAsync(string url) => Launch(await SignInToSchoolAsync(url));
+    }
+
+    private void OpenTaskPanel(PiDeadline deadline, bool confirm = false)
+    {
+        string key = AssignmentKey(deadline);
+        _schoolTab = SchoolDrawerTab.Work;
+        _schoolSelectedTask = key;
+        _schoolConfirmTask = confirm ? key : null;
+        RedrawPi();
+        if (IsVisible && !DrawerOpen) SetDrawerOpen(true);
+    }
+
+    private void BeginSchoolPush(PiDeadline deadline)
+    {
+        string key = AssignmentKey(deadline);
+        if (_schoolPush.GetValueOrDefault(key)?.Busy == true) return;
+        _schoolArmedPush = key;
+        _schoolPushUntil = DateTime.UtcNow.AddSeconds(8);
+        _schoolPush.Remove(key);
+        OpenTaskPanel(deadline, confirm: true);
+    }
+
+    private void BuildTaskPanel(StackPanel body, PiDeadline deadline)
+    {
+        string key = AssignmentKey(deadline);
+        int cmid = deadline.Cmid;
+        var task = _piAssignments.GetValueOrDefault(cmid);
+        var state = _piTasks.GetValueOrDefault(cmid);
+        var push = _schoolPush.GetValueOrDefault(key);
+        string subject = DeadlineSubject(deadline);
+        body.Children.Add(SchoolSourceRow(subject, TaskSource(deadline), SchoolColor(subject)));
+        var title = SchoolHeading(deadline.Name, 27, 1.24, .91, 550);
+        title.Margin = new Thickness(0, 6, 0, 6);
+        body.Children.Add(title);
+        body.Children.Add(SchoolText(TaskWhen(deadline.Due), 13));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 19, 0, 19) };
+        bool armed = _schoolArmedPush == key;
+        bool staged = _schoolConfirmTask == key && (armed || state?.File != null || state?.Pages?.Count > 0);
+        if (staged)
         {
-            bool photo = task.Mode == "photo";
-            Add(0xE898, Loc.Get("pi.task.submit"), () => PickSchoolSubmission(deadline, task), enabled: task.Blocked == null);
-            actions.ToolTip = task.Blocked ?? (photo ? Loc.Get("pi.task.dropHint") : Loc.Get("pi.task.dropFileHint"));
-            if (task.Blocked == null) HookSubmissionDrop(dropTarget, deadline, task);
+            string selection = armed ? Say("Lokaler Commit　·　Push zu origin", "Local commit　·　Push to origin")
+                : state!.File is { } file ? Say($"Ausgewählte Datei　·　{Path.GetFileName(file)}", $"Selected file　·　{Path.GetFileName(file)}")
+                : Loc.Get("pi.task.submitPages", state.Pages!.Count);
+            var details = SchoolText(selection, 13);
+            details.Margin = new Thickness(0, 12, 0, 0);
+            details.ToolTip = selection;
+            body.Children.Add(details);
+            actions.Children.Add(SchoolPrimary(null, armed ? Say("Push bestätigen", "Confirm push") : Say("Upload bestätigen", "Confirm upload"), () =>
+            {
+                if (armed && task != null) PushSchoolTask(deadline, task);
+                else if (state?.File is { } upload) SubmitPiFile(deadline, upload);
+                else if (state?.Pages is { } pages && task != null) SubmitPiPhotos(deadline, task, pages);
+            }));
+            var cancel = SchoolTab(Say("Abbrechen", "Cancel"), false, () =>
+            {
+                _schoolArmedPush = _schoolConfirmTask = null;
+                SetPiTask(cmid, new(PiTaskStep.Idle));
+            });
+            cancel.Margin = new Thickness(6, 0, 0, 0);
+            actions.Children.Add(cancel);
         }
-        if (state?.Message is { } problem)
+        else
         {
-            if (compact) actions.ToolTip = problem;
-            else Message(problem);
+            var drop = new Grid { Background = Brushes.Transparent, Children = { actions } };
+            AddSchoolTaskActions(deadline, actions, drop);
+            if (state?.Step == PiTaskStep.Picked || state?.File != null || state?.Pages?.Count > 0)
+                actions.Children.Add(SchoolTab(Say("Auswahl prüfen", "Review selection"), false, () => OpenTaskPanel(deadline, confirm: true)));
+            body.Children.Add(drop);
+        }
+        string? status = state?.Step switch
+        {
+            PiTaskStep.Loading => Loc.Get("pi.task.loading"),
+            PiTaskStep.Uploading => Loc.Get("pi.task.uploading"),
+            _ => state?.Message
+        };
+        status ??= push?.Busy == true ? Say("Push läuft…", "Pushing…") : push?.Message;
+        if (!string.IsNullOrEmpty(status))
+        {
+            var message = SchoolText(status, 13);
+            message.Margin = new Thickness(0, 8, 0, 0);
+            message.ToolTip = status;
+            body.Children.Add(message);
+        }
+        if (staged) body.Children.Add(actions);
+    }
+
+    private void OpenTaskFolder(PiDeadline deadline, PiAssignment? task)
+    {
+        try
+        {
+            string folder = TaskFolder(deadline, task);
+            if (DeadlineSubject(deadline) == "POSE") SchoolClassroom.OpenIntelliJ(folder);
+            else Launch(folder);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
+        {
+            _schoolPush[AssignmentKey(deadline)] = new(ex.Message);
+            OpenTaskPanel(deadline);
         }
     }
+
+    private void ResumeTask(PiDeadline deadline, PiAssignment? task)
+    {
+        try { ResumeSchoolSession(TaskFolder(deadline, task)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
+        {
+            _schoolPush[AssignmentKey(deadline)] = new(ex.Message);
+            OpenTaskPanel(deadline);
+        }
+    }
+
+    private static string TaskFolder(PiDeadline deadline, PiAssignment? task)
+    {
+        string subject = DeadlineSubject(deadline);
+        string exercise = task?.Nr ?? "";
+        string folder = SchoolClassroom.FindClone(subject, deadline.Course, exercise)
+            ?? SchoolFiles.FolderFor($"{subject} {deadline.Course}", exercise);
+        return Directory.Exists(folder) ? folder : throw new DirectoryNotFoundException(Say("Projektordner nicht gefunden", "Project folder not found"));
+    }
+
 
     private async void DownloadPiTask(PiDeadline deadline, PiAssignment task)
     {
@@ -231,9 +292,14 @@ public partial class ControlCenterView
     private async void StageSchoolSubmission(PiDeadline deadline, PiAssignment task, IEnumerable<string> paths)
     {
         int cmid = deadline.Cmid;
+        if (_piTasks.GetValueOrDefault(cmid)?.Step is PiTaskStep.Loading or PiTaskStep.Uploading or PiTaskStep.Done) return;
         if (task.Mode == "upload")
         {
-            if (paths.FirstOrDefault(File.Exists) is { } file) SetPiTask(cmid, new(PiTaskStep.Picked, File: file));
+            if (paths.FirstOrDefault(File.Exists) is { } file)
+            {
+                SetPiTask(cmid, new(PiTaskStep.Picked, File: file));
+                OpenTaskPanel(deadline, confirm: true);
+            }
             return;
         }
         var photos = SchoolFiles.InPageOrder(paths.Where(File.Exists));
@@ -244,6 +310,7 @@ public partial class ControlCenterView
             return;
         }
         SetPiTask(cmid, new(PiTaskStep.Loading));
+        OpenTaskPanel(deadline, confirm: true);
         var pages = await Task.Run(() => photos.Select(path => SchoolFiles.ToJpegPage(path)).Where(b => b != null)
             .Select(b => Convert.ToBase64String(b!)).ToList());
         SetPiTask(cmid, pages.Count != photos.Count
@@ -287,6 +354,8 @@ public partial class ControlCenterView
     {
         if (_disposed) return;
         if (!result.Ok) { SetPiTask(cmid, failed); return; }
+        if (DrawerOpen) SetDrawerOpen(false);
+        _schoolSelectedTask = _schoolConfirmTask = null;
         _schoolBloom++;
         SetPiTask(cmid, new(PiTaskStep.Done, Message: result.SubmittedName));
         _piSchoolAtUtc = DateTime.MinValue;
@@ -298,14 +367,7 @@ public partial class ControlCenterView
     {
         string key = AssignmentKey(deadline);
         if (_schoolPush.GetValueOrDefault(key)?.Busy == true) return;
-        if (_schoolArmedPush != key || DateTime.UtcNow >= _schoolPushUntil)
-        {
-            _schoolArmedPush = key;
-            _schoolPushUntil = DateTime.UtcNow.AddSeconds(8);
-            _schoolPush.Remove(key);
-            RedrawPi();
-            return;
-        }
+        if (_schoolArmedPush != key || DateTime.UtcNow >= _schoolPushUntil) return;
 
         _schoolArmedPush = null;
         _schoolPush[key] = new(null, Busy: true);
@@ -315,6 +377,8 @@ public partial class ControlCenterView
             string folder = ClassroomClone(deadline, task);
             await SchoolClassroom.PushAsync(folder, deadline.Name);
             _schoolPush[key] = new(null, Done: true);
+            if (DrawerOpen) SetDrawerOpen(false);
+            _schoolSelectedTask = _schoolConfirmTask = null;
             _schoolBloom++;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException or TimeoutException)
@@ -322,16 +386,6 @@ public partial class ControlCenterView
             _schoolPush[key] = new(ex.Message);
         }
         RedrawPi();
-    }
-
-    private void OpenClassroomTask(PiDeadline deadline, PiAssignment task)
-    {
-        try { SchoolClassroom.OpenIntelliJ(ClassroomClone(deadline, task)); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
-        {
-            _schoolPush[AssignmentKey(deadline)] = new(ex.Message);
-            RedrawPi();
-        }
     }
 
     private static string ClassroomClone(PiDeadline deadline, PiAssignment task) =>

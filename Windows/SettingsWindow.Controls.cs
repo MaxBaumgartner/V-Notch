@@ -566,6 +566,11 @@ public partial class SettingsWindow
         if (!_isLoadingSettings) PushLivePreview();
     }
 
+    private void ShowCodexJobsInNotchCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_isLoadingSettings) PushLivePreview();
+    }
+
     private void SystemNotifyCheck_Changed(object sender, RoutedEventArgs e)
     {
         bool sysEnabled = SystemNotifyCheck.IsChecked ?? true;

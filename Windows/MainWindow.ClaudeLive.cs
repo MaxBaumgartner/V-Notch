@@ -383,7 +383,7 @@ public partial class MainWindow
             }
             return;
         }
-        if (_claudeLiveSession == null || _isExpanded || _isClaudeNotificationVisible) return;
+        if (_claudeLiveSession == null || _isExpanded || (_isClaudeNotificationVisible && !IsCodexJobPillShown)) return;
         if (_claudePeekTimer == null)
         {
             _claudePeekTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = ClaudePeekDelay };
@@ -401,13 +401,12 @@ public partial class MainWindow
             _claudePeekTimer?.Stop();
             return;
         }
-        if (_isClaudeNotificationVisible || _isCompactThumbnailHovered) return;
+        if ((_isClaudeNotificationVisible && !IsCodexJobPillShown) || _isCompactThumbnailHovered) return;
         // In the orb beside the music, Claude opens there on a tap instead.
         if (_mainActivity != LiveActivity.Claude) return;
 
         _claudePeekTimer?.Stop();
-        ShowNotchPill(session.Name, ClaudePeekStatus(session), appIcon: null, isClaude: true, tap: null);
-        if (!_isClaudeNotificationVisible) return;
+        if (!ShowNotchPill(session.Name, ClaudePeekStatus(session), appIcon: null, isClaude: true, tap: null)) return;
         // Stays while hovered; leaving starts a short linger instead.
         _isClaudePeek = true;
         _claudeNotificationTimer?.Stop();

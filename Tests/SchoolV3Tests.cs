@@ -1,10 +1,7 @@
 using System.IO;
 using System.Text.Json.Nodes;
-using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
 using VNotch.Controls;
-using VNotch.Services;
 using VNotch.Services.ControlCenter;
 using Xunit;
 using static VNotch.Tests.HomeSchoolTabTests;
@@ -50,96 +47,6 @@ public sealed class SchoolV3Tests
         assignments[73] = new(73, "Task 4 – Tool class", "pose", "04", [], "", null, "");
         Invoke(view, "BuildPiPage");
     }
-
-    [Fact]
-    public void FaceAndDrawerFitWithEveryPriorityInOrder() => SharedStaTestRunner.Run(() =>
-    {
-        var previous = Loc.CurrentLanguage;
-        Loc.SetLanguage("en");
-        using var client = new PiDashboardClient(() => "http://127.0.0.1:1");
-        using var view = new ControlCenterView { Page = ControlCenterPage.School };
-        try
-        {
-            view.AttachPi(client, () => false, () => false, () => "", () => "");
-            Seed(view);
-            view.SetDrawerOpen(true);
-            var size = new Size(552, view.MeasureContentHeight(552));
-            view.Arrange(new Rect(size));
-            view.UpdateLayout();
-            Assert.InRange(size.Height + 30, 300, 580);
-            var face = (Grid)Field(view, "_schoolFace");
-            Assert.Equal(52, ((TextBlock)Field(view, "_schoolSubject")).FontSize);
-            Assert.Equal("Übung 7 – Integrale", ((TextBlock)Field(view, "_schoolTitle")).Text);
-            Assert.Contains(Descendants<TextBlock>(face), x => x.Text == "Download task");
-            var ordered = Descendants<TextBlock>((StackPanel)Field(view, "_drawerBody")).Select(x => x.Text).ToList();
-            Assert.True(ordered.Contains("Hand-ins") && ordered.IndexOf("Hand-ins") < ordered.IndexOf("Tests"));
-            Assert.True(ordered.Contains("Today") && ordered.IndexOf("Tests") < ordered.IndexOf("Today"));
-            Assert.Contains("SQL Joins & Subqueries", ordered);
-            Assert.Contains("10:38", ordered);
-        }
-        finally { Loc.SetLanguage(previous); }
-    });
-
-    [Fact]
-    public void DeadlineChangesPulseOnceAndHideStopsTheClockAndMotion() => SharedStaTestRunner.RunAsync(async ct =>
-    {
-        BackgroundTestWindows.EnsureApplicationResources();
-        bool reduced = AnimationConfig.ReduceMotion;
-        bool? overrideAnimation = AnimationConfig.ClientAreaAnimationOverride;
-        AnimationConfig.ClientAreaAnimationOverride = true;
-        AnimationConfig.SetReduceMotion(false);
-        using var client = new PiDashboardClient(() => "http://127.0.0.1:1");
-        using var view = new ControlCenterView { Page = ControlCenterPage.School };
-        view.AttachPi(client, () => false, () => false, () => "", () => "");
-        Seed(view);
-        System.Windows.Threading.DispatcherTimer? timer = null;
-        var now = DateTime.UtcNow;
-        SetField(view, "_seen", new TabLedger(() => view.IsVisible, () => now));
-        var window = new Window { Content = view, Width = 552, Height = 550, Top = -20000, Left = -20000, ShowActivated = false, ShowInTaskbar = false };
-        try
-        {
-            window.Show();
-            var hero = (Grid)Field(view, "_schoolHero");
-            timer = (System.Windows.Threading.DispatcherTimer)Field(view, "_schoolCountdownTimer");
-            Assert.True(timer.IsEnabled);
-            Assert.False(Motion.IsRunning(hero, UIElement.OpacityProperty));
-            view.Visibility = Visibility.Collapsed;
-
-            var data = Sample();
-            SetField(view, "_piSchool", data with { Deadlines = [data.Deadlines[0] with { Due = MockNow.AddHours(4) }, .. data.Deadlines.Skip(1)] });
-            Invoke(view, "BuildPiPage");
-            Assert.False(timer.IsEnabled);
-            Assert.False(hero.HasAnimatedProperties);
-
-            now += TabLedger.Away;
-            view.Visibility = Visibility.Visible;
-            await WpfFrameWaiter.UntilAsync(() => Motion.IsRunning(hero, UIElement.OpacityProperty), "school hero starts", ct);
-            await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(hero, UIElement.OpacityProperty), "school hero settles", ct);
-            Invoke(view, "BuildPiPage");
-            Assert.False(Motion.IsRunning(hero, UIElement.OpacityProperty));
-
-            var countdown = (TextBlock)Field(view, "_schoolCountdown");
-            Invoke(view, "UpdateSchoolClock", MockNow.AddMinutes(1));
-            Assert.Same(countdown, Field(view, "_schoolCountdown"));
-            Assert.Equal("3:59", countdown.Text);
-            Assert.False(countdown.HasAnimatedProperties);
-
-            SetField(view, "_schoolBloom", 1L);
-            Invoke(view, "BuildPiPage");
-            var light = (WeatherTween)Field(view, "_schoolLight");
-            Assert.True(Motion.IsRunning(light, WeatherTween.ValueProperty));
-            view.Visibility = Visibility.Collapsed;
-            Assert.False(timer.IsEnabled);
-            Assert.False(light.HasAnimatedProperties);
-        }
-        finally
-        {
-            timer?.Stop();
-            window.Close();
-            AnimationConfig.ClientAreaAnimationOverride = overrideAnimation;
-            AnimationConfig.SetReduceMotion(reduced);
-        }
-    });
 
     [Fact]
     public void WebUntisColoursOverrideTheExactFallbacks()

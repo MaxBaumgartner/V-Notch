@@ -93,7 +93,7 @@ public partial class MainWindow
             }
             else
             {
-                if (_compactPillArbiter.ActiveSlot != CompactPillSlot.None ||
+                if ((_compactPillArbiter.ActiveSlot != CompactPillSlot.None && !IsCodexJobPillShown) ||
                     !ShowNotchPill(title, status, appIcon: null, isClaude: false, tap: null, duration: AllowanceAlerts.DisplayTime))
                     return false;
                 SetAllowancePill(due.Threshold <= 20 ? AllowanceLowInk : AllowanceHalfInk);

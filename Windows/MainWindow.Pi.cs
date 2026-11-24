@@ -45,6 +45,7 @@ public partial class MainWindow
         RobloxCenter.AttachRoblox(_piClient, () => _settings?.EnableLocalOnlyMode ?? true, () => _settings != null && IsLiquidGlassEnabled);
         RobloxCenter.AttachBackdrop(RobloxBackdrop);
         RobloxCenter.ContentHeightChanged += OnRobloxContentHeightChanged;
+        SchoolCenter.SchoolCollapseRequested += CollapseAll;
         _piReminderTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = PiReminderPoll };
         _piReminderTimer.Tick += async (_, _) => await PollPiRemindersAsync();
         _piReminderTimer.Start();
@@ -60,6 +61,7 @@ public partial class MainWindow
         PiCenter.ContentHeightChanged -= OnHomeContentHeightChanged;
         SchoolCenter.ContentHeightChanged -= OnSchoolContentHeightChanged;
         RobloxCenter.ContentHeightChanged -= OnRobloxContentHeightChanged;
+        SchoolCenter.SchoolCollapseRequested -= CollapseAll;
         PiCenter.Dispose();
         SchoolCenter.Dispose();
         RobloxCenter.Dispose();

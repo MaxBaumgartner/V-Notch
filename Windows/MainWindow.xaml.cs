@@ -480,7 +480,7 @@ public partial class MainWindow : Window
         _hoverThumbnailDelayTimer.Tick += (s, e) =>
         {
             _hoverThumbnailDelayTimer.Stop();
-            if (_isGestureActive) return;
+            if (_isGestureActive || IsCodexJobPillShown) return;
 
             if (IsScreenCaptureActive) return;
             if (IsCountdownCompletionVisualActive || _isVolumeIndicatorActive) return;
@@ -1902,12 +1902,14 @@ public partial class MainWindow : Window
         AnimateNotchHover(true);
         QueueHoverExpand();
         OnNotchHoverForClaudePeek(entered: true);
+        OnCodexJobHover(entered: true);
     }
 
     private void NotchWrapper_MouseLeave(object sender, MouseEventArgs e)
     {
         if (_isGestureActive) return;
         OnNotchHoverForClaudePeek(entered: false);
+        OnCodexJobHover(entered: false);
         if (IsScreenCaptureActive)
         {
             _hoverCollapseTimer.Stop();
@@ -1951,7 +1953,7 @@ public partial class MainWindow : Window
 
     private void QueueHoverExpand()
     {
-        if (_isGestureActive) return;
+        if (_isGestureActive || IsCodexJobPillShown) return;
         if (IsScreenCaptureActive) return;
         if (IsCountdownCompletionVisualActive || IsAppNotificationBannerActive) return;
 

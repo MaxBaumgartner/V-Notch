@@ -307,6 +307,7 @@ public partial class SettingsWindow : Window
         LoadSubtitlePriority();
 
         HoverExpandCheck.IsChecked = _settings.EnableHoverExpand;
+        ShowCodexJobsInNotchCheck.IsChecked = _settings.ShowCodexJobsInNotch;
         HoverDelaySlider.Value = _settings.HoverExpandDelay;
         HoverDelaySlider.IsEnabled = _settings.EnableHoverExpand;
         HoverDelaySlider.Opacity = _settings.EnableHoverExpand ? 1.0 : 0.4;

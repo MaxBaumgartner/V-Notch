@@ -44,8 +44,8 @@ internal sealed class CodexAccount(CodexSlot slot, CodexUsageClient client) : ID
 /// <summary>The router's configuration and cached budget. Read with sharing because the router can replace either file.</summary>
 internal static class CodexAccounts
 {
-    public static readonly string DirectoryPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "orchestra");
+    public static readonly string DirectoryPath = Environment.GetEnvironmentVariable("ORCHESTRA_STATE_DIR") is { Length: > 0 } directory
+        ? directory : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "orchestra");
     public const string SlotsFile = "codex-accounts.json";
     public const string BudgetFile = "budget.json";
 
@@ -83,7 +83,7 @@ internal static class CodexAccounts
         return budgets;
     }
 
-    private static T? Read<T>(string path, Func<JsonElement, T> parse, T missing) where T : class
+    internal static T? Read<T>(string path, Func<JsonElement, T?> parse, T? missing = null) where T : class
     {
         try
         {

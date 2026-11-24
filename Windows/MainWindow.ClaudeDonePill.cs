@@ -111,7 +111,7 @@ public partial class MainWindow
                     _claudeDoneReturnTimer.Stop();
                     return;
                 }
-                if (_isClaudeNotificationVisible || _compactPillArbiter.ActiveSlot != CompactPillSlot.None) return;
+                if (!IsCodexJobPillShown && (_isClaudeNotificationVisible || _compactPillArbiter.ActiveSlot != CompactPillSlot.None)) return;
                 ShowClaudeDonePill();
             };
         }
@@ -129,7 +129,7 @@ public partial class MainWindow
     }
 
     /// <summary>Another alert wants the closed notch: the done pill steps aside and returns once it is free.</summary>
-    private void StepClaudeDonePillAside()
+    private void StepClaudePillAside()
     {
         int token = _claudeNotificationToken;
         KeepCompactDeparture(ClaudeNotification);

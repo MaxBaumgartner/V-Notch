@@ -1893,6 +1893,8 @@
                                        VerticalAlignment="Center"
                                        Margin="5,2,0,0"/>
                         </StackPanel>
+                        <StackPanel x:Name="CodexJobDetails" HorizontalAlignment="Stretch" VerticalAlignment="Top"
+                                    Visibility="Collapsed" IsHitTestVisible="False"/>
                     </Grid>
 
                     <Grid x:Name="AppNotificationPill" Visibility="Collapsed" Opacity="0"
@@ -3625,7 +3627,7 @@
                     <Grid x:Name="SchoolContent"
                           Opacity="0"
                           Visibility="Collapsed"
-                          Margin="16,30,16,0"
+                          Margin="0,30,0,0"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Top"
                           MouseLeftButtonDown="SecondaryContent_Click"

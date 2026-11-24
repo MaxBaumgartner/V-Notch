@@ -51,6 +51,8 @@ internal static partial class Motion
     }
 
     public static readonly SpringMotion Breath = Ms(1850, 0);
+    public static readonly SpringMotion SchoolDialGather = Ms(180, 0);
+    public static readonly SpringMotion SchoolDialSettle = Ms(145, 0);
 
     // Tile: content arriving, staggered by StaggerMs from TileFromScale.
     public static readonly SpringMotion Tile = Ms(450, 0.50);

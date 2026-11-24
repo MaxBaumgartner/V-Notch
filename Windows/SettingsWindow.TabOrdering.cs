@@ -542,7 +542,8 @@ public partial class SettingsWindow
             return;
         }
 
-        var orderTokens = ResolveFullNavTabOrder(_settings.NavTabOrder);
+        // The rows also show this fork's own tabs (ForkTabs): the drag counts them too, or its slots miss the rows.
+        var orderTokens = ResolveFullNavTabOrder(_settings.NavTabOrder, [.. SupportedNavTabKeys, ForkTabs.Roblox]);
 
         if (_settingsNavInitialSlot < orderTokens.Count && _settingsNavTargetSlot < orderTokens.Count)
         {

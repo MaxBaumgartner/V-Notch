@@ -582,6 +582,7 @@ public partial class SettingsWindow
         snapshot.EnableShadow = EnableShadowCheck.IsChecked ?? true;
 
         snapshot.EnableHoverExpand = HoverExpandCheck.IsChecked ?? true;
+        snapshot.ShowCodexJobsInNotch = ShowCodexJobsInNotchCheck.IsChecked ?? true;
         snapshot.HoverExpandDelay = (int)HoverDelaySlider.Value;
         snapshot.DisableMouseLeaveAutoClose = DisableMouseLeaveAutoCloseCheck.IsChecked ?? false;
         snapshot.KeepMediaPinnedOnTrackChange = KeepMediaPinnedCheck.IsChecked ?? true;

@@ -232,6 +232,7 @@ public partial class NotchSettings : IJsonOnDeserialized
     public string DiscordClientId { get; set; } = "";
     // A short Windows sound when a Claude Code turn ends or a session waits for the user; never over fullscreen.
     public bool PlayClaudeSounds { get; set; } = true;
+    public bool ShowCodexJobsInNotch { get; set; } = true;
     // Low-allowance pills already shown ("source|window|threshold|reset minute"), so a restart does not repeat them.
     public System.Collections.Generic.List<string> AllowanceAlertsSent { get; set; } = new();
     // With nothing live the closed notch rests slim and shows the time and the weather.

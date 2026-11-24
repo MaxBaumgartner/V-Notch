@@ -386,6 +386,7 @@ public partial class MainWindow
         FrameworkElement host = ReferenceEquals(center, PiCenter) ? PiContent : ReferenceEquals(center, SchoolCenter) ? SchoolContent :
             ReferenceEquals(center, RobloxCenter) ? RobloxContent : TimerContent;
         double height = ReferenceEquals(center, PiCenter) ? MeasureHomeViewHeight() :
+            ReferenceEquals(center, SchoolCenter) ? MeasureSchoolViewHeight() :
             Math.Min(CenterViewMaxHeight, _shellDragStartHeight + center.DrawerHeight - _shellDrawerStartHeight);
         Motion.Stop(NotchBorder, HeightProperty, height);
         Motion.Stop(host, HeightProperty, Math.Max(0, height - host.Margin.Top - host.Margin.Bottom));

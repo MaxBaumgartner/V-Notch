@@ -151,21 +151,28 @@ public sealed class PlannerFaceTests
             view.Arrange(new Rect(size));
             view.UpdateLayout();
 
+            // The dial's hand-ins and tests: the Moodle task under its course's subject, tests named after a subject
+            // with its short name and colour, not "MATHE".
+            var items = ((System.Collections.IEnumerable)Field(view, "_schoolItems")).Cast<object>()
+                .Select(item => (Subject: (string)item.GetType().GetProperty("Subject")!.GetValue(item)!,
+                    Title: (string)item.GetType().GetProperty("Title")!.GetValue(item)!)).ToList();
+            Assert.Equal(("WMC", "Lab 7"), items[0]);
             Assert.Equal("Lab 7", ((TextBlock)Field(view, "_schoolTitle")).Text);
-            Assert.Equal("WMC", ((TextBlock)Field(view, "_schoolSubject")).Text);
-            string meta = ((TextBlock)Field(view, "_schoolMeta")).Text;
-            Assert.StartsWith("Moodle", meta);
-            Assert.Contains("Thu", meta);
-            Assert.DoesNotContain("Do.", meta);
-            // Tests named after their subject get its short name and colour, not "MATHE".
-            var chips = Descendants<TextBlock>((Grid)Field(view, "_schoolTestChips")).Select(x => x.Text).ToList();
-            Assert.Contains("AM", chips);
-            Assert.Contains("DBI", chips);
-            Assert.DoesNotContain("MATHE", chips);
-            // Today's lessons in the drawer carry their subject codes.
+            var subjects = items.Select(item => item.Subject).ToList();
+            Assert.Contains("AM", subjects);
+            Assert.Contains("DBI", subjects);
+            Assert.DoesNotContain("MATHE", subjects);
+
+            // Today's lessons carry their subject codes, under a date in the app's language.
+            var dayTab = Enum.Parse(typeof(ControlCenterView).GetNestedType("SchoolDrawerTab", BindingFlags.NonPublic)!, "Day");
+            Invoke(view, "ChangeSchoolTab", dayTab);
+            view.Arrange(new Rect(new Size(552, view.MeasureContentHeight(552))));
+            view.UpdateLayout();
             var drawer = Descendants<TextBlock>((StackPanel)Field(view, "_drawerBody")).Select(x => x.Text).ToList();
             Assert.Contains("WMC", drawer);
             Assert.DoesNotContain("WEB", drawer);
+            Assert.Contains(drawer, text => text.Contains("Tuesday", StringComparison.Ordinal));
+            Assert.DoesNotContain(drawer, text => text.Contains("Dienstag", StringComparison.Ordinal));
         }
         finally
         {

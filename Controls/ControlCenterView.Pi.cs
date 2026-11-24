@@ -153,24 +153,29 @@ public partial class ControlCenterView
         var now = _schoolNow();
         if (now.Date != _schoolBuiltDay) _schoolLessonOffset = null;
         _schoolBuiltDay = now.Date;
-        PiDeadline[] deadlines = SchoolDataAvailable ? _piSchool!.Deadlines.Where(d => !d.Submitted).OrderBy(d => d.Due).ToArray() : [];
+        PiDeadline[] deadlines = SchoolDataAvailable ? _piSchool!.Deadlines
+            .Where(d => !d.Submitted && _piTasks.GetValueOrDefault(d.Cmid)?.Step != PiTaskStep.Done
+                && _schoolPush.GetValueOrDefault(AssignmentKey(d))?.Done != true)
+            .OrderBy(d => d.Due).ToArray() : [];
         PiExam[] exams = SchoolDataAvailable ? _piSchool!.Exams.Where(e => e.Date.Date >= now.Date)
             .OrderBy(e => e.Date).ThenBy(e => e.Start, StringComparer.Ordinal).Distinct().ToArray() : [];
-        RefreshSchoolFace(deadlines, exams, now);
-
-        string key = $"{SchoolDataAvailable}|{now:yyyy-MM-dd}|{_piSchoolAtUtc.Ticks}|{Loc.CurrentLanguage}|"
+        string key = $"{SchoolDataAvailable}|{now:yyyy-MM-dd}|{_piSchoolAtUtc.Ticks}|{Loc.CurrentLanguage}|{_schoolArmedPush}|"
             + string.Join("|", deadlines.Select(DeadlineRevision)) + "|" + string.Join("|", exams.Select(ExamKey));
-        if (_piKey != key)
+        bool rebuild = _piKey != key;
+        if (rebuild)
         {
             _piKey = key;
             if (SchoolDataAvailable) ComposeSchoolDrawer(deadlines, exams, now);
             else RemoveCompactDrawer();
-            ContentHeightChanged?.Invoke();
         }
+        RefreshSchoolFace(deadlines, exams, now);
+        if (rebuild) ContentHeightChanged?.Invoke();
 
         if (!IsVisible) return;
-        var visible = new[] { deadlines.FirstOrDefault() }.OfType<PiDeadline>();
-        if (DrawerOpen) visible = visible.Concat(deadlines.Skip(_schoolHandInPage * SchoolPageRows).Take(SchoolPageRows));
+        var visible = new[] { SchoolCover?.Deadline }.OfType<PiDeadline>();
+        if (DrawerOpen && _schoolTab == SchoolDrawerTab.Work)
+            visible = _schoolSelectedTask == null ? visible.Concat(deadlines.Skip(_schoolHandInPage * SchoolPageRows).Take(SchoolPageRows))
+                : visible.Concat(deadlines.Where(task => AssignmentKey(task) == _schoolSelectedTask));
         foreach (int cmid in visible.Select(d => d.Cmid).Distinct()) LoadPiAssignment(cmid);
     }
 
