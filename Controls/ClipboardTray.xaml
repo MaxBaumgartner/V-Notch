@@ -853,7 +853,7 @@
     </Style></ListBox.ItemContainerStyle>
     <ListBox.ItemTemplate><DataTemplate DataType="{x:Type vm:ClipboardCardViewModel}">
      <!-- Flagship Card Container (Exact 210 Width Required by Interaction Tests) -->
-     <Border Width="210" CornerRadius="{StaticResource TrayRadiusLarge}" Background="Transparent" BorderThickness="0" Cursor="Hand" SnapsToDevicePixels="False" UseLayoutRounding="True"
+     <Border x:Name="CardHost" Width="210" CornerRadius="{StaticResource TrayRadiusLarge}" Background="Transparent" BorderThickness="0" Cursor="Hand" SnapsToDevicePixels="False" UseLayoutRounding="True"
       ContextMenuOpening="Card_ContextMenu" Loaded="Card_Loaded" Unloaded="Card_Unloaded" DataContextChanged="Card_DataContextChanged" SizeChanged="Card_SizeChanged" PreviewMouseLeftButtonDown="Card_Down" PreviewMouseLeftButtonUp="Card_Up" PreviewMouseMove="Card_Move" MouseLeave="Card_MouseLeave" IsVisibleChanged="Card_VisibilityChanged">
       <Border.ContextMenu><ContextMenu/></Border.ContextMenu>
       <local:ClipboardCardPresentation x:Name="CardPresentation">
@@ -997,6 +997,8 @@
          <Button Tag="more" Style="{StaticResource MoreActionButton}" ToolTip="{Binding MoreLabel}" PreviewMouseDown="MoreActions_PointerDown" Click="MoreActions_Click">
           <local:TrayIcon Kind="More" Width="13" Height="13" VerticalAlignment="Center" HorizontalAlignment="Center"/>
          </Button>
+         <local:QuickLookEye x:Name="CardPreviewEye" Host="{Binding ElementName=CardHost}" Eligible="False"
+                             PreviewKey="{Binding Entry.Id}" VerticalAlignment="Center" Click="CardPreview_Click"/>
         </StackPanel>
         </Grid>
         </Border>
@@ -1021,6 +1023,23 @@
       </local:ClipboardCardPresentation>
      </Border>
      <DataTemplate.Triggers>
+      <DataTrigger Binding="{Binding Active, ElementName=CardPreviewEye}" Value="True">
+       <Setter TargetName="CardActions" Property="local:TrayMotion.Opacity" Value="1"/>
+       <Setter TargetName="CardActions" Property="IsHitTestVisible" Value="True"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Kind}" Value="File">
+       <Setter TargetName="CardPreviewEye" Property="Eligible" Value="True"/>
+      </DataTrigger>
+      <DataTrigger Binding="{Binding Kind}" Value="Image">
+       <Setter TargetName="CardPreviewEye" Property="Eligible" Value="True"/>
+      </DataTrigger>
+      <MultiDataTrigger>
+       <MultiDataTrigger.Conditions>
+        <Condition Binding="{Binding IsMasked}" Value="True"/>
+        <Condition Binding="{Binding IsRevealed}" Value="False"/>
+       </MultiDataTrigger.Conditions>
+       <Setter TargetName="CardPreviewEye" Property="Eligible" Value="False"/>
+      </MultiDataTrigger>
       <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
        <Setter TargetName="CardActions" Property="local:TrayMotion.Opacity" Value="1"/>
        <Setter TargetName="CardActions" Property="IsHitTestVisible" Value="True"/>

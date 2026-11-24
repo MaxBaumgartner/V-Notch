@@ -30,6 +30,8 @@ public sealed record SpotlightSearchItem(
     public override int GetHashCode() => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this);
 
     public double Score { get; init; }
+    public bool CanPreviewFile => Kind == SpotlightResultKind.File && QuickLookBridge.IsPreviewPath(Target);
+    public bool IsPreviewImage => Path.GetExtension(Target).ToLowerInvariant() is ".jpg" or ".jpeg" or ".png" or ".webp" or ".gif" or ".bmp";
 
     // Keep the real title/target for matching, launching and copying paths.
     public string DisplayTitle

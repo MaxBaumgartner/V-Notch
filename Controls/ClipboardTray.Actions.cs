@@ -54,6 +54,16 @@ public sealed partial class ClipboardTray
         });
     }
 
+    private async void CardPreview_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        _dragStart = null;
+        _pressedCard = null;
+        if (_controller is { } controller && sender is FrameworkElement { DataContext: ClipboardCardViewModel card } &&
+            (!card.IsMasked || card.IsRevealed))
+            await SafeAsync(() => controller.PreviewFileAsync(card.Entry));
+    }
+
     /// <summary>
     /// The pin reacts where the eye is: it pops in a little large when it pins and dips when it lets go, then
     /// settles on Press.

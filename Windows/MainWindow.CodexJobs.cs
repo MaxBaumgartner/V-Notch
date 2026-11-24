@@ -19,7 +19,7 @@ public partial class MainWindow
     private static readonly Brush CodexJobSage = FrozenBrush(0x9D, 0xBD, 0xB1);
     private static readonly Brush CodexJobRose = FrozenBrush(0xD2, 0x85, 0x7E);
     private static readonly Brush CodexJobLabel = Frozen(Color.FromArgb(0x8C, 0xFF, 0xFF, 0xFF));
-    private static readonly ImageSource CodexJobIcon = CreateCodexJobIcon();
+    internal static readonly ImageSource CodexJobIcon = CreateCodexJobIcon();
 
     private readonly Queue<(CodexJobResult Result, DateTimeOffset Expires)> _codexFinished = new();
     private readonly List<(CodexJob Job, TextBlock Clock)> _codexDetailClocks = new();
@@ -60,8 +60,11 @@ public partial class MainWindow
 
     private void SyncCodexJobs()
     {
-        _codexRunning = _codexJobWatcher!.Running;
-        ClaudeCenter.SetRunningCodexJobs(_codexRunning);
+        if (_codexJobWatcher == null) return;
+        _codexRunning = _codexJobWatcher.Running;
+        bool enabled = _settings?.ShowCodexJobsInNotch == true;
+        ClaudeCenter.SetCodexJobList(enabled ? _codexRunning : [], enabled ? _codexJobWatcher.RecentFinished : [],
+            ClaudeViewMaxHeight - ClaudeContent.Margin.Top - ClaudeContent.Margin.Bottom);
         RefreshCodexJobPill();
     }
 

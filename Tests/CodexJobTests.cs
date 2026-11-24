@@ -4,8 +4,6 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
-using VNotch.Controls;
-using VNotch.Services;
 using VNotch.Services.ClaudeCode;
 using Xunit;
 
@@ -102,51 +100,6 @@ public sealed class CodexJobTests
         Assert.Equal("Claude", window.ClaudeNotificationTitle.Text);
     });
 
-    [Fact]
-    public void SlotTitleMovesOnceOnChangeAndSettlesWhenHidden() => SharedStaTestRunner.RunAsync(async ct =>
-    {
-        bool reduced = AnimationConfig.ReduceMotion;
-        AnimationConfig.SetReduceMotion(false);
-        using var view = new ControlCenterView { Page = ControlCenterPage.Claude };
-        var window = new BackgroundWindow { Width = 628, Height = 500, Content = view, WindowStyle = WindowStyle.None };
-        try
-        {
-            typeof(ControlCenterView).GetField("_claude", Private)!.SetValue(view, new ClaudeSessionTracker());
-            typeof(ControlCenterView).GetField("_codexReading", Private)!.SetValue(view, true);
-            Field<List<CodexAccount>>(view, "_codexAccounts").Add(new(new("A", Path.GetTempPath()),
-                new CodexUsageClient(codexDirectory: Path.GetTempPath(), useRolloutFallback: false)));
-            window.Show();
-            Invoke(view, "BuildClaudeSection");
-            var job = Sample("one", "First draft", "A", DateTimeOffset.UtcNow);
-            view.SetRunningCodexJobs([job]);
-            Invoke(view, "SetAccountsOpen", true, false);
-            window.UpdateLayout();
-            var rows = Field<Grid>(view, "_accountRows");
-            var row = Assert.Single(rows.Children.OfType<Grid>().Skip(1));
-            var label = Assert.IsType<TextBlock>(row.Children.OfType<StackPanel>().Single().Children[1]);
-            Assert.Equal(job.Title, label.Text);
-            Assert.True(label.IsVisible);
-            Assert.False(Motion.IsRunning(label, UIElement.OpacityProperty));
-
-            job = job with { Title = "Second draft" };
-            view.SetRunningCodexJobs([job]);
-            Assert.True(Motion.IsRunning(label, UIElement.OpacityProperty));
-            await WpfFrameWaiter.UntilAsync(() => label.Text == job.Title && !Motion.IsRunning(label, UIElement.OpacityProperty),
-                "changed job title settles", ct);
-            view.SetRunningCodexJobs([job]);
-            Assert.False(Motion.IsRunning(label, UIElement.OpacityProperty));
-
-            window.Hide();
-            view.SetRunningCodexJobs([job with { Title = "Third draft" }]);
-            Assert.False(Motion.IsRunning(label, UIElement.OpacityProperty));
-        }
-        finally
-        {
-            window.Close();
-            AnimationConfig.SetReduceMotion(reduced);
-        }
-    });
-
     private static CodexJob Sample(string id, string title, string slot, DateTimeOffset started) =>
         new(id, "codex", "gpt-6.2-sol", slot, title, Environment.ProcessId, started);
 
@@ -157,6 +110,5 @@ public sealed class CodexJobTests
             EndedAt = endedAt, Exit = 0, TimedOut = false, DurationSec = (endedAt - job.StartedAt).TotalSeconds
         }, Json));
 
-    private static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, Private)!.GetValue(target)!;
     private static object? Invoke(object target, string name, params object?[] args) => target.GetType().GetMethod(name, Private)!.Invoke(target, args);
 }

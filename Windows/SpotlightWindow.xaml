@@ -295,7 +295,7 @@
                                     Background="{StaticResource HoverItemBrush}"
                                     CornerRadius="8"
                                     Opacity="0"/>
-                            <Border Padding="14,8">
+                            <Border x:Name="ResultPad" Padding="14,8">
                                 <ContentPresenter/>
                             </Border>
                         </Grid>
@@ -303,6 +303,14 @@
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45"/>
                             </Trigger>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding CanPreviewFile}" Value="True"/>
+                                    <Condition Binding="{Binding IsFilePreviewOpen, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"/>
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Margin" Value="16,1"/>
+                                <Setter TargetName="ResultPad" Property="Padding" Value="8,0"/>
+                            </MultiDataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -566,20 +574,30 @@
                     <TranslateTransform x:Name="ContentTranslate" Y="0"/>
                 </Grid.RenderTransform>
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="64"/>
+                    <RowDefinition x:Name="SearchHeaderRow" Height="64"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
             <!-- Search field: text on the left, magnifier on the right (Flow Launcher layout). -->
-            <Grid Margin="22,0,20,0">
+            <Grid x:Name="SearchHeader" Margin="22,0,20,0">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <Grid x:Name="SearchBoxContainer" Margin="0,0,16,0" RenderTransformOrigin="0.0,0.5">
+                <Viewbox x:Name="PeekSearchIcon" Width="17" Height="17" Margin="0,0,10,0"
+                         VerticalAlignment="Center" Visibility="Collapsed" IsHitTestVisible="False">
+                    <Canvas Width="24" Height="24">
+                        <Path Data="M17,10.5 A6.5,6.5 0 1 1 4,10.5 A6.5,6.5 0 1 1 17,10.5 M16,16 L21,21"
+                              Stroke="#A6A7AD" StrokeThickness="1.65" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                    </Canvas>
+                </Viewbox>
+                <Grid x:Name="SearchBoxContainer" Grid.Column="1" Margin="0,0,16,0" RenderTransformOrigin="0.0,0.5">
                     <Grid.RenderTransform>
                         <TransformGroup>
                             <ScaleTransform x:Name="SearchBoxScale" ScaleX="1" ScaleY="1"/>
@@ -653,9 +671,27 @@
                                VerticalAlignment="Center"/>
                 </Grid>
 
+                <TextBlock x:Name="PeekHeaderLabel" Grid.Column="2" Text="Spotlight" Foreground="#A6A7AD" FontSize="12"
+                           FontFamily="Segoe UI" FontWeight="Normal"
+                           Margin="0,0,7,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                <Border Grid.Column="3" BorderBrush="#30FFFFFF" BorderThickness="1" CornerRadius="4"
+                        Padding="4,1" VerticalAlignment="Center"
+                        ToolTip="Close preview" IsHitTestVisible="False">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsFilePreviewOpen, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock Text="Esc" FontSize="11" FontFamily="Segoe UI" FontWeight="Normal" Foreground="#DADBE0"/>
+                </Border>
                 <Border x:Name="EscBadge"
                         MouseLeftButtonDown="AiToggle_Click" Cursor="Hand"
-                        Grid.Column="1"
+                        Grid.Column="4"
                         Margin="0,0,14,0"
                         Style="{StaticResource KeyBadgeStyle}">
                     <TextBlock x:Name="EscBadgeText"
@@ -667,7 +703,7 @@
                 </Border>
 
                 <controls:MorphingSettingsIcon x:Name="SearchIcon"
-                                               Grid.Column="2"
+                                               Grid.Column="5"
                                                Width="19" Height="19"
                                                Brush="#FFFFFF"
                                                VerticalAlignment="Center"
@@ -709,7 +745,7 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,6,0,7" ClipToBounds="True">
+                    <Grid x:Name="ResultsViewport" Grid.Row="0" Margin="0,6,0,7" ClipToBounds="True">
                         <StackPanel x:Name="AiPanel" Visibility="Collapsed" Margin="20,10,20,4" TextElement.FontFamily="{StaticResource SFProDisplay}" TextElement.FontWeight="Bold">
                             <!-- Unified macOS Header Toolbar -->
                             <Grid x:Name="AiHeader" Margin="0,0,0,10">
@@ -866,7 +902,17 @@
                                                         CornerRadius="1.5"
                                                         Background="{DynamicResource AccentBrush}"
                                                         HorizontalAlignment="Left"
-                                                        VerticalAlignment="Stretch"/>
+                                                        VerticalAlignment="Stretch">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsFilePreviewOpen, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                </Border>
                                             </Border>
                                             <ItemsPresenter/>
                                         </Grid>
@@ -875,13 +921,15 @@
                             </ListBox.Template>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid MinHeight="38"
+                                  <Grid>
+                                    <Grid x:Name="StandardResult" MinHeight="38"
                                           AutomationProperties.Name="{Binding DisplayTitle}"
                                           ToolTip="{Binding Target}"
                                           AutomationProperties.HelpText="{Binding Subtitle}">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="46"/>
                                             <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
@@ -945,7 +993,7 @@
                                         </StackPanel>
 
                                         <Border x:Name="HotkeyBadge"
-                                                Grid.Column="2"
+                                                Grid.Column="3"
                                                 Style="{StaticResource KeyBadgeStyle}">
                                             <TextBlock x:Name="HotkeyText"
                                                        Text="{Binding Path=(ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ListBoxItem}, Converter={StaticResource HotkeyConverter}}"
@@ -954,8 +1002,53 @@
                                                        FontWeight="Bold"
                                                        Foreground="#99FFFFFF"/>
                                         </Border>
+                                        <controls:QuickLookEye Grid.Column="2" VerticalAlignment="Center" Margin="0,0,6,0"
+                                            Focusable="False" IsTabStop="False" Eligible="{Binding CanPreviewFile}"
+                                            Host="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                            Selected="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                            Click="ResultEye_Click"/>
                                     </Grid>
+                                    <Grid x:Name="PeekFileResult" Height="33" Visibility="Collapsed"
+                                          ToolTip="{Binding Target}" AutomationProperties.Name="{Binding Title}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="29"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Viewbox Width="17" Height="17" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Canvas Width="24" Height="24">
+                                                <Path x:Name="PeekFileGlyph" Stroke="#F5F5F7" StrokeThickness="1.65"
+                                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                                      Data="M6,2.8 H14 L18.7,7.8 V21 H6 Z M14,3 V8 H18 M9,12 H15 M9,15 H14"/>
+                                            </Canvas>
+                                        </Viewbox>
+                                        <TextBlock Grid.Column="1" Text="{Binding Title}" FontSize="15" Foreground="#F5F5F7"
+                                                   FontFamily="Segoe UI" FontWeight="Normal"
+                                                   Margin="0,0,9,0" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding DisplaySubtitle}" FontSize="12" Foreground="#A6A7AD"
+                                                   FontFamily="Segoe UI" FontWeight="Normal"
+                                                   MaxWidth="172" Margin="0,0,9,0" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                        <controls:QuickLookEye Grid.Column="3" VerticalAlignment="Center" Focusable="False" IsTabStop="False"
+                                            Host="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                            Selected="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                            Active="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                            Click="ResultEye_Click"/>
+                                    </Grid>
+                                  </Grid>
                                     <DataTemplate.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding CanPreviewFile}" Value="True"/>
+                                                <Condition Binding="{Binding IsFilePreviewOpen, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"/>
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter TargetName="StandardResult" Property="Visibility" Value="Collapsed"/>
+                                            <Setter TargetName="PeekFileResult" Property="Visibility" Value="Visible"/>
+                                        </MultiDataTrigger>
+                                        <DataTrigger Binding="{Binding IsPreviewImage}" Value="True">
+                                            <Setter TargetName="PeekFileGlyph" Property="Data"
+                                                    Value="M6,4 H18 Q21,4 21,7 V17 Q21,20 18,20 H6 Q3,20 3,17 V7 Q3,4 6,4 Z M9.3,9 A1.3,1.3 0 1 1 6.7,9 A1.3,1.3 0 1 1 9.3,9 M4,17 L9,12 12,15 15,11 20,17"/>
+                                        </DataTrigger>
                                         <DataTrigger Binding="{Binding IsShortcut}" Value="True">
                                             <Setter TargetName="ShortcutArrow" Property="Visibility" Value="Visible"/>
                                         </DataTrigger>

@@ -372,6 +372,23 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         finally { if (!written && exported.Length > 0) await Store.ReleasePersonalExportsAsync(exported); }
     }
 
+    internal Task<bool> PreviewFileAsync(ClipboardEntry entry) =>
+        QuickLookBridge.Shared.ToggleAsync(this, entry.Id, async () =>
+        {
+            if (!CanPreview()) return null;
+            string[] paths = await Store.ExportFilesAsync(entry.Id);
+            string? firstFile = await Task.Run(() => Array.Find(paths, File.Exists));
+            if (firstFile != null && CanPreview()) return new(firstFile, Release, CanPreview);
+            await Release();
+            return null;
+
+            Task Release() => ReleaseClipboardExportsAsync(paths);
+            bool CanPreview() => !_disposed && Store.GetEntry(entry.Id) is { } latest &&
+                (!(entry.IsPersonal || latest.IsPersonal) || Store.IsPersonalUnlocked);
+        });
+
+    internal Task CloseFilePreviewAsync() => QuickLookBridge.Shared.CloseAsync(this);
+
     private async Task<(DataObject Data, bool Personal)> CreateSelectionDataAsync(IReadOnlyList<ClipboardEntry> entries, List<string> paths)
     {
         var texts = new List<string>();
@@ -518,6 +535,7 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
     public async Task LockPersonalAsync()
     {
         var pending = Store.LockPersonalAsync();
+        _ = CloseFilePreviewAsync();
         ClearPersonalClipboard();
         PersonalLocked?.Invoke();
         try { await pending; }

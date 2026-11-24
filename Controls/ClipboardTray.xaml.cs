@@ -703,6 +703,7 @@ public sealed partial class ClipboardTray : UserControl, IDisposable
     }
     private void HidePrivateContent()
     {
+        if (_controller != null) _ = _controller.CloseFilePreviewAsync();
         _pendingSelectAll = null;
         _pendingMenuEntrances.Clear();
         _menuAnimationTargets.Clear();

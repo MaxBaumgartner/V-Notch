@@ -13,6 +13,11 @@ public partial class ControlCenterView
     private readonly Dictionary<int, PiAssignment> _piAssignments = [];
     private readonly HashSet<int> _piAssignmentsLoading = [];
     private readonly Dictionary<int, DateTime> _piAssignmentRetries = [];
+    private readonly Dictionary<(int Cmid, int Index, string Name), Task<string?>> _piPreviewAttachments = [];
+    private readonly Dictionary<(int Cmid, int Index, string Name), string> _piAttachmentErrors = [];
+    private readonly HashSet<string> _piAttachmentSeen = [];
+    private int _piAttachmentPage;
+    private int _piPreviewRequest;
     private readonly Dictionary<int, PiTaskState> _piTasks = [];
     private readonly Dictionary<string, SchoolPushState> _schoolPush = [];
     private string? _schoolArmedPush;
@@ -96,6 +101,7 @@ public partial class ControlCenterView
     private void OpenTaskPanel(PiDeadline deadline, bool confirm = false)
     {
         string key = AssignmentKey(deadline);
+        if (_schoolSelectedTask != key) _piAttachmentPage = 0;
         _schoolTab = SchoolDrawerTab.Work;
         _schoolSelectedTask = key;
         _schoolConfirmTask = confirm ? key : null;
@@ -175,7 +181,98 @@ public partial class ControlCenterView
             body.Children.Add(message);
         }
         if (staged) body.Children.Add(actions);
+        var shown = new HashSet<string>();
+        if (task?.Attachments.Count > 0)
+        {
+            const int pageSize = 3;
+            int pages = (task.Attachments.Count + pageSize - 1) / pageSize;
+            _piAttachmentPage = Math.Clamp(_piAttachmentPage, 0, pages - 1);
+            int start = _piAttachmentPage * pageSize;
+            for (int i = start; i < Math.Min(start + pageSize, task.Attachments.Count); i++)
+            {
+                int index = i;
+                string name = task.Attachments[index].Name;
+                var attachment = (cmid, index, name);
+                var pending = _piPreviewAttachments.GetValueOrDefault(attachment);
+                string stateKey = $"school.attachment.{cmid}.{index}.{name}";
+                string stateLabel = _piAttachmentErrors.GetValueOrDefault(attachment) ??
+                    (pending is { IsCompleted: false } ? Loc.Get("pi.task.loading") :
+                        pending is { IsCompletedSuccessfully: true, Result: not null } ? "Cached" : "Moodle");
+                shown.Add(stateKey);
+                bool changed = Seen.Changed(stateKey, stateLabel);
+                var file = SchoolAsset("file", name, stateLabel,
+                    () => _ = OpenTaskAttachmentAsync(cmid, index, name, key, preview: false), changed, previewRow: true);
+                body.Children.Add(SchoolPreviewRow(file, name, attachment,
+                    () => OpenTaskAttachmentAsync(cmid, index, name, key, preview: true)));
+            }
+            if (pages > 1)
+                body.Children.Add(SchoolPageButtons(_piAttachmentPage, pages, page => { _piAttachmentPage = page; RedrawPi(); }));
+        }
+        foreach (string removed in _piAttachmentSeen.Except(shown)) Seen.Forget(removed);
+        _piAttachmentSeen.Clear();
+        _piAttachmentSeen.UnionWith(shown);
     }
+
+    private void ForgetPiAttachmentRows()
+    {
+        foreach (string key in _piAttachmentSeen) Seen.Forget(key);
+        _piAttachmentSeen.Clear();
+    }
+
+    private async Task OpenTaskAttachmentAsync(int cmid, int index, string name, string taskKey, bool preview)
+    {
+        if (_pi == null) return;
+        int request = ++_piPreviewRequest;
+        var attachment = (cmid, index, name);
+        _piPreviewAttachments.TryGetValue(attachment, out var pending);
+        if (pending is { IsCompletedSuccessfully: true, Result: { } cached } && !await Task.Run(() => File.Exists(cached)))
+        {
+            if (_piPreviewAttachments.GetValueOrDefault(attachment) == pending) _piPreviewAttachments.Remove(attachment);
+            pending = _piPreviewAttachments.GetValueOrDefault(attachment);
+        }
+        if (pending == null)
+        {
+            pending = DownloadTaskAttachmentAsync(cmid, index, name);
+            _piPreviewAttachments[attachment] = pending;
+            _piAttachmentErrors.Remove(attachment);
+            RedrawPi();
+        }
+        try
+        {
+            if (await pending is not { } path)
+            {
+                FailAttachment();
+                return;
+            }
+            if (!_disposed && request == _piPreviewRequest && IsVisible && DrawerOpen && _schoolSelectedTask == taskKey)
+            {
+                if (preview)
+                    await QuickLookBridge.Shared.ToggleAsync(this, attachment,
+                        () => Task.FromResult<QuickLookBridge.PreviewFile?>(new(path)));
+                else SchoolFiles.Open([path]);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
+        { FailAttachment(); }
+        finally { if (IsVisible && _schoolSelectedTask == taskKey) RedrawPi(); }
+
+        void FailAttachment()
+        {
+            if (_piPreviewAttachments.GetValueOrDefault(attachment) != pending) return;
+            _piPreviewAttachments.Remove(attachment);
+            _piAttachmentErrors[attachment] = Loc.Get("pi.task.failed");
+        }
+    }
+
+    private async Task<string?> DownloadTaskAttachmentAsync(int cmid, int index, string name)
+    {
+        if (await _pi!.DownloadAttachmentAsync(cmid, index) is not { } bytes) return null;
+        string folder = Path.Combine(PiTaskTempFolder(cmid), index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return await Task.Run(() => SchoolFiles.Save(folder, [(name, bytes)]).SingleOrDefault());
+    }
+
+    private static string PiTaskTempFolder(int cmid) =>
+        Path.Combine(Path.GetTempPath(), "V-Notch", "School", cmid.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
     private void OpenTaskFolder(PiDeadline deadline, PiAssignment? task)
     {
@@ -230,7 +327,7 @@ public partial class ControlCenterView
         if (_disposed) return;
         try
         {
-            string folder = Path.Combine(Path.GetTempPath(), "V-Notch", "School", cmid.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            string folder = PiTaskTempFolder(cmid);
             var paths = await Task.Run(() => SchoolFiles.Save(folder, files));
             if (!_disposed) SchoolFiles.Open(paths);
             SetPiTask(cmid, new(PiTaskStep.Idle));

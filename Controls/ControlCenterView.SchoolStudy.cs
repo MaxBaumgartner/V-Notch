@@ -2,8 +2,10 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using VNotch.Services;
 using System.Windows.Threading;
 using VNotch.Services.ControlCenter;
 
@@ -31,13 +33,14 @@ public partial class ControlCenterView
         if (IsVisible && !DrawerOpen) SetDrawerOpen(true);
     }
 
-    private static string StudyFolder(PiExam exam) => SchoolStudy.FolderFor(ExamSubject(exam), exam.Date, ExamTitle(exam));
+    private readonly Func<PiExam, string> _studyFolder =
+        static exam => SchoolStudy.FolderFor(ExamSubject(exam), exam.Date, ExamTitle(exam));
 
     private void OpenStudyFolder(PiExam exam)
     {
         try
         {
-            string folder = StudyFolder(exam);
+            string folder = _studyFolder(exam);
             Directory.CreateDirectory(folder);
             Launch(folder);
         }
@@ -51,7 +54,7 @@ public partial class ControlCenterView
 
     private void ResumeStudy(PiExam exam)
     {
-        try { ResumeSchoolSession(StudyFolder(exam)); }
+        try { ResumeSchoolSession(_studyFolder(exam)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
         {
             SelectStudy(exam);
@@ -92,7 +95,7 @@ public partial class ControlCenterView
     {
         if (!PreviewStudyDrop(e) || e.Data.GetData(DataFormats.FileDrop) is not string[] files) return;
         string? error = null;
-        try { await Task.Run(() => SchoolStudy.CopyFiles(StudyFolder(exam), files)); }
+        try { await Task.Run(() => SchoolStudy.CopyFiles(_studyFolder(exam), files)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { error = ex.Message; }
         if (_disposed) return;
         SelectStudy(exam);
@@ -123,7 +126,7 @@ public partial class ControlCenterView
 
         try
         {
-            string folder = StudyFolder(exam);
+            string folder = _studyFolder(exam);
             var files = SchoolStudy.Files(folder);
             var sessions = SchoolStudy.Sessions(folder);
             const int fileSize = 3, sessionSize = 3;
@@ -134,7 +137,7 @@ public partial class ControlCenterView
             foreach (string path in files.Skip(_schoolFilePage * fileSize).Take(fileSize))
             {
                 string name = Path.GetFileName(path);
-                var file = SchoolAsset("file", name, Say("Datei", "File"), () => Act(() => SchoolFiles.Open([path])));
+                var file = SchoolAsset("file", name, "On this PC", () => Act(() => SchoolFiles.Open([path])), previewRow: true);
                 Point? start = null;
                 file.PreviewMouseLeftButtonDown += (_, e) => start = e.GetPosition(file);
                 file.PreviewMouseLeftButtonUp += (_, _) => start = null;
@@ -147,7 +150,7 @@ public partial class ControlCenterView
                     start = null;
                     DragDrop.DoDragDrop(file, new DataObject(DataFormats.FileDrop, new[] { path }), DragDropEffects.Copy);
                 };
-                rows.Children.Add(file);
+                rows.Children.Add(SchoolPreviewRow(file, name, path, () => QuickLookBridge.Shared.ToggleAsync(this, path)));
             }
             if (filePages > 1)
                 rows.Children.Add(SchoolPageButtons(_schoolFilePage, filePages, page => { _schoolFilePage = page; RedrawPi(); }));
@@ -222,13 +225,71 @@ public partial class ControlCenterView
         }
     }
 
-    private Button SchoolAsset(string glyph, string name, string end, Action action)
+    private Button SchoolAsset(string glyph, string name, string end, Action action, bool endChanged = false, bool previewRow = false)
     {
         var icon = SchoolIcon(glyph, 17, SchoolLabel);
         icon.Margin = new Thickness(0, 0, 10, 0);
         var label = new DockPanel { Children = { icon, SchoolText(name, 14, CompactInk) } };
-        var content = SchoolColumns(label, SchoolText(end, 12));
-        return SchoolPaintButton(new Border { Height = 34, Background = Brushes.Transparent, BorderBrush = SchoolRim,
-            BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(2, 0, 2, 0), Child = content }, name, action, SchoolHover);
+        var status = SchoolText(end, 12, previewRow ? Frozen("#A6A7AD") : null);
+        if (endChanged && !AnimationConfig.ReduceMotion)
+        {
+            status.Loaded += (_, _) =>
+            {
+                if (status.IsVisible) Motion.To(status, OpacityProperty, 1, Motion.PressDown, from: .55);
+            };
+            status.IsVisibleChanged += (_, _) =>
+            {
+                if (!status.IsVisible) Motion.Stop(status, OpacityProperty, 1);
+            };
+        }
+        var content = SchoolColumns(label, status);
+        return SchoolPaintButton(new Border { Height = previewRow ? 33 : 34, Background = Brushes.Transparent, BorderBrush = SchoolRim,
+            BorderThickness = new Thickness(0, 0, 0, previewRow ? 0 : 1), Padding = new Thickness(2, 0, 2, 0), Child = content },
+            name, action, previewRow ? Brushes.Transparent : SchoolHover);
+    }
+
+    private Border SchoolPreviewRow(Button file, string name, object key, Func<Task> preview)
+    {
+        var row = new Grid();
+        var frame = new Border { CornerRadius = new CornerRadius(8), Child = row, BorderThickness = new Thickness(1),
+            Padding = new Thickness(6, 0, 7, 0), Margin = new Thickness(0, 0, 0, 2) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.Children.Add(file);
+        var eye = new QuickLookEye
+        {
+            Host = frame, PreviewOwner = this, PreviewKey = key, Margin = new Thickness(7, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center, ToolTip = $"Preview {name}"
+        };
+        System.Windows.Automation.AutomationProperties.SetName(eye, $"Preview {name}");
+        eye.Click += async (_, e) =>
+        {
+            e.Handled = true;
+            await preview();
+        };
+        Grid.SetColumn(eye, 1);
+        row.Children.Add(eye);
+        var style = new Style(typeof(Border));
+        style.Setters.Add(new Setter(BackgroundProperty, Brushes.Transparent));
+        var active = new DataTrigger { Binding = new Binding(nameof(QuickLookEye.Active)) { Source = eye }, Value = true };
+        active.Setters.Add(new Setter(BackgroundProperty, Frozen("#13FFFFFF")));
+        active.Setters.Add(new Setter(BorderBrushProperty, Frozen("#0CFFFFFF")));
+        style.Triggers.Add(active);
+        frame.Style = style;
+        return frame;
+    }
+
+    internal bool CloseSchoolPreview()
+    {
+        if (Page != ControlCenterPage.School || !QuickLookBridge.Shared.IsPreviewing(this)) return false;
+        EndSchoolPreview();
+        return true;
+    }
+
+    private void EndSchoolPreview()
+    {
+        if (Page != ControlCenterPage.School) return;
+        _piPreviewRequest++;
+        _ = QuickLookBridge.Shared.CloseAsync(this);
     }
 }

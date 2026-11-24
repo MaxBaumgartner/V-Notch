@@ -101,11 +101,16 @@ public partial class ControlCenterView
         if (_composerBox?.IsKeyboardFocusWithin == true)
         {
             _rebuildAfterComposing = true;
+            if (FitClaudeAccountFace()) ContentHeightChanged?.Invoke();
             return;
         }
         bool listening = _hookServer?.IsListening == true;
         string key = ClaudeKey(order, pending, limits, listening);
-        if (key == _claudeKey) return;
+        if (key == _claudeKey)
+        {
+            if (FitClaudeAccountFace()) ContentHeightChanged?.Invoke();
+            return;
+        }
         _claudeKey = key;
 
         ApplyClaudeMood(ClaudeMoodFor(sessions, limits));
@@ -142,6 +147,7 @@ public partial class ControlCenterView
             detail.Margin = new Thickness(margin.Left + 20, margin.Top, margin.Right + 20, margin.Bottom);
         }
         _rebuildingResetRows = false;
+        FitClaudeAccountFace();
         foreach (var pair in _claudeTexts.ToList())
         {
             if (!pair.Value.IsVisible && DetailTexts.TryGetValue(pair.Value, out var state))

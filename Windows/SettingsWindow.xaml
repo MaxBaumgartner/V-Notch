@@ -2411,6 +2411,15 @@
                                                            AutomationProperties.LiveSetting="Polite"/>
                                             </StackPanel>
                                         </Border>
+                                        <Border Style="{StaticResource SettingRowBorder}">
+                                            <StackPanel>
+                                                <CheckBox x:Name="QuickLookCheck" Content="Preview files with QuickLook (Space)"
+                                                          IsEnabled="False" Loaded="QuickLookCheck_Loaded" Unloaded="QuickLookCheck_Unloaded"
+                                                          Checked="QuickLookCheck_Changed" Unchecked="QuickLookCheck_Changed"/>
+                                                <TextBlock x:Name="QuickLookHint" Style="{StaticResource SettingHintText}"
+                                                           Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                        </Border>
                                         <StackPanel x:Name="SpotlightOptions" Style="{StaticResource DisabledFeatureGroup}" IsEnabled="{Binding IsChecked, ElementName=EnableSpotlightCheck}">
 <Border Style="{StaticResource SettingRowBorder}">
                                             <StackPanel>

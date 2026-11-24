@@ -82,7 +82,7 @@ public partial class MainWindow
     }
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && ActiveDrawer?.DismissDrawer() == true)
+        if (e.Key == Key.Escape && (SchoolCenter?.CloseSchoolPreview() == true || ActiveDrawer?.DismissDrawer() == true))
         {
             e.Handled = true;
             return;

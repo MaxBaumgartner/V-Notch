@@ -211,11 +211,15 @@ public partial class ControlCenterView
         body.Children.Add(new Border { BorderBrush = SchoolRim, BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(0, 0, 0, 10), Margin = new Thickness(0, 0, 0, 12), Child = header });
 
+        var selectedTask = _schoolTab == SchoolDrawerTab.Work
+            ? deadlines.FirstOrDefault(d => AssignmentKey(d) == _schoolSelectedTask) : null;
+        if (selectedTask == null) ForgetPiAttachmentRows();
+
         if (_schoolTab == SchoolDrawerTab.Day) BuildSchoolDay(body, now);
         else if (_schoolTab == SchoolDrawerTab.Tests && exams.FirstOrDefault(e => ExamKey(e) == _schoolSelectedExam) is { } exam)
             BuildStudyPanel(body, exam);
-        else if (_schoolTab == SchoolDrawerTab.Work && deadlines.FirstOrDefault(d => AssignmentKey(d) == _schoolSelectedTask) is { } task)
-            BuildTaskPanel(body, task);
+        else if (selectedTask != null)
+            BuildTaskPanel(body, selectedTask);
         else
         {
             if (_schoolTab == SchoolDrawerTab.Work)
@@ -366,9 +370,14 @@ public partial class ControlCenterView
 
     private Grid SchoolListRow(string subject, string title, string when, Color color, Action open, StackPanel actions)
     {
-        var mark = new StackPanel { Orientation = Orientation.Horizontal, Children =
+        // Moodle can send a full course name instead of a code; it must end before the title column.
+        var course = SchoolText(subject, 12, Frozen("#CDCDCF"));
+        course.TextTrimming = TextTrimming.CharacterEllipsis;
+        course.MaxWidth = 46;
+        course.ToolTip = subject;
+        var mark = new StackPanel { Orientation = Orientation.Horizontal, ClipToBounds = true, Children =
         {
-            SchoolDot(color, 6), SchoolText(subject, 12, Frozen("#CDCDCF"))
+            SchoolDot(color, 6), course
         } };
         var text = SchoolText(title, 15, CompactInk, FontWeight.FromOpenTypeWeight(530));
         var info = new StackPanel { Orientation = Orientation.Horizontal, Children = { SchoolText(when, 13), SchoolIcon("right", 15) } };

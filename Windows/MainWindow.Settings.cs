@@ -98,7 +98,6 @@ public partial class MainWindow
 
         UpdateWindowAndNotchPlacementSettings(oldSettings, newSettings, settingsWindow);
         ApplySettings(oldSettings, sizeChanged);
-        if (oldSettings.ShowCodexJobsInNotch != _settings.ShowCodexJobsInNotch) RefreshCodexJobPill();
         UpdateWeatherAndCanvasSettings(oldSettings, newSettings, spotifyCanvasChanged);
         RefetchSubtitlesIfPriorityChanged(oldSubtitlePriority, oldIgnoreAuto);
 
@@ -244,6 +243,9 @@ public partial class MainWindow
 
     private void ApplySettings(NotchSettings? oldSettings, bool animatePulse = false)
     {
+        if (oldSettings == null || oldSettings.ShowCodexJobsInNotch != _settings.ShowCodexJobsInNotch)
+            SyncCodexJobs();
+        QuickLookBridge.Shared.SetEnabled(_settings.PreviewFilesWithQuickLook);
         UpdateMicRestGlyph();
         AccentTheme.Apply(_settings.AccentColor);
         InteractionSounds.Configure(_settings.EnableInteractionSounds, _settings.InteractionSoundVolume);

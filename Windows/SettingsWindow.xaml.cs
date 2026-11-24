@@ -342,6 +342,7 @@ public partial class SettingsWindow : Window
         NotificationDurationSlider.IsEnabled = autoDismissEnabled;
         NotificationDurationSlider.Opacity = autoDismissEnabled ? 1.0 : 0.4;
         EnableSpotlightCheck.IsChecked = _settings.EnableSpotlight;
+        QuickLookCheck.IsChecked = _settings.PreviewFilesWithQuickLook;
         LoadSpotlightAiSettings(_settings);
         LoadTranslationSettings();
         EnableDebugModeCheck.IsChecked = _settings.EnableDebugMode;
@@ -785,6 +786,34 @@ public partial class SettingsWindow : Window
 
         UpdateSpotlightHotkeyWarning();
         PushLivePreview();
+    }
+
+    private async void QuickLookCheck_Loaded(object sender, RoutedEventArgs e)
+    {
+        QuickLookBridge.Shared.Changed += QuickLookAvailabilityChanged;
+        await QuickLookBridge.Shared.RefreshAvailabilityAsync();
+        UpdateQuickLookSetting();
+    }
+
+    private void QuickLookCheck_Unloaded(object sender, RoutedEventArgs e) =>
+        QuickLookBridge.Shared.Changed -= QuickLookAvailabilityChanged;
+
+    private void QuickLookAvailabilityChanged()
+    {
+        if (Dispatcher.CheckAccess()) UpdateQuickLookSetting();
+        else _ = Dispatcher.BeginInvoke(UpdateQuickLookSetting);
+    }
+
+    private void QuickLookCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_isLoadingSettings) PushLivePreview();
+    }
+
+    private void UpdateQuickLookSetting()
+    {
+        bool available = QuickLookBridge.Shared.IsAvailable;
+        QuickLookCheck.IsEnabled = available;
+        QuickLookHint.Text = available ? "Use Ctrl+Space on a selected Spotlight file." : "Install and run QuickLook to preview files.";
     }
 
     private void EnableDebugModeCheck_Changed(object sender, RoutedEventArgs e)

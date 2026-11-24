@@ -159,6 +159,7 @@ public partial class NotchSettings : IJsonOnDeserialized
     public bool EnableHelloGreeting { get; set; } = true;
 
     public bool EnableSpotlight { get; set; } = true;
+    public bool PreviewFilesWithQuickLook { get; set; } = true;
     public bool SpotlightDefaultAi { get; set; } = false;
     public int SpotlightAiWordsPerSecond { get; set; } = 9;
     public string SpotlightAiProvider { get; set; } = "OpenAI";
@@ -312,7 +313,7 @@ public partial class NotchSettings : IJsonOnDeserialized
         for (int i = 0; i < _cloneableProperties.Length; i++)
         {
             var prop = _cloneableProperties[i];
-            if (prop.PropertyType == typeof(LiquidGlassConfig) || prop.Name is nameof(BannerRestore) or nameof(ExtensionData))
+            if (prop.PropertyType == typeof(LiquidGlassConfig) || prop.Name is nameof(BannerRestore) or nameof(ExtensionData) or nameof(AllowanceAlertsSent))
                 continue;
 
             var p1 = Expression.Property(left, prop);
@@ -358,6 +359,7 @@ public partial class NotchSettings : IJsonOnDeserialized
         clone.LiquidGlass = LiquidGlass?.Clone() ?? new LiquidGlassConfig();
         clone.LiquidGlassCustom = LiquidGlassCustom?.Clone();
         clone.BannerRestore = new(BannerRestore ?? new(), StringComparer.OrdinalIgnoreCase);
+        clone.AllowanceAlertsSent = new(AllowanceAlertsSent ?? new());
         if (ExtensionData != null)
             clone.ExtensionData = new(ExtensionData, StringComparer.Ordinal);
         return clone;
@@ -380,6 +382,9 @@ public partial class NotchSettings : IJsonOnDeserialized
 
         if (BannerRestore.Count != other.BannerRestore.Count ||
             BannerRestore.Any(entry => !other.BannerRestore.TryGetValue(entry.Key, out var value) || value != entry.Value))
+            return false;
+
+        if (!(AllowanceAlertsSent ?? new()).SequenceEqual(other.AllowanceAlertsSent ?? new(), StringComparer.Ordinal))
             return false;
 
         if ((LiquidGlass == null) != (other.LiquidGlass == null))

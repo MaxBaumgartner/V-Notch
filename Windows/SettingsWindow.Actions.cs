@@ -602,6 +602,7 @@ public partial class SettingsWindow
         snapshot.StayBehindWindows = StayBehindWindowsCheck.IsChecked ?? false;
         snapshot.EnableHelloGreeting = HelloGreetingCheck.IsChecked ?? true;
         snapshot.EnableSpotlight = EnableSpotlightCheck.IsChecked ?? true;
+        snapshot.PreviewFilesWithQuickLook = QuickLookCheck.IsChecked ?? true;
         ReadSpotlightAiSettings(snapshot);
         ReadTranslationSettings(snapshot);
         snapshot.EnableDebugMode = EnableDebugModeCheck.IsChecked ?? false;
