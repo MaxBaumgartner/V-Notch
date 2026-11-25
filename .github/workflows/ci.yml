@@ -139,12 +139,161 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  windows-validation:
-    name: Windows validation
+  native-artifact:
+    name: Build tested native artifact
     needs: preflight
     if: needs.preflight.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - run: dotnet restore V-Notch.csproj --locked-mode -nologo -v:q
+      - name: Configure translation chunk tests
+        run: cmake -S Tools/TranslationRuntime -B artifacts/chunk-tests -A x64 -DVNOTCH_CHUNK_TESTS_ONLY=ON
+      - name: Build translation chunk tests
+        run: cmake --build artifacts/chunk-tests --config Release --target VNotchTranslationChunkTests
+      - name: Run translation chunk tests
+        run: ctest --test-dir artifacts/chunk-tests -C Release --output-on-failure --no-tests=error
+      - name: Compile native source and record provenance
+        shell: pwsh
+        run: ./Tools/New-NativeArtifact.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tested-native
+          path: |
+            artifacts/native/VNotch.Native.dll
+            artifacts/native/provenance.json
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-integration:
+    needs: [preflight, native-artifact]
+    if: needs.preflight.outputs.windows == 'true'
+    uses: ./.github/workflows/desktop-integration.yml
+    with:
+      use-tested-native: true
+
+  windows-test:
+    name: Windows tests (shard ${{ matrix.shard }}/4)
+    needs: [preflight, native-artifact]
+    if: needs.preflight.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      VNotchNativeArtifactPath: ${{ github.workspace }}/artifacts/native/VNotch.Native.dll
+    steps:
+      # actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      # actions/setup-dotnet@v4.3.1
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            packages.lock.json
+            Tests/packages.lock.json
+
+      - name: Restore test project
+        run: dotnet restore Tests/VNotch.Tests.csproj --locked-mode -nologo -v:q
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tested-native
+          path: artifacts/native
+      - name: Verify native source identity
+        shell: pwsh
+        run: ./Tools/Assert-NativeArtifact.ps1
+
+      - name: Build test project
+        # Coverage needs application symbols; published Release builds intentionally omit them.
+        run: dotnet build Tests/VNotch.Tests.csproj --configuration Release --no-restore -warnaserror -nologo -v:q -clp:NoSummary -m -p:SkipNativeCompile=true -p:DebugType=portable -p:DebugSymbols=true
+
+      - name: Prepare native crash dump collection
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'vnotch-procdump'
+          New-Item -ItemType Directory -Path $directory -Force | Out-Null
+          $archive = Join-Path $directory 'Procdump.zip'
+          Invoke-WebRequest 'https://download.sysinternals.com/files/Procdump.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '5FE68E81632F13188930AFFFF20A9A9910170BAE654360850D3108CEAD708A2D') {
+            throw 'Unexpected ProcDump archive hash.'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          "PROCDUMP_PATH=$directory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run unit test shard ${{ matrix.shard }}
+        shell: pwsh
+        env:
+          # .NET's default crash collector does not capture native exceptions.
+          VSTEST_DUMP_FORCEPROCDUMP: '1'
+        run: pwsh -NoProfile -File Tools/Invoke-TestShard.ps1 -ShardIndex ${{ matrix.shard }} -TotalShards 4 -ResultsDirectory TestResults/Coverage -CollectCoverage -BaseFilter 'Category!=DesktopIntegration&Category!=Performance&Category!=ArchitectureScale'
+
+      - name: Check performance budgets without coverage instrumentation
+        if: matrix.shard == 0
+        # Measure latency and allocations without instrumentation; keep the original budgets.
+        run: dotnet test Tests/VNotch.Tests.csproj --configuration Release --no-build --no-restore --filter 'Category=Performance' --blame-hang-timeout 60s --logger 'console;verbosity=normal'
+
+      - name: Check architecture scale without coverage instrumentation
+        if: matrix.shard == 1
+        env:
+          # .NET's default crash collector does not capture native exceptions.
+          VSTEST_DUMP_FORCEPROCDUMP: '1'
+        # Measure storage and UI scale latency/allocations without coverage instrumentation overhead.
+        run: dotnet test Tests/VNotch.Tests.csproj --configuration Release --no-build --no-restore --filter 'Category=ArchitectureScale' --results-directory TestResults/Coverage --blame-hang-timeout 180s --blame-crash-dump-type mini --logger 'console;verbosity=normal'
+
+      - name: Retain shard crash diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: test-diagnostics-shard-${{ matrix.shard }}
+          path: |
+            TestResults/Coverage/**/*.trx
+            TestResults/Coverage/**/*.log
+            TestResults/Coverage/**/*.runsettings
+            TestResults/Coverage/**/Sequence_*.xml
+            TestResults/Coverage/**/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload shard coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: TestResults/Coverage/**/*.cobertura.xml
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Retain architecture scale evidence
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: architecture-scale-shard-${{ matrix.shard }}
+          path: artifacts/architecture-scale/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  windows-validation:
+    name: Windows validation
+    needs: [preflight, windows-test, desktop-integration, native-artifact]
+    if: needs.preflight.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 25
     env:
       NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
@@ -174,23 +323,63 @@ jobs:
         shell: pwsh
         run: ./Tools/Assert-ModelAssets.ps1
 
+      - name: Exercise x64 Desktop Runtime detection
+        shell: pwsh
+        run: |
+          $compiler = ./scripts/Initialize-Nsis.ps1 -CacheDirectory .cache/nsis -DestinationDirectory "$env:RUNNER_TEMP/nsis-detector"
+          $probe = Join-Path $env:RUNNER_TEMP 'desktop-detector.exe'
+          & $compiler /V2 "/DTEST_EXE=$probe" "/DTEST_ID=$([guid]::NewGuid())" Tests/DesktopRuntimeDetection.nsi
+          if ($LASTEXITCODE) { throw 'Could not compile Desktop Runtime detection tests.' }
+          $result = Start-Process -FilePath $probe -Wait -PassThru
+          if ($result.ExitCode) { throw "Desktop Runtime detector failed fixture $($result.ExitCode)." }
+
       - name: Validate all locale keys and format placeholders
         run: python Tools/validate_locales.py
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tested-native
+          path: artifacts/native
+      - name: Verify native source identity
+        shell: pwsh
+        run: ./Tools/Assert-NativeArtifact.ps1
+
       - name: Build
+        env:
+          VNotchNativeArtifactPath: ${{ github.workspace }}/artifacts/native/VNotch.Native.dll
         run: dotnet build V-Notch.sln --configuration Release --no-restore -warnaserror -nologo -v:q -clp:NoSummary -m -p:SkipNativeCompile=true
 
-      - name: Run unit tests
-        shell: pwsh
-        run: >-
-          dotnet test Tests/VNotch.Tests.csproj --configuration Release --no-build --no-restore
-          --filter "Category!=DesktopIntegration" --blame-hang-timeout 60s
-          --collect:"XPlat Code Coverage" --results-directory TestResults/Coverage
-          --logger "trx;LogFileName=unit-tests.trx" --logger "console;verbosity=minimal"
+      # actions/download-artifact@v4.3.0
+      - name: Download sharded coverage reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: coverage-shard-*
+          path: TestResults/Coverage
+          # Collector attachment paths can collide across shards; the coverage gate scans recursively.
+          merge-multiple: false
 
       - name: Assert code coverage
         shell: pwsh
-        run: pwsh -NoProfile -File Tools/Assert-Coverage.ps1 -ResultsDirectory TestResults/Coverage -MinimumLinePercent 70
+        run: pwsh -NoProfile -File Tools/Assert-Coverage.ps1 -ResultsDirectory TestResults/Coverage -MinimumLinePercent 70 -AllProductionAssemblies
+
+      - name: Download architecture scale evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: architecture-scale-shard-*
+          path: artifacts/architecture-scale
+          merge-multiple: true
+
+      - name: Require both architecture scale fixtures
+        shell: pwsh
+        run: |
+          foreach ($size in 100, 1000) {
+            foreach ($kind in 'scale', 'ui') {
+              $path = "artifacts/architecture-scale/$kind-$size.json"
+              if (-not (Test-Path -LiteralPath $path)) { throw "Missing scale evidence: $path" }
+              $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+              if ($result.count -ne $size) { throw "Invalid fixture size in $path" }
+            }
+          }
 
       - name: Verify gates, update compatibility & package audit in parallel
         id: gates
@@ -228,7 +417,7 @@ jobs:
 
   # Preserve the original required-check name while aggregating every gate.
   validate:
-    needs: [preflight, sast, windows-validation]
+    needs: [preflight, sast, native-artifact, desktop-integration, windows-test, windows-validation]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -240,20 +429,23 @@ jobs:
           PREFLIGHT: ${{ needs.preflight.result }}
           WINDOWS_REQUIRED: ${{ needs.preflight.outputs.windows }}
           SAST: ${{ needs.sast.result }}
+          TEST: ${{ needs.windows-test.result }}
           BUILD: ${{ needs.windows-validation.result }}
+          NATIVE: ${{ needs.native-artifact.result }}
+          DESKTOP: ${{ needs.desktop-integration.result }}
         run: |
           if [[ "$PREFLIGHT" != 'success' ]]; then
             echo 'Secret scanning or pipeline checks failed.' >&2
             exit 1
           fi
           if [[ "$WINDOWS_REQUIRED" == 'true' ]]; then
-            for result in "$SAST" "$BUILD"; do
+            for result in "$SAST" "$TEST" "$BUILD" "$NATIVE" "$DESKTOP"; do
               if [[ "$result" != 'success' ]]; then
-                echo 'A required security or Windows gate failed.' >&2
+                echo 'A required security, test, or Windows gate failed.' >&2
                 exit 1
               fi
             done
-          elif [[ "$WINDOWS_REQUIRED" != 'false' || "$SAST" != 'skipped' || "$BUILD" != 'skipped' ]]; then
+          elif [[ "$WINDOWS_REQUIRED" != 'false' || "$SAST" != 'skipped' || "$TEST" != 'skipped' || "$BUILD" != 'skipped' || "$NATIVE" != 'skipped' || "$DESKTOP" != 'skipped' ]]; then
             echo 'Invalid documentation-only validation state.' >&2
             exit 1
           fi

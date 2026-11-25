@@ -70,7 +70,7 @@ internal static class ClaudeSessionWindow
         if (Win32Interop.IsIconic(window)) ShowWindow(window, SW_RESTORE);
         // Allowed without tricks: the click that asked for it was the last input.
         Win32Interop.SetForegroundWindow(window);
-        if (title is { Length: > 0 } && Win32Interop.WindowClassContains(window, TerminalWindowClass))
+        if (title is { Length: > 0 } && WindowClassContains(window, TerminalWindowClass))
             _ = Task.Run(() => SelectTerminalTab(window, title));
         return true;
     }
@@ -91,7 +91,7 @@ internal static class ClaudeSessionWindow
     public static bool IsInFront(IntPtr window, string? title)
     {
         if (window == IntPtr.Zero || Win32Interop.GetForegroundWindow() != window) return false;
-        if (title is not { Length: > 0 } || !Win32Interop.WindowClassContains(window, TerminalWindowClass)) return true;
+        if (title is not { Length: > 0 } || !WindowClassContains(window, TerminalWindowClass)) return true;
         var text = new StringBuilder(512);
         return Win32Interop.GetWindowText(window, text, 512) > 0 && text.ToString().Contains(title, StringComparison.Ordinal);
     }
@@ -115,6 +115,13 @@ internal static class ClaudeSessionWindow
             }
         }
         return 0;
+    }
+
+    private static bool WindowClassContains(IntPtr window, string fragment)
+    {
+        var className = new StringBuilder(256);
+        return Win32Interop.GetClassName(window, className, className.Capacity) > 0 &&
+            className.ToString().Contains(fragment, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsRunning(int processId)
@@ -146,7 +153,7 @@ internal static class ClaudeSessionWindow
                 if (console == IntPtr.Zero) return IntPtr.Zero;
                 IntPtr owner = GetAncestor(console, GA_ROOTOWNER);
                 IntPtr window = owner != IntPtr.Zero ? owner : console;
-                return Win32Interop.IsWindowVisible(window) && !Win32Interop.WindowClassContains(window, PseudoConsoleClass)
+                return Win32Interop.IsWindowVisible(window) && !WindowClassContains(window, PseudoConsoleClass)
                     ? window
                     : IntPtr.Zero;
             }

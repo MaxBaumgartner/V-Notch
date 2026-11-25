@@ -31,7 +31,7 @@ internal sealed class DiscordVoice : IDisposable
     private readonly Func<string> _clientId;
     private readonly Func<bool> _offline;
     private readonly string _tokenFile;
-    private readonly HttpClient _http = new(new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(15) };
+    private readonly HttpClient _http = new(NetworkPrivacy.CreateHttpHandler(allowAutoRedirect: true)) { Timeout = TimeSpan.FromSeconds(15) };
     private readonly CancellationTokenSource _stop = new();
     private bool _started;
 

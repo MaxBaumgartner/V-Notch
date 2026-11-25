@@ -70,7 +70,7 @@ public sealed partial class ClipboardTray
         Cards.Focus();
         // Select data items, including those with no realized container or thumbnail.
         Cards.SelectAll();
-        _pendingSelectAll = _controller != null && _queryDirty ? (_category, SearchBox.Text) : null;
+        _pendingSelectAll = _controller != null && (_queryDirty || _hasMoreResults) ? (_category, SearchBox.Text) : null;
         if (_pendingSelectAll != null) QueueRefresh();
         return true;
     }
@@ -84,6 +84,7 @@ public sealed partial class ClipboardTray
     }
     private Point? _selectionStart;
     private Point? _pendingLassoStart;
+    internal ClipboardSelectionModel<ClipboardCardViewModel> Selection => _selection;
     private readonly ClipboardSelectionModel<ClipboardCardViewModel> _selection = new();
     private readonly HashSet<ListBoxItem> _selectionContainers = [];
     private Point _selectionPointer;
@@ -267,8 +268,7 @@ public sealed partial class ClipboardTray
         double next = Math.Clamp(scroll.HorizontalOffset + speed * seconds, 0, scroll.ScrollableWidth);
         if (Math.Abs(next - scroll.HorizontalOffset) < 0.01) return;
         scroll.ScrollToHorizontalOffset(next);
-        // Realize the new edge before hit-testing; the pointer may be stationary.
-        Cards.UpdateLayout();
+        // ScrollChanged marks bounds dirty when WPF commits the offset.
         _selectionBoundsDirty = _selectionUpdatePending = true;
     }
 

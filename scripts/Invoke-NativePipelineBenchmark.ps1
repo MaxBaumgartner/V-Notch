@@ -52,6 +52,7 @@ $commonSources = @(
     'Services\SmartThumbnailCropService.cpp'
 )
 $newSources = @(
+    'Services\Clipboard\ClipboardJwtValidation.cpp', 'Services\AnimationBatch.avx2.cpp',
     'Services\SmartCropInference.cpp', 'Services\SmartCropPreprocess.cpp', 'Services\SmartCropResize.avx2.cpp',
     'Services\Oklab.avx2.cpp', 'Services\VisualizerStream.cpp', 'Services\Clipboard\ClipboardRecordLog.cpp'
 )
@@ -89,7 +90,10 @@ function Build-Native([string]$Name, [string]$NativeRoot, [string[]]$Sources) {
     & cmd.exe /d /c $cmdPath *> (Join-Path $output ("build-" + $Name + '.log'))
     if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath (Join-Path $output ("build-" + $Name + '.log')) -Tail 30; throw "$Name native compilation failed" }
 }
-Build-Native 'baseline' (Join-Path $baselineRoot 'Native') $commonSources
+$baselineNative = Join-Path $baselineRoot 'Native'
+# Older snapshots keep some of these implementations inline.
+$baselineSources = $commonSources + @($newSources | Where-Object { Test-Path -LiteralPath (Join-Path $baselineNative $_) })
+Build-Native 'baseline' $baselineNative $baselineSources
 Build-Native 'current' $currentNative ($commonSources + $newSources)
 
 $sourceHashes = @($commonSources + $newSources | ForEach-Object {
@@ -107,7 +111,7 @@ $metadata = [pscustomobject]@{
     Computer = @(Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory)
     Gpu = @(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion)
     PowerScheme = (& powercfg /getactivescheme | Out-String).Trim()
-    Build = 'MSVC /std:c++latest /O2 /GL /MT; AVX2 objects /arch:AVX2 without /GL; /LTCG /OPT:REF /OPT:ICF; .NET8 Release, tiered compilation disabled'
+    Build = 'MSVC /std:c++latest /O2 /GL /MT; AVX2 objects /arch:AVX2 without /GL; /LTCG /OPT:REF /OPT:ICF; .NET 10 Release, tiered compilation disabled'
     VcVars = $VcVars64Path
     BaselineDllSha256 = (Get-FileHash -LiteralPath (Join-Path $nativeOut 'baseline.dll')).Hash
     CurrentDllSha256 = (Get-FileHash -LiteralPath (Join-Path $nativeOut 'current.dll')).Hash

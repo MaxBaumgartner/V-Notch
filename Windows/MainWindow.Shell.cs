@@ -296,6 +296,13 @@ public partial class MainWindow
                 (_shellOpenWidth - _shellDragStartWidth) / Math.Max(1, _shellOpenHeight - _shellDragStartHeight);
         if (_transitionCoordinator.RequestView(open ? _shellDragView : NotchView.Compact, "ShellDrag")) return;
         open = _transitionCoordinator.TargetView != NotchView.Compact;
+        if (open && _shellDragView == NotchView.Claude)
+        {
+            // Content may have changed while the pointer owned the shell's height.
+            _claudeViewHeight = MeasureClaudeViewHeight();
+            ResizeHostWindowHeight(_claudeViewHeight);
+            FitAttachedTab(ClaudeContent, _claudeViewHeight);
+        }
 
         // A rejected drag returns to the existing view without creating a second navigation session.
         var plan = new TransitionPlan(_transitionCoordinator.ActiveTransitionId,

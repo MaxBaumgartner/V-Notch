@@ -69,7 +69,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     private readonly List<(TextBlock Label, DateTime StartedUtc)> _elapsedLabels = new();
     private readonly List<WifiNetwork> _wifiScratch = new();
     // Picks on a question card, by request id, kept while other sessions redraw the list.
-    private readonly Dictionary<string, Dictionary<string, List<string>>> _questionPicks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ClaudeQuestionAnswers> _questionPicks = new(StringComparer.Ordinal);
     // Session and request cards on the page, so only new ones animate in on a rebuild.
     // The session a message is being typed for, and what is typed so far (kept across rebuilds).
     private string? _composingSessionId;
@@ -238,6 +238,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         StopCodexClock();
         DisposeCodexAccounts();
         StopClaudeFaceMotion();
+        StopClaudeDetailsMotion();
         HideAccountNotice();
         StopResetFeedback();
         SetGpuSampling(false);
@@ -275,13 +276,13 @@ public partial class ControlCenterView : UserControl, IDisposable
                 if (IsExpanded("displays")) BuildDisplaysSection();
                 if (_compactSystemReady) RefreshCompactDisplays();
             }
-            Refresh();
+            if (Page == ControlCenterPage.Claude) UpdateClaudeSection(entering: true);
+            else Refresh();
             StartLiveTexts();
             if (Page == ControlCenterPage.Claude)
             {
                 RefreshUsage(UsageViewMinAge);
-                _clockTimer.Start();
-                StartTokenClock();
+                RefreshTokens();
                 StartCodexClock();
                 if (_resetStates.Count > 0) StartResetFeedback();
             }
@@ -313,7 +314,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             StopTokenClock();
             StopCodexClock();
             StopResetFeedback();
-            StopClaudeFaceMotion();
+            StopClaudeFaceMotion(rememberValues: true);
+            StopClaudeDetailsMotion();
             HideAccountNotice();
             if (_accountsOpen) SetAccountsOpen(false, animate: false);
             SetGpuSampling(false);
@@ -1677,19 +1679,17 @@ public partial class ControlCenterView : UserControl, IDisposable
             done: () => Motion.To(shift, TranslateTransform.XProperty, 0, Motion.Press));
     }
 
-    private static Border RequestCard()
+    private static Border RequestCard(Border? card = null)
     {
-        var card = new Border
-        {
-            Background = ComboBg,
-            BorderBrush = ComboBorder,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12, 9, 10, 9),
-            Margin = new Thickness(0, 0, 0, 6),
-            // Inside a session card, whose hand says "opens the terminal".
-            Cursor = Cursors.Arrow
-        };
+        card ??= new Border();
+        card.Background = ComboBg;
+        card.BorderBrush = ComboBorder;
+        card.BorderThickness = new Thickness(1);
+        card.CornerRadius = new CornerRadius(10);
+        card.Padding = new Thickness(12, 9, 10, 9);
+        card.Margin = new Thickness(0, 0, 0, 6);
+        // Inside a session card, whose hand says "opens the terminal".
+        card.Cursor = Cursors.Arrow;
         // A tap next to the buttons while reading must neither open the session nor close the notch.
         card.MouseLeftButtonDown += (_, e) => e.Handled = true;
         return card;
@@ -1697,7 +1697,8 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     private FrameworkElement PermissionCard(ClaudePermissionRequest request)
     {
-        var card = RequestCard();
+        var card = new PermissionSwipeCard(this, request.Id);
+        RequestCard(card);
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1756,10 +1757,10 @@ public partial class ControlCenterView : UserControl, IDisposable
         // Big buttons under the request, the answer you most likely want first.
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 1) };
         string id = request.Id;
-        var allow = TextButton(Loc.Get("control.claude.allow"), accent: true, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Allow)));
-        var always = TextButton(Loc.Get("control.claude.always"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Always)));
+        var allow = TextButton(Loc.Get("control.claude.allow"), accent: true, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Allow) == true));
+        var always = TextButton(Loc.Get("control.claude.always"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Always) == true));
         if (request.AlwaysLabel is { Length: > 0 } rule) always.ToolTip = rule;
-        var deny = TextButton(Loc.Get("control.claude.deny"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Deny)));
+        var deny = TextButton(Loc.Get("control.claude.deny"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Deny) == true));
         foreach (var button in new[] { allow, always, deny })
         {
             button.Height = 30;
@@ -1771,7 +1772,7 @@ public partial class ControlCenterView : UserControl, IDisposable
         Grid.SetColumnSpan(buttons, 2);
         grid.Children.Add(buttons);
 
-        card.Child = grid;
+        card.SetContent(grid);
         return card;
     }
 
@@ -1887,12 +1888,12 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         string id = request.Id;
-        var keepPlanning = TextButton(Loc.Get("control.claude.keepPlanning"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Deny)));
+        var keepPlanning = TextButton(Loc.Get("control.claude.keepPlanning"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Deny) == true));
         buttons.Children.Add(keepPlanning);
         // Claude Code offers "auto-accept edits" as the mode to switch to; the Always answer applies it.
         if (request.AlwaysLabel?.Contains("acceptEdits", StringComparison.OrdinalIgnoreCase) == true)
-            buttons.Children.Add(TextButton(Loc.Get("control.claude.autoEdits"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Always))));
-        var approve = TextButton(Loc.Get("control.claude.approvePlan"), accent: true, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Allow)));
+            buttons.Children.Add(TextButton(Loc.Get("control.claude.autoEdits"), accent: false, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Always) == true)));
+        var approve = TextButton(Loc.Get("control.claude.approvePlan"), accent: true, () => Settle(id, () => _claude?.Decide(id, ClaudeDecision.Allow) == true));
         approve.Margin = new Thickness(0);
         buttons.Children.Add(approve);
         stack.Children.Add(buttons);
@@ -1915,7 +1916,7 @@ public partial class ControlCenterView : UserControl, IDisposable
     private FrameworkElement QuestionCard(ClaudePermissionRequest request, IReadOnlyList<ClaudeQuestion> questions)
     {
         if (!_questionPicks.TryGetValue(request.Id, out var picks))
-            _questionPicks[request.Id] = picks = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            _questionPicks[request.Id] = picks = new ClaudeQuestionAnswers(questions);
         // A single single-choice question goes out on the first tap; anything else waits for Send.
         bool sendOnPick = questions.Count == 1 && !questions[0].MultiSelect;
 
@@ -1941,12 +1942,11 @@ public partial class ControlCenterView : UserControl, IDisposable
                 Margin = new Thickness(0, question.Header.Length > 0 || i == 0 ? 0 : 10, 0, 8)
             });
 
-            picks.TryGetValue(question.Text, out var chosen);
             var options = new WrapPanel();
             foreach (var option in question.Options)
             {
                 string label = option.Label;
-                var button = TextButton(label, accent: chosen?.Contains(label) == true,
+                var button = TextButton(label, accent: picks.IsPicked(question, label),
                     () => Pick(request, question, label, sendOnPick));
                 button.HorizontalAlignment = HorizontalAlignment.Left;
                 button.Margin = new Thickness(0, 0, 6, 6);
@@ -1958,9 +1958,9 @@ public partial class ControlCenterView : UserControl, IDisposable
 
         if (!sendOnPick)
         {
-            var send = TextButton(Loc.Get("control.claude.submit"), accent: AllAnswered(questions, picks), () =>
+            var send = TextButton(Loc.Get("control.claude.submit"), accent: picks.AllAnswered, () =>
             {
-                if (AllAnswered(questions, picks)) SendAnswers(request, questions);
+                if (picks.AllAnswered) SendAnswers(request);
             });
             send.Margin = new Thickness(0, 4, 0, 0);
             stack.Children.Add(send);
@@ -1973,40 +1973,21 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void Pick(ClaudePermissionRequest request, ClaudeQuestion question, string label, bool sendNow)
     {
         if (!_questionPicks.TryGetValue(request.Id, out var picks)) return;
-        if (!picks.TryGetValue(question.Text, out var chosen)) picks[question.Text] = chosen = new List<string>();
-        if (!question.MultiSelect) chosen.Clear();
-        if (!chosen.Remove(label)) chosen.Add(label);
+        picks.Pick(question, label);
 
         if (sendNow)
         {
-            SendAnswers(request, request.Questions!);
+            SendAnswers(request);
             return;
         }
         _claudeKey = "";
         BuildClaudeSection();
     }
 
-    private void SendAnswers(ClaudePermissionRequest request, IReadOnlyList<ClaudeQuestion> questions)
+    private void SendAnswers(ClaudePermissionRequest request)
     {
         if (!_questionPicks.Remove(request.Id, out var picks)) return;
-        var answers = new Dictionary<string, string>(questions.Count, StringComparer.Ordinal);
-        foreach (var question in questions)
-        {
-            if (!picks.TryGetValue(question.Text, out var chosen) || chosen.Count == 0) continue;
-            // Several labels go back in the order Claude listed them.
-            var labels = new List<string>(chosen.Count);
-            foreach (var option in question.Options)
-                if (chosen.Contains(option.Label)) labels.Add(option.Label);
-            answers[question.Text] = string.Join(", ", labels);
-        }
-        Settle(request.Id, () => _claude?.Answer(request.Id, answers));
-    }
-
-    private static bool AllAnswered(IReadOnlyList<ClaudeQuestion> questions, Dictionary<string, List<string>> picks)
-    {
-        foreach (var question in questions)
-            if (!picks.TryGetValue(question.Text, out var chosen) || chosen.Count == 0) return false;
-        return true;
+        Settle(request.Id, () => picks.TrySubmit(answers => _claude?.Answer(request.Id, answers) == true));
     }
 
     private void ForgetAnsweredQuestions(List<ClaudePermissionRequest> pending)
@@ -2030,8 +2011,20 @@ public partial class ControlCenterView : UserControl, IDisposable
     private void UpdateElapsedLabels()
     {
         DateTime now = DateTime.UtcNow;
-        foreach (var (label, started) in _elapsedLabels) label.Text = FormatElapsed(now - started);
+        foreach (var (label, started) in _elapsedLabels) SetRollingDetailText(label, FormatElapsed(now - started));
         UpdateAccountElapsed();
+    }
+
+    private void UpdateClaudeClock()
+    {
+        if (!IsVisible) return;
+        if (_elapsedLabels.Count > 0 || (!_accountsOpen && _accountTurnStarted.HasValue) ||
+            (_accountsOpen && _runningCodexJobs.Count > 0))
+        {
+            UpdateElapsedLabels();
+            if (!_clockTimer.IsEnabled) _clockTimer.Start();
+        }
+        else _clockTimer.Stop();
     }
 
     internal static string FormatElapsed(TimeSpan span)

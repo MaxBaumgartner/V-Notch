@@ -1,5 +1,7 @@
+using System.Buffers;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -10,23 +12,71 @@ using Detection = VNotch.Services.SmartThumbnailCropService.Detection;
 namespace VNotch.Tests;
 
 [Collection("Localization")]
-public sealed class SmartCropInferenceAndFramingTests
+public sealed partial class SmartCropInferenceAndFramingTests
 {
     private const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnCropRect
+    {
+        public int X, Y, Width, Height;
+        public readonly Int32Rect ToRect() => new(X, Y, Width, Height);
+    }
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_smartcrop_preprocess_bgra32(
+        ReadOnlySpan<byte> pixels, int length, int width, int height, int stride,
+        Span<float> tensor, int capacity, out float scale);
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_smartcrop_try_detect_text_crop_rect(
+        ReadOnlySpan<byte> pixels, int w, int h, int stride,
+        int imgWidth, int imgHeight, int cropSize,
+        out VnCropRect outRect, out byte outFound);
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static unsafe partial int vn_smartcrop_get_portrait_crop_rect(
+        Detection* face, int width, int height, out VnCropRect outRect);
+
     [Fact]
-    public void BundledModelRunsOfflineAndReusesInferenceUntilItsIdleSessionIsReleased() => SharedStaTestRunner.RunAsync(async ct =>
+    public unsafe void PortraitFramingLeavesHairAndUpperTorsoSpace()
+    {
+        var face = new Detection { X1 = 1160, Y1 = 211, X2 = 1443, Y2 = 656 };
+        Assert.Equal(0, vn_smartcrop_get_portrait_crop_rect(&face, 2080, 1121, out var crop));
+
+        Assert.True(crop.Y < 62); // Top of the hair in the reported portrait.
+        Assert.True(crop.Y + crop.Height > 900); // Include shoulders and upper torso.
+        Assert.True(crop.X > 800); // Leave the title artwork outside the frame.
+        Assert.True(crop.X + crop.Width > 1650); // Preserve the back of the hair.
+        Assert.Equal(crop.Width, crop.Height);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 100, 120)]
+    [InlineData(500, 180, 600, 300)]
+    public unsafe void PortraitFramingStaysInsideImage(float x1, float y1, float x2, float y2)
+    {
+        var face = new Detection { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2 };
+        Assert.Equal(0, vn_smartcrop_get_portrait_crop_rect(&face, 600, 300, out var crop));
+
+        Assert.InRange(crop.X, 0, 600 - crop.Width);
+        Assert.InRange(crop.Y, 0, 300 - crop.Height);
+        Assert.Equal(crop.Width, crop.Height);
+    }
+
+    [Fact]
+    public void BundledModelRunsOfflineAndReusesInferenceUntilItsIdleSessionIsReleased() => SharedStaTestRunner.Run(() =>
     {
         using var service = new SmartThumbnailCropService();
         Assert.True(service.TryInitialize());
         var image = new BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory, "Fixtures", "white-mat-artwork.png")));
         image.Freeze();
-        var first = await service.GetSmartCropRectAsync(image, 256, useObjectDetection: true, ct);
+        var first = service.GetSmartCropRect(image, 256, useObjectDetection: true);
         Assert.True(first.HasValue);
         AssertCrop(first.Value, image.PixelWidth, image.PixelHeight);
         object session = Get<object>(service, "_cachedSession");
         Assert.NotNull(session);
-        Assert.Equal(first, await service.GetSmartCropRectAsync(image, 256, useObjectDetection: true, ct));
+        Assert.Equal(first, service.GetSmartCropRect(image, 256, useObjectDetection: true));
         Assert.Same(session, Get<object>(service, "_cachedSession"));
         _ = service.GetDominantSubjectBounds(image);
         Assert.Same(session, Get<object>(service, "_cachedSession"));
@@ -38,7 +88,7 @@ public sealed class SmartCropInferenceAndFramingTests
         service.Dispose();
         Assert.False(service.TryInitialize());
         Assert.Null(service.GetDominantSubjectBounds(image));
-        Assert.Null(await service.GetSmartCropRectAsync(image, 256, true, ct));
+        Assert.Null(service.GetSmartCropRect(image, 256, true));
     });
 
     [Theory]
@@ -88,10 +138,18 @@ public sealed class SmartCropInferenceAndFramingTests
     public void TextAnalysisDistinguishesFlatArtworkFromDenseContrastingEdges(bool edges) => SharedStaTestRunner.Run(() =>
     {
         var image = Image(256, 128, edges);
-        var method = typeof(SmartThumbnailCropService).GetMethod("TryDetectTextCropRect", BindingFlags.Static | BindingFlags.NonPublic)!;
-        var crop = (Int32Rect?)method.Invoke(null, [image, 256, 128, 128]);
-        Assert.Equal(edges, crop.HasValue);
-        if (crop.HasValue) AssertCrop(crop.Value, 256, 128);
+        Assert.True(ArtworkFrameDetector.RentDownscaledPixels(image, out byte[]? pixels, out int w, out int h, out int stride, 128.0));
+        try
+        {
+            Assert.Equal(0, vn_smartcrop_try_detect_text_crop_rect(pixels.AsSpan(0, h * stride), w, h, stride, 256, 128, 128, out var rect, out byte found));
+            Int32Rect? crop = found != 0 ? rect.ToRect() : null;
+            Assert.Equal(edges, crop.HasValue);
+            if (crop.HasValue) AssertCrop(crop.Value, 256, 128);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pixels!);
+        }
     });
 
     [Theory]
@@ -100,9 +158,13 @@ public sealed class SmartCropInferenceAndFramingTests
     public void ModelInputKeepsBgrValuesAndUses114ForLetterboxedPixels(int width, int height) => SharedStaTestRunner.Run(() =>
     {
         var image = Image(width, height, false);
+        int stride = width * 4;
+        byte[] pixels = new byte[height * stride];
+        image.CopyPixels(pixels, stride, 0);
+
         const int plane = 416 * 416;
         float[] tensor = new float[3 * plane];
-        float scale = SmartThumbnailCropService.PreprocessImageFast(image, tensor);
+        Assert.Equal(0, vn_smartcrop_preprocess_bgra32(pixels, pixels.Length, width, height, stride, tensor, tensor.Length, out float scale));
         Assert.Equal(416f / Math.Max(width, height), scale, 5);
         Assert.Equal(30, tensor[0]);
         Assert.Equal(20, tensor[plane]);

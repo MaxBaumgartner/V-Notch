@@ -8,18 +8,6 @@ using VNotch.Services;
 
 namespace VNotch.Controls;
 
-public sealed class TrayCopiedOpacityConverter : System.Windows.Data.IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => value is true ? 1d : 0d;
-    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => System.Windows.Data.Binding.DoNothing;
-}
-
-public sealed class TrayCopiedBlurConverter : System.Windows.Data.IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => value is true ? 16d : 0d;
-    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => System.Windows.Data.Binding.DoNothing;
-}
-
 // Animate presentation brushes without replacing the bindings that own state.
 public static class TrayMotion
 {
@@ -88,7 +76,7 @@ public static class TrayMotion
                     : new TransformGroup { Children = { new ScaleTransform(1, 1) } };
                 element.RenderTransform = transforms;
             }
-            if (transforms.Children.OfType<ScaleTransform>().FirstOrDefault() is not { } scale)
+            if (FindTransform<ScaleTransform>(transforms.Children) is not { } scale)
             {
                 scale = new ScaleTransform(1, 1);
                 transforms.Children.Insert(0, scale);
@@ -106,10 +94,28 @@ public static class TrayMotion
         });
     }
 
+    private static T? FindTransform<T>(TransformCollection children) where T : Transform
+    {
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (children[i] is T match) return match;
+        }
+        return null;
+    }
+
+    private static readonly CubicEase BlurCubicOutEase = CreateFrozenBlurCubicOut();
+
+    private static CubicEase CreateFrozenBlurCubicOut()
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        ease.Freeze();
+        return ease;
+    }
+
     private static void AngleChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         if (sender is not FrameworkElement { RenderTransform: TransformGroup transforms } ||
-            transforms.Children.OfType<RotateTransform>().FirstOrDefault() is not { } rotation) return;
+            FindTransform<RotateTransform>(transforms.Children) is not { } rotation) return;
         if (sender is FrameworkElement element && !element.IsVisible)
             Motion.Stop(rotation, RotateTransform.AngleProperty, (double)args.NewValue);
         else
@@ -184,7 +190,7 @@ public static class TrayMotion
                 }
 
                 var animation = new DoubleAnimation(current, 0d, TimeSpan.FromMilliseconds(AnimationConfig.ReduceMotion ? 80 : 160))
-                { FillBehavior = FillBehavior.Stop, EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+                { FillBehavior = FillBehavior.Stop, EasingFunction = BlurCubicOutEase };
                 Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);
                 animation.Completed += (s, e) =>
                 {
@@ -221,7 +227,7 @@ public static class TrayMotion
         if (!element.IsLoaded || AnimationConfig.ReduceMotion) return;
 
         var anim = new DoubleAnimation(currentRadius, target, TimeSpan.FromMilliseconds(AnimationConfig.ReduceMotion ? 80 : 180))
-        { FillBehavior = FillBehavior.Stop, EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+        { FillBehavior = FillBehavior.Stop, EasingFunction = BlurCubicOutEase };
         Timeline.SetDesiredFrameRate(anim, AnimationConfig.TargetFps);
         blur.BeginAnimation(BlurEffect.RadiusProperty, anim);
     }

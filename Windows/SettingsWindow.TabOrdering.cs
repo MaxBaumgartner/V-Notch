@@ -17,6 +17,7 @@ using VNotch.Models;
 using VNotch.Modules;
 using VNotch.Presenters;
 using VNotch.Services;
+using static VNotch.Services.VNotchNative;
 
 namespace VNotch;
 
@@ -28,7 +29,16 @@ public partial class SettingsWindow
     private Point _settingsNavDragStartPoint;
     private bool _isSettingsNavRowDragging = false;
     private bool _hasCapturedSettingsNavMouse = false;
+    internal void BeginSettingsNavDragForTest(FrameworkElement row, int slot)
+    {
+        _settingsNavDragRow = row;
+        _isSettingsNavRowDragging = true;
+        _settingsNavInitialSlot = slot;
+        _settingsNavTargetSlot = slot;
+    }
+
     private int _settingsNavInitialSlot = -1;
+    internal int DragTargetSlot => _settingsNavTargetSlot;
     private int _settingsNavTargetSlot = -1;
     private double _settingsNavRowPitch = 44.0;
     private readonly Dictionary<FrameworkElement, double> _settingsNavNeighborOffsets = new();
@@ -40,22 +50,6 @@ public partial class SettingsWindow
         public int Offset;
         public int Length;
     }
-
-    [LibraryImport("VNotch.Native")]
-    private static partial int vn_nav_tabs_calculate_target_slot_hysteresis(
-        int current_target,
-        double visual_pos,
-        double pitch,
-        int total_slots,
-        out int out_slot);
-
-    [LibraryImport("VNotch.Native")]
-    private static partial int vn_nav_tabs_calculate_neighbor_offset(
-        int index,
-        int initial_slot,
-        int target_slot,
-        double pitch,
-        out double out_offset);
 
     [LibraryImport("VNotch.Native")]
     private static unsafe partial int vn_nav_tabs_parse_unique_tokens(
@@ -131,7 +125,7 @@ public partial class SettingsWindow
         }
     }
 
-    private static readonly string[] SupportedNavTabKeys = [NavTabMedia, "Secondary", "Timer", "AudioMixer", "Camera", "Claude", "Pi", "School"];
+    private static readonly string[] SupportedNavTabKeys = [NavTabMedia, "Secondary", "Timer", "AudioMixer", "Camera", "AiUsage", "Claude", "Pi", "School"];
 
     internal static List<string> ResolveFullNavTabOrder(string? rawOrder, IEnumerable<string>? knownKeys = null)
     {
@@ -155,27 +149,65 @@ public partial class SettingsWindow
         return orderTokens;
     }
 
+    private static Dictionary<string, (string LocKey, Geometry Icon)>? s_navTabDefinitions;
+
+    private static Dictionary<string, (string LocKey, Geometry Icon)> GetNavTabDefinitions() =>
+        s_navTabDefinitions ??= new()
+        {
+            [NavTabMedia] = ("nav.media", CreateFrozenGeometry("M8 0L0 6V8H1V15H4V10H7V15H15V8H16V6L14 4.5V1H11V2.25L8 0ZM9 10H12V13H9V10Z")),
+            ["Secondary"] = ("nav.clipboard", CreateFrozenGeometry("M479.66,268.7l-32-151.81C441.48,83.77,417.68,64,384,64H128c-16.8,0-31,4.69-42.1,13.94s-18.37,22.31-21.58,38.89l-32,151.87A16.65,16.65,0,0,0,32,272V384a64,64,0,0,0,64,64H416a64,64,0,0,0,64-64V272A16.65,16.65,0,0,0,479.66,268.7Zm-384-145.4c0-.1,0-.19,0-.28,3.55-18.43,13.81-27,32.29-27H384c18.61,0,28.87,8.55,32.27,26.91,0,.13.05.26.07.39l26.93,127.88a4,4,0,0,1-3.92,4.82H320a15.92,15.92,0,0,0-16,15.82,48,48,0,1,1-96,0A15.92,15.92,0,0,0,192,256H72.65a4,4,0,0,1-3.92-4.82Z")),
+            ["Timer"] = ("nav.controls", CreateFrozenGeometry("M6 3H14A4 4 0 0 1 14 11H6A4 4 0 0 1 6 3ZM6 5A2 2 0 1 0 6 9A2 2 0 1 0 6 5ZM6 12H14A4 4 0 0 1 14 20H6A4 4 0 0 1 6 12ZM14 14A2 2 0 1 0 14 18A2 2 0 1 0 14 14Z")),
+            ["AudioMixer"] = ("nav.audio", CreateFrozenGeometry("M13.5 2.5C13.5 2.1 13.05 1.86 12.72 2.09L6.8 6.2H3.5C2.95 6.2 2.5 6.65 2.5 7.2V12.8C2.5 13.35 2.95 13.8 3.5 13.8H6.8L12.72 17.91C13.05 18.14 13.5 17.9 13.5 17.5V2.5ZM16.04 6.05C15.74 5.79 15.28 5.82 15.02 6.13C14.76 6.43 14.79 6.89 15.1 7.15C16.0 7.93 16.5 8.93 16.5 10C16.5 11.07 16.0 12.07 15.1 12.85C14.79 13.11 14.76 13.57 15.02 13.87C15.28 14.18 15.74 14.21 16.04 13.95C17.25 12.91 18 11.5 18 10C18 8.5 17.25 7.09 16.04 6.05Z")),
+            ["Camera"] = ("nav.camera", CreateFrozenGeometry("F0 M28,4 L25,4 L24,2 C23.411,0.837 23.104,0 22,0 L10,0 C8.896,0 8.53,0.954 8,2 L7,4 L4,4 C1.791,4 0,5.791 0,8 L0,24 C0,26.209 1.791,28 4,28 L28,28 C30.209,28 32,26.209 32,24 L32,8 C32,5.791 30.209,4 28,4 Z M16,24 C11.582,24 8,20.418 8,16 C8,11.582 11.582,8 16,8 C20.418,8 24,11.582 24,16 C24,20.418 20.418,24 16,24 Z M16,10 C12.687,10 10,12.687 10,16 C10,19.313 12.687,22 16,22 C19.313,22 22,19.313 22,16 C22,12.687 19.313,10 16,10 L16,10 Z")),
+            ["AiUsage"] = ("nav.aiUsage", CreateFrozenGeometry("F0 M 11.2,2.0 C 6.2,2.0 3.05,5.6 3.05,9.9 C 3.05,13.6 5.4,16.6 6.0,20.2 L 6.0,21.1 C 6.0,21.65 6.45,22.0 7.0,22.0 L 14.0,22.0 C 14.55,22.0 15.0,21.65 15.0,21.1 L 15.0,20.2 L 16.5,20.2 C 18.1,20.2 19.0,19.1 19.0,17.4 L 19.0,15.2 C 19.0,14.8 19.3,14.5 19.7,14.4 L 20.9,14.0 C 21.6,13.75 21.65,12.8 21.25,12.2 L 19.4,9.2 C 19.25,8.9 19.15,8.5 19.1,8.1 C 18.7,4.5 15.6,2.0 11.2,2.0 Z M 9.5,5.45 C 9.75,5.45 9.9,5.65 10.05,6.1 L 10.6,7.6 L 12.1,8.15 C 12.6,8.3 12.6,8.7 12.1,8.85 L 10.6,9.4 L 10.05,10.9 C 9.9,11.35 9.75,11.55 9.5,11.55 C 9.25,11.55 9.1,11.35 8.95,10.9 L 8.4,9.4 L 6.9,8.85 C 6.4,8.7 6.4,8.3 6.9,8.15 L 8.4,7.6 L 8.95,6.1 C 9.1,5.65 9.25,5.45 9.5,5.45 Z M 14.25,9.95 C 14.45,9.95 14.6,10.1 14.7,10.45 L 15.1,11.5 L 16.15,11.9 C 16.55,12.05 16.55,12.45 16.15,12.6 L 15.1,13.0 L 14.7,14.05 C 14.6,14.4 14.45,14.55 14.25,14.55 C 14.05,14.55 13.9,14.4 13.8,14.05 L 13.4,13.0 L 12.35,12.6 C 11.95,12.45 11.95,12.05 12.35,11.9 L 13.4,11.5 L 13.8,10.45 C 13.9,10.1 14.05,9.95 14.25,9.95 Z")),
+            ["Claude"] = ("nav.claude", CreateFrozenGeometry(ClaudeGlyph.PathData)),
+            ["Pi"] = ("nav.pi", CreateFrozenGeometry(PiGlyph.PathData)),
+            ["School"] = ("nav.school", CreateFrozenGeometry(SchoolGlyph.PathData)),
+            ["Roblox"] = ("nav.roblox", CreateFrozenGeometry(RobloxGlyph.PathData))
+        };
+
+    private static Geometry CreateFrozenGeometry(string pathData)
+    {
+        var geom = Geometry.Parse(pathData);
+        geom.Freeze();
+        return geom;
+    }
+
+    private void UpdateNavTabVisibility(HashSet<string> visibleTokens, string token, bool isVisible)
+    {
+        if (isVisible) visibleTokens.Add(token);
+        else visibleTokens.Remove(token);
+
+        if (token == "Camera")
+        {
+            _isSyncingCameraVisibility = true;
+            try
+            {
+                bool hideCamera = !isVisible;
+                _settings.HideCamera = hideCamera;
+                HideCameraCheck.IsChecked = hideCamera;
+            }
+            finally
+            {
+                _isSyncingCameraVisibility = false;
+            }
+        }
+
+        _settings.VisibleNavTabs = string.Join(",", visibleTokens);
+        ApplySettingsFromUi(persist: false);
+        (Application.Current.MainWindow as MainWindow)?.ApplyNavTabOrderAndVisibility();
+    }
+
     private void PopulateNavTabsSettings()
     {
         if (NavTabsSettingsContainer == null) return;
         InvalidateSearchIndex();
         NavTabsSettingsContainer.Children.Clear();
 
-        var tabMetadata = new Dictionary<string, (string title, string iconPath)>
-        {
-            [NavTabMedia] = (Loc.Get("nav.media"), "M8 0L0 6V8H1V15H4V10H7V15H15V8H16V6L14 4.5V1H11V2.25L8 0ZM9 10H12V13H9V10Z"),
-            ["Secondary"] = (Loc.Get("nav.clipboard"), "M479.66,268.7l-32-151.81C441.48,83.77,417.68,64,384,64H128c-16.8,0-31,4.69-42.1,13.94s-18.37,22.31-21.58,38.89l-32,151.87A16.65,16.65,0,0,0,32,272V384a64,64,0,0,0,64,64H416a64,64,0,0,0,64-64V272A16.65,16.65,0,0,0,479.66,268.7Zm-384-145.4c0-.1,0-.19,0-.28,3.55-18.43,13.81-27,32.29-27H384c18.61,0,28.87,8.55,32.27,26.91,0,.13.05.26.07.39l26.93,127.88a4,4,0,0,1-3.92,4.82H320a15.92,15.92,0,0,0-16,15.82,48,48,0,1,1-96,0A15.92,15.92,0,0,0,192,256H72.65a4,4,0,0,1-3.92-4.82Z"),
-            ["Timer"] = (Loc.Get("nav.controls"), "M6 3H14A4 4 0 0 1 14 11H6A4 4 0 0 1 6 3ZM6 5A2 2 0 1 0 6 9A2 2 0 1 0 6 5ZM6 12H14A4 4 0 0 1 14 20H6A4 4 0 0 1 6 12ZM14 14A2 2 0 1 0 14 18A2 2 0 1 0 14 14Z"),
-            ["Claude"] = (Loc.Get("nav.claude"), ClaudeGlyph.PathData),
-            ["Pi"] = (Loc.Get("nav.pi"), PiGlyph.PathData),
-            ["School"] = (Loc.Get("nav.school"), SchoolGlyph.PathData),
-            ["Roblox"] = (Loc.Get("nav.roblox"), RobloxGlyph.PathData),
-            ["AudioMixer"] = (Loc.Get("nav.audio"), "M13.5 2.5C13.5 2.1 13.05 1.86 12.72 2.09L6.8 6.2H3.5C2.95 6.2 2.5 6.65 2.5 7.2V12.8C2.5 13.35 2.95 13.8 3.5 13.8H6.8L12.72 17.91C13.05 18.14 13.5 17.9 13.5 17.5V2.5ZM16.04 6.05C15.74 5.79 15.28 5.82 15.02 6.13C14.76 6.43 14.79 6.89 15.1 7.15C16.0 7.93 16.5 8.93 16.5 10C16.5 11.07 16.0 12.07 15.1 12.85C14.79 13.11 14.76 13.57 15.02 13.87C15.28 14.18 15.74 14.21 16.04 13.95C17.25 12.91 18 11.5 18 10C18 8.5 17.25 7.09 16.04 6.05Z")
-            ,
-            ["Camera"] = (Loc.Get("nav.camera"), "F0 M28,4 L25,4 L24,2 C23.411,0.837 23.104,0 22,0 L10,0 C8.896,0 8.53,0.954 8,2 L7,4 L4,4 C1.791,4 0,5.791 0,8 L0,24 C0,26.209 1.791,28 4,28 L28,28 C30.209,28 32,26.209 32,24 L32,8 C32,5.791 30.209,4 28,4 Z M16,24 C11.582,24 8,20.418 8,16 C8,11.582 11.582,8 16,8 C20.418,8 24,11.582 24,16 C24,20.418 20.418,24 16,24 Z M16,10 C12.687,10 10,12.687 10,16 C10,19.313 12.687,22 16,22 C19.313,22 22,19.313 22,16 C22,12.687 19.313,10 16,10 L16,10 Z")
-        };
-
-        var orderTokens = ResolveFullNavTabOrder(_settings.NavTabOrder, tabMetadata.Keys);
+        var navTabDefinitions = GetNavTabDefinitions();
+        var orderTokens = ResolveFullNavTabOrder(_settings.NavTabOrder, navTabDefinitions.Keys);
+        var valueTextStyle = (Style)FindResource("ValueText");
+        string dragTooltip = Loc.Get("settings.tab.drag");
 
         var visibleTokens = new HashSet<string>(
             ParseUniqueTabTokens(_settings.VisibleNavTabs),
@@ -187,7 +219,7 @@ public partial class SettingsWindow
         for (int i = 0; i < orderTokens.Count; i++)
         {
             string token = orderTokens[i];
-            if (!tabMetadata.TryGetValue(token, out var meta)) continue;
+            if (!navTabDefinitions.TryGetValue(token, out var def)) continue;
 
             var rowBorder = new Border
             {
@@ -221,39 +253,15 @@ public partial class SettingsWindow
                 VerticalAlignment = VerticalAlignment.Center
             };
             string capturedToken = token;
-            check.Checked += (s, e) =>
-            {
-                visibleTokens.Add(capturedToken);
-                if (capturedToken == "Camera")
-                {
-                    _isSyncingCameraVisibility = true;
-                    try { _settings.HideCamera = false; HideCameraCheck.IsChecked = false; }
-                    finally { _isSyncingCameraVisibility = false; }
-                }
-                _settings.VisibleNavTabs = string.Join(",", visibleTokens);
-                ApplySettingsFromUi(persist: false);
-                (Application.Current.MainWindow as MainWindow)?.ApplyNavTabOrderAndVisibility();
-            };
-            check.Unchecked += (s, e) =>
-            {
-                visibleTokens.Remove(capturedToken);
-                if (capturedToken == "Camera")
-                {
-                    _isSyncingCameraVisibility = true;
-                    try { _settings.HideCamera = true; HideCameraCheck.IsChecked = true; }
-                    finally { _isSyncingCameraVisibility = false; }
-                }
-                _settings.VisibleNavTabs = string.Join(",", visibleTokens);
-                ApplySettingsFromUi(persist: false);
-                (Application.Current.MainWindow as MainWindow)?.ApplyNavTabOrderAndVisibility();
-            };
+            check.Checked += (_, _) => UpdateNavTabVisibility(visibleTokens, capturedToken, isVisible: true);
+            check.Unchecked += (_, _) => UpdateNavTabVisibility(visibleTokens, capturedToken, isVisible: false);
             leftStack.Children.Add(check);
 
             var iconBox = new Viewbox { Width = 14, Height = 14, Stretch = Stretch.Uniform, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
-            iconBox.Child = new System.Windows.Shapes.Path { Data = Geometry.Parse(meta.iconPath), Fill = VNotch.Services.UiPalette.PrimaryBrush };
+            iconBox.Child = new System.Windows.Shapes.Path { Data = def.Icon, Fill = VNotch.Services.UiPalette.PrimaryBrush };
             leftStack.Children.Add(iconBox);
 
-            var titleText = new TextBlock { Text = meta.title, Style = (Style)FindResource("ValueText"), VerticalAlignment = VerticalAlignment.Center };
+            var titleText = new TextBlock { Text = Loc.Get(def.LocKey), Style = valueTextStyle, VerticalAlignment = VerticalAlignment.Center };
             leftStack.Children.Add(titleText);
 
             rowGrid.Children.Add(leftStack);
@@ -269,7 +277,7 @@ public partial class SettingsWindow
                 Cursor = Cursors.SizeNS,
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Right,
-                ToolTip = Loc.Get("settings.tab.drag")
+                ToolTip = dragTooltip
             };
 
             var gripIcon = new Viewbox
@@ -380,14 +388,7 @@ public partial class SettingsWindow
         if (_settingsNavDragRow is Border border)
         {
             border.Background = DraggingBackgroundBrush;
-            border.BorderBrush = DraggingBorderBrush;
-            border.Effect = new DropShadowEffect
-            {
-                Color = Colors.Black,
-                BlurRadius = 16,
-                ShadowDepth = 3,
-                Opacity = 0.55
-            };
+            border.Effect = null;
         }
 
         if (_settingsNavDragRow.RenderTransform is TransformGroup group)
@@ -410,7 +411,7 @@ public partial class SettingsWindow
         Mouse.OverrideCursor = Cursors.SizeNS;
     }
 
-    private void UpdateSettingsNavNeighborDisplacements()
+    internal void UpdateSettingsNavNeighborDisplacements()
     {
         if (_settingsNavDragRow == null || NavTabsSettingsContainer == null) return;
 
@@ -496,7 +497,7 @@ public partial class SettingsWindow
         }
     }
 
-    private void EndSettingsNavRowDrag()
+    internal void EndSettingsNavRowDrag()
     {
         var row = _settingsNavDragRow;
         if (row == null) return;

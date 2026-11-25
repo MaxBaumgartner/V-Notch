@@ -20,7 +20,6 @@ public partial class MainWindow
     private ImageSource? _pendingFlipThumbnail;
     private int _thumbnailSwitchGeneration = 0;
     private int _compactThumbnailAnimationGeneration = 0;
-    private bool _thumbnailShownForCurrentTrack = false;
     private bool _isThumbnailSwitchActive = false;
     private bool _showingEmptyThumbnail;
     private int _emptyThumbnailGeneration;
@@ -97,71 +96,20 @@ public partial class MainWindow
         if (!MotionLabNoMedia) _mediaUpdates.Enqueue(info);
     }
 
-    private void ApplyMediaUpdate(MediaInfo info)
+    internal void ApplyMediaUpdate(MediaInfo info)
     {
         if (!_mediaService.AcceptsMediaUpdate(info)) return;
         bool isThumbnailOnlyUpdate = info.IsThumbnailOnlyUpdate;
         bool enteringMetadataPending = info.IsMetadataPending &&
             (_currentMediaInfo?.IsMetadataPending != true || !MediaUpdateQueue.SameTrack(info, _currentMediaInfo));
-        if (!isThumbnailOnlyUpdate)
-        {
-            if (!info.IsMetadataPending && _currentMediaInfo != null && MediaUpdateQueue.SameTrack(info, _currentMediaInfo))
-            {
-                if (info.Thumbnail == null && _currentMediaInfo.Thumbnail != null)
-                    info.Thumbnail = _currentMediaInfo.Thumbnail;
-                if (string.IsNullOrEmpty(info.YouTubeVideoId) && !string.IsNullOrEmpty(_currentMediaInfo.YouTubeVideoId))
-                    info.YouTubeVideoId = _currentMediaInfo.YouTubeVideoId;
-            }
-            _currentMediaInfo = info;
-            RefreshMediaPinBadges();
-        }
 
-        if (isThumbnailOnlyUpdate)
-        {
-            if (_currentMediaInfo == null || string.IsNullOrEmpty(_currentMediaInfo.CurrentTrack)) return;
-            string incomingTrack = info.CurrentTrack ?? "";
-            string currentTrack = _currentMediaInfo.CurrentTrack ?? "";
-            if (!MediaUpdateQueue.SameTrack(info, _currentMediaInfo))
-            {
-                VNotch.Services.RuntimeLog.Log("MEDIA-THUMB", $"Rejected stale thumbnail: incoming='{incomingTrack}' current='{currentTrack}'");
-                return;
-            }
-            if (!string.IsNullOrEmpty(info.YouTubeVideoId))
-                _currentMediaInfo.YouTubeVideoId = info.YouTubeVideoId;
-            if (info.Thumbnail != null)
-            {
-                _currentMediaInfo.Thumbnail = info.Thumbnail;
-                info.IsAnyMediaPlaying |= _currentMediaInfo.IsAnyMediaPlaying;
-                DynamicIslandColorExtractor.PreloadDynamicIslandPaletteAsync(info.Thumbnail).SafeFireAndForget("PRELOAD-PALETTE");
-            }
-        }
-
-        var displayInfo = info;
-        if (info.IsMetadataPending)
-        {
-            displayInfo = info.Clone();
-            displayInfo.CurrentTrack = "…";
-            displayInfo.CurrentArtist = "";
-            displayInfo.Thumbnail = null;
-            if (enteringMetadataPending)
-            {
-                CancelThumbnailSwitchAnimations();
-                ThumbnailImage.Source = null;
-                CompactThumbnail.Source = null;
-                ThumbnailImage.Visibility = Visibility.Collapsed;
-                ThumbnailFallback.Visibility = Visibility.Visible;
-                ClearBlurredBackgroundSources();
-                _lastBackgroundThumbnail = null;
-                HideMediaBackground();
-            }
-        }
-        var result = _mediaDisplayController.ProcessMediaUpdate(
-            displayInfo, _isExpanded, _isMusicExpanded, _isMusicCompactMode, _isAnimating);
-
-        UpdateSpotifyCanvasPlaybackState(info);
-
-        if (result.Action == MediaDisplayAction.Ignore)
+        if (!TryMergeIncomingMediaState(info, isThumbnailOnlyUpdate))
             return;
+
+        var displayInfo = PrepareDisplayMediaInfo(info, enteringMetadataPending);
+        var result = _mediaDisplayController.ProcessMediaUpdate(displayInfo);
+        UpdateSpotifyCanvasPlaybackState(info);
+        if (result.Action == MediaDisplayAction.Ignore) return;
 
         PresentMusicTrack(info, result.IsNewTrack);
 
@@ -177,10 +125,88 @@ public partial class MainWindow
             ResetEmptyThumbnailAnimation();
         }
 
-        _thumbnailShownForCurrentTrack = _mediaDisplayController.ThumbnailShownForCurrentTrack;
+        UpdateTrackTextAndSyncedSubtitles(info, result, isThumbnailOnlyUpdate, enteringMetadataPending);
+        ApplyMediaArtworkState(info, result);
 
-        string renderedSource = result.RenderedSource;
+        if ((DateTime.UtcNow - _lastMediaActionTime).TotalMilliseconds > 1200 && _isPlaying != info.IsPlaying)
+        {
+            _isPlaying = info.IsPlaying;
+            UpdatePlayPauseIcon();
+        }
 
+        UpdateProgressTracking(info);
+        UpdateMusicCompactMode(info);
+
+        MusicViz.TrackId = info.GetSignature();
+        MusicViz.IsPlaying = info.IsPlaying;
+        if (!result.HasRealTrack && !info.IsAnyMediaPlaying) ResetMusicMotion();
+        else RestoreMusicCanonicalCover();
+    }
+
+    private bool TryMergeIncomingMediaState(MediaInfo info, bool isThumbnailOnlyUpdate)
+    {
+        if (!isThumbnailOnlyUpdate)
+        {
+            if (!info.IsMetadataPending && _currentMediaInfo != null && MediaUpdateQueue.SameTrack(info, _currentMediaInfo))
+            {
+                if (info.Thumbnail == null && _currentMediaInfo.Thumbnail != null)
+                    info.Thumbnail = _currentMediaInfo.Thumbnail;
+                if (string.IsNullOrEmpty(info.YouTubeVideoId) && !string.IsNullOrEmpty(_currentMediaInfo.YouTubeVideoId))
+                    info.YouTubeVideoId = _currentMediaInfo.YouTubeVideoId;
+            }
+            _currentMediaInfo = info;
+            RefreshMediaPinBadges();
+            return true;
+        }
+
+        if (_currentMediaInfo == null || string.IsNullOrEmpty(_currentMediaInfo.CurrentTrack))
+            return false;
+
+        if (!MediaUpdateQueue.SameTrack(info, _currentMediaInfo))
+        {
+            VNotch.Services.RuntimeLog.Log("MEDIA-THUMB", $"Rejected stale thumbnail: incoming='{info.CurrentTrack ?? ""}' current='{_currentMediaInfo.CurrentTrack ?? ""}'");
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(info.YouTubeVideoId))
+            _currentMediaInfo.YouTubeVideoId = info.YouTubeVideoId;
+        if (info.Thumbnail != null)
+        {
+            _currentMediaInfo.Thumbnail = info.Thumbnail;
+            info.IsAnyMediaPlaying |= _currentMediaInfo.IsAnyMediaPlaying;
+            DynamicIslandColorExtractor.PreloadDynamicIslandPaletteAsync(info.Thumbnail).SafeFireAndForget("PRELOAD-PALETTE");
+        }
+        return true;
+    }
+
+    private MediaInfo PrepareDisplayMediaInfo(MediaInfo info, bool enteringMetadataPending)
+    {
+        if (!info.IsMetadataPending) return info;
+
+        var displayInfo = info.Clone();
+        displayInfo.CurrentTrack = "…";
+        displayInfo.CurrentArtist = "";
+        displayInfo.Thumbnail = null;
+        if (enteringMetadataPending)
+        {
+            CancelThumbnailSwitchAnimations();
+            ThumbnailImage.Source = null;
+            CompactThumbnail.Source = null;
+            ThumbnailImage.Visibility = Visibility.Collapsed;
+            ThumbnailFallback.Visibility = Visibility.Visible;
+            ClearBlurredBackgroundSources();
+            _lastBackgroundThumbnail = null;
+            HideMediaBackground();
+        }
+        return displayInfo;
+    }
+
+    private void UpdateTrackTextAndSyncedSubtitles(
+        MediaInfo info,
+        MediaDisplayResult result,
+        bool isThumbnailOnlyUpdate,
+        bool enteringMetadataPending)
+    {
         // Artwork can carry an older snapshot of the primary artist. Only
         // metadata updates may change the text or restart its reveal animation.
         if (!isThumbnailOnlyUpdate)
@@ -200,28 +226,23 @@ public partial class MainWindow
             else
                 CompactTitleMarquee.SetCurrentValue(TextBlock.TextProperty, result.DisplayText.Title);
         }
+
         UpdatePictureInPictureBadge(info.IsPictureInPicture && (result.HasRealTrack || info.IsAnyMediaPlaying));
 
+        string renderedSource = result.RenderedSource;
         bool isSpotify = !info.IsMetadataPending && result.HasRealTrack && MediaPlatformExtensions.ParsePlatform(renderedSource) == MediaPlatform.Spotify;
         bool isYouTube = result.HasRealTrack && (
             MediaPlatformExtensions.ParsePlatform(renderedSource) is MediaPlatform.YouTube or MediaPlatform.Browser ||
             !string.IsNullOrEmpty(info.YouTubeVideoId) ||
             info.Platform == MediaPlatform.YouTube ||
             MediaPlatformExtensions.ParsePlatform(info.CurrentArtist) == MediaPlatform.YouTube ||
-            (info.CurrentArtist != null && info.CurrentArtist.Contains("YouTube", StringComparison.OrdinalIgnoreCase))
-        );
+            (info.CurrentArtist != null && info.CurrentArtist.Contains("YouTube", StringComparison.OrdinalIgnoreCase)));
 
         if (result.IsNewTrack || enteringMetadataPending)
         {
             ClearLyrics();
-            if (isSpotify)
-            {
-                FetchLyricsForTrack(info).SafeFireAndForget("LYRICS");
-            }
-            else if (isYouTube)
-            {
-                FetchSubtitlesForTrack(info).SafeFireAndForget("SUBTITLES");
-            }
+            if (isSpotify) FetchLyricsForTrack(info).SafeFireAndForget("LYRICS");
+            else if (isYouTube) FetchSubtitlesForTrack(info).SafeFireAndForget("SUBTITLES");
         }
         else
         {
@@ -229,187 +250,160 @@ public partial class MainWindow
                 (_syncedTextSource == SyncedTextSource.YouTubeSubtitles ||
                  (_currentLyrics == null && string.IsNullOrEmpty(_lyricsTrackKey))))
                 FetchLyricsForTrack(info).SafeFireAndForget("LYRICS");
+
             if (!isSpotify && isYouTube && !string.IsNullOrEmpty(info.YouTubeVideoId))
             {
-                // Re-fetch if the resolved video ID has changed, or if subtitles were not loaded and lyrics are inactive.
                 string targetKey = $"yt:{info.YouTubeVideoId}";
                 if (targetKey != _lyricsTrackKey || (!_isLyricsActive && (_currentLyrics == null || _currentLyrics.Count == 0)))
-                {
                     FetchSubtitlesForTrack(info).SafeFireAndForget("SUBTITLES");
-                }
             }
         }
 
         if (!isThumbnailOnlyUpdate) PrefetchSpotifyLyrics(info);
         QueueCompactMarqueeRefresh();
 
-        if (!result.HasRealTrack && !info.IsAnyMediaPlaying)
-        {
-            StartTitleShimmer();
-        }
-        else
-        {
-            StopTitleShimmer();
-        }
-
-        if (result.HasRealTrack)
-        {
-            if (result.HasThumbnail && info.Thumbnail != null)
-            {
-                DynamicIslandColorExtractor.PreloadDynamicIslandPaletteAsync(info.Thumbnail).SafeFireAndForget("PRELOAD-PALETTE");
-                AnimateLyricsBlurImageSwitch(info.Thumbnail);
-                if (_isExpanded && (LyricsBlurBackground?.Visibility == Visibility.Visible || ShouldShowMediaBlurBackground))
-                {
-                    FadeInLyricsBlurBackgroundIfActive();
-                }
-
-                switch (result.ThumbnailAction)
-                {
-                    case ThumbnailAction.RevealFirst:
-                        ThumbnailImage.Source = info.Thumbnail;
-                        CompactThumbnail.Source = info.Thumbnail;
-                        if (_isMusicCompactMode || _isExpanded)
-                        {
-                            PlayThumbnailRevealAnimation();
-                        }
-                        break;
-
-                    case ThumbnailAction.AnimateSwitch:
-                        AnimateThumbnailSwitchOnly(info.Thumbnail, force: true);
-                        PlayTrackChangeBounce();
-                        break;
-
-                    case ThumbnailAction.AnimateUpdate:
-                        AnimateThumbnailSwitchOnly(info.Thumbnail, force: false);
-                        break;
-
-                    case ThumbnailAction.None:
-                        break;
-                }
-
-                ThumbnailImage.Visibility = Visibility.Visible;
-                ThumbnailFallback.Visibility = Visibility.Collapsed;
-
-                if (result.NeedsBackgroundUpdate || !_hasVolumeHudMediaTint || _lastDominantColor == Colors.Transparent)
-                {
-                    UpdateMediaBackground(info);
-                    if (_isExpanded)
-                    {
-                        ScheduleMediaBackgroundRecovery();
-                    }
-                }
-            }
-            else if (result.IsNewTrack)
-            {
-                if (!_isExpanded)
-                {
-                    ClearBlurredBackgroundSources();
-                    _lastBackgroundThumbnail = null;
-                    _suppressNextBlurDissolve = true;
-                    if (LyricsBlurImage != null)
-                    {
-                        LyricsBlurImage.BeginAnimation(OpacityProperty, null);
-                        LyricsBlurImage.Source = null;
-                    }
-                    if (LyricsBlurImageNext != null)
-                    {
-                        LyricsBlurImageNext.BeginAnimation(OpacityProperty, null);
-                        LyricsBlurImageNext.Opacity = 0.0;
-                        LyricsBlurImageNext.Source = null;
-                    }
-                }
-                if (info.Platform is MediaPlatform.SoundCloud or MediaPlatform.Browser)
-                {
-                    // Keep the displayed cover only as the outgoing visual layer while
-                    // the player supplies new artwork. Never copy it into the new MediaInfo.
-                    CancelThumbnailSwitchAnimations();
-                }
-                if (ThumbnailImage.Source == null)
-                {
-                    ThumbnailImage.Visibility = Visibility.Collapsed;
-                    ThumbnailFallback.Visibility = Visibility.Visible;
-                }
-                else
-                {
-                    double transitionBlurRadius = _settings.EnableBlurEffects ? 12 : 0;
-                    var transitionBlur = new DoubleAnimation(0, transitionBlurRadius, TimeSpan.FromMilliseconds(300))
-                    {
-                        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                    };
-                    System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(transitionBlur, VNotch.Services.AnimationConfig.TargetFps);
-                    ThumbnailOutBlur.BeginAnimation(BlurEffect.RadiusProperty, transitionBlur);
-                    var compactTransitionBlur = new DoubleAnimation(0, _settings.EnableBlurEffects ? 6 : 0, TimeSpan.FromMilliseconds(300))
-                    {
-                        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                    };
-                    System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(compactTransitionBlur, VNotch.Services.AnimationConfig.TargetFps);
-                    CompactThumbnailOutBlur.BeginAnimation(BlurEffect.RadiusProperty, compactTransitionBlur);
-
-                    if (CompactThumbnail.Source == null)
-                    {
-                        CompactThumbnail.Source = ThumbnailImage.Source;
-                    }
-                    ThumbnailImage.Visibility = Visibility.Visible;
-                    ThumbnailFallback.Visibility = Visibility.Collapsed;
-                }
-            }
-        }
-        else
-        {
-            if (info.IsAnyMediaPlaying)
-            {
-                if (ThumbnailImage.Source != null)
-                {
-                    ThumbnailImage.Visibility = Visibility.Visible;
-                    ThumbnailFallback.Visibility = Visibility.Collapsed;
-                }
-                else
-                {
-                    ThumbnailImage.Visibility = Visibility.Collapsed;
-                    ThumbnailFallback.Visibility = Visibility.Visible;
-                }
-            }
-            else
-            {
-                _thumbnailSwitchGeneration = _mediaDisplayController.ThumbnailSwitchGeneration;
-                info.Thumbnail = null;
-                if (_currentMediaInfo != null)
-                {
-                    _currentMediaInfo.Thumbnail = null;
-                }
-                _lastBackgroundThumbnail = null;
-                TransitionToEmptyThumbnail();
-                HideMediaBackground();
-                ClearLyrics();
-                UpdatePictureInPictureBadge(false, animate: false);
-                Task.Run(async () => { await Task.Delay(450).ConfigureAwait(false); _mediaService.ArtworkService.TrimMemory(compactWorkingSet: true); }).SafeFireAndForget("MEDIA-STOP-TRIM");
-            }
-        }
-
-        if ((DateTime.UtcNow - _lastMediaActionTime).TotalMilliseconds > 1200 && _isPlaying != info.IsPlaying)
-        {
-            _isPlaying = info.IsPlaying;
-            UpdatePlayPauseIcon();
-        }
-
-        UpdateProgressTracking(info);
-        UpdateMusicCompactMode(info);
-
-        MusicViz.TrackId = info?.GetSignature() ?? "";
-        MusicViz.IsPlaying = info?.IsPlaying ?? false;
-        if (!result.HasRealTrack && !info!.IsAnyMediaPlaying) ResetMusicMotion();
-        else RestoreMusicCanonicalCover();
+        if (!result.HasRealTrack && !info.IsAnyMediaPlaying) StartTitleShimmer();
+        else StopTitleShimmer();
     }
-#pragma warning restore S3776
 
-#pragma warning disable S3776 // Complex thumbnail morph animation with multiple easing phases and fallback paths
-    private void AnimateThumbnailSwitchOnly(ImageSource newThumb, bool force = false)
+    private void ApplyMediaArtworkState(MediaInfo info, MediaDisplayResult result)
+    {
+        if (!result.HasRealTrack)
+        {
+            ApplyIdleOrUnidentifiedMediaArtwork(info);
+            return;
+        }
+
+        if (result.HasThumbnail && info.Thumbnail != null)
+        {
+            ApplyPresentMediaThumbnail(info, result);
+            return;
+        }
+
+        if (result.IsNewTrack)
+            ApplyPendingNewTrackThumbnailTransition(info);
+    }
+
+    private void ApplyPresentMediaThumbnail(MediaInfo info, MediaDisplayResult result)
+    {
+        DynamicIslandColorExtractor.PreloadDynamicIslandPaletteAsync(info.Thumbnail!).SafeFireAndForget("PRELOAD-PALETTE");
+        AnimateLyricsBlurImageSwitch(info.Thumbnail);
+        if (_isExpanded && (LyricsBlurBackground?.Visibility == Visibility.Visible || ShouldShowMediaBlurBackground))
+            FadeInLyricsBlurBackgroundIfActive();
+
+        switch (result.ThumbnailAction)
+        {
+            case ThumbnailAction.RevealFirst:
+                ThumbnailImage.Source = info.Thumbnail;
+                CompactThumbnail.Source = info.Thumbnail;
+                if (_isMusicCompactMode || _isExpanded)
+                    PlayThumbnailRevealAnimation();
+                break;
+
+            case ThumbnailAction.AnimateSwitch:
+                AnimateThumbnailSwitchOnly(info.Thumbnail!, force: true);
+                PlayTrackChangeBounce();
+                break;
+
+            case ThumbnailAction.AnimateUpdate:
+                AnimateThumbnailSwitchOnly(info.Thumbnail!, force: false);
+                break;
+
+            case ThumbnailAction.None:
+                break;
+        }
+
+        ThumbnailImage.Visibility = Visibility.Visible;
+        ThumbnailFallback.Visibility = Visibility.Collapsed;
+
+        if (result.NeedsBackgroundUpdate || !_hasVolumeHudMediaTint || _lastDominantColor == Colors.Transparent)
+        {
+            UpdateMediaBackground(info);
+            if (_isExpanded)
+                ScheduleMediaBackgroundRecovery();
+        }
+    }
+
+    private void ApplyPendingNewTrackThumbnailTransition(MediaInfo info)
+    {
+        if (!_isExpanded)
+        {
+            ClearBlurredBackgroundSources();
+            _lastBackgroundThumbnail = null;
+            _suppressNextBlurDissolve = true;
+            if (LyricsBlurImage != null)
+            {
+                LyricsBlurImage.BeginAnimation(OpacityProperty, null);
+                LyricsBlurImage.Source = null;
+            }
+            if (LyricsBlurImageNext != null)
+            {
+                LyricsBlurImageNext.BeginAnimation(OpacityProperty, null);
+                LyricsBlurImageNext.Opacity = 0.0;
+                LyricsBlurImageNext.Source = null;
+            }
+        }
+        if (info.Platform is MediaPlatform.SoundCloud or MediaPlatform.Browser)
+        {
+            // Keep the displayed cover only as the outgoing visual layer while
+            // the player supplies new artwork. Never copy it into the new MediaInfo.
+            CancelThumbnailSwitchAnimations();
+        }
+        if (ThumbnailImage.Source == null)
+        {
+            ThumbnailImage.Visibility = Visibility.Collapsed;
+            ThumbnailFallback.Visibility = Visibility.Visible;
+            return;
+        }
+
+        var transitionBlur = new DoubleAnimation(0, _settings.EnableBlurEffects ? 12 : 0, TimeSpan.FromMilliseconds(300))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(transitionBlur, VNotch.Services.AnimationConfig.TargetFps);
+        ThumbnailOutBlur.BeginAnimation(BlurEffect.RadiusProperty, transitionBlur);
+
+        var compactTransitionBlur = new DoubleAnimation(0, _settings.EnableBlurEffects ? 6 : 0, TimeSpan.FromMilliseconds(300))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        System.Windows.Media.Animation.Timeline.SetDesiredFrameRate(compactTransitionBlur, VNotch.Services.AnimationConfig.TargetFps);
+        CompactThumbnailOutBlur.BeginAnimation(BlurEffect.RadiusProperty, compactTransitionBlur);
+
+        if (CompactThumbnail.Source == null)
+            CompactThumbnail.Source = ThumbnailImage.Source;
+        ThumbnailImage.Visibility = Visibility.Visible;
+        ThumbnailFallback.Visibility = Visibility.Collapsed;
+    }
+
+    private void ApplyIdleOrUnidentifiedMediaArtwork(MediaInfo info)
+    {
+        if (info.IsAnyMediaPlaying)
+        {
+            bool hasSource = ThumbnailImage.Source != null;
+            ThumbnailImage.Visibility = hasSource ? Visibility.Visible : Visibility.Collapsed;
+            ThumbnailFallback.Visibility = hasSource ? Visibility.Collapsed : Visibility.Visible;
+            return;
+        }
+
+        _thumbnailSwitchGeneration = _mediaDisplayController.ThumbnailSwitchGeneration;
+        info.Thumbnail = null;
+        if (_currentMediaInfo != null)
+            _currentMediaInfo.Thumbnail = null;
+        _lastBackgroundThumbnail = null;
+        TransitionToEmptyThumbnail();
+        HideMediaBackground();
+        ClearLyrics();
+        UpdatePictureInPictureBadge(false, animate: false);
+    }
+
+    private bool DeferThumbnailSwitch(ImageSource newThumb, bool force)
     {
         if (AnimationConfig.ReduceMotion && CanSwipeMusic)
         {
             _pendingFlipThumbnail = null;
             CancelThumbnailSwitchAnimations(newThumb);
-            return;
+            return true;
         }
         if (IsCountdownCompletionVisualActive)
         {
@@ -417,14 +411,14 @@ public partial class MainWindow
             CompactThumbnail.Source = newThumb;
             SuppressCompactMediaChromeForCountdownCompletion();
             VNotch.Services.RuntimeLog.Debug(ThumbAnimLogTag, "skipped (countdown completion overlay active)");
-            return;
+            return true;
         }
 
         if (_isAnimating)
         {
             VNotch.Services.RuntimeLog.Debug(ThumbAnimLogTag, () => $"queued-pending (isAnimating=true) force={force}");
             _pendingFlipThumbnail = newThumb;
-            return;
+            return true;
         }
         if (_isThumbnailSwitchActive && !force)
         {
@@ -432,13 +426,19 @@ public partial class MainWindow
                 $"coalesced (artwork transition already active, updating target) force={force}");
             ThumbnailImageNext.Source = newThumb;
             CompactThumbnailNext.Source = newThumb;
-            return;
+            return true;
         }
         if (!force && newThumb != null && ReferenceEquals(ThumbnailImage.Source, newThumb))
         {
             VNotch.Services.RuntimeLog.Debug(ThumbAnimLogTag, "skipped (same reference, no force)");
-            return;
+            return true;
         }
+        return false;
+    }
+
+    private void AnimateThumbnailSwitchOnly(ImageSource newThumb, bool force = false)
+    {
+        if (DeferThumbnailSwitch(newThumb, force)) return;
 
         VNotch.Services.RuntimeLog.Debug(ThumbAnimLogTag, () => $"ARTWORK-TRANSITION-START force={force}");
 
@@ -457,9 +457,6 @@ public partial class MainWindow
         var overlap = TimeSpan.FromMilliseconds(220);
         var totalDur = overlap + inDur;
 
-        double expandedPeakBlur = 0.0;
-        double compactPeakBlur = 0.0;
-
         var quintOut = new QuinticEase { EasingMode = EasingMode.EaseOut };
         var cubicOut = new CubicEase { EasingMode = EasingMode.EaseOut };
         var cubicIn = new CubicEase { EasingMode = EasingMode.EaseIn };
@@ -473,12 +470,12 @@ public partial class MainWindow
         ThumbnailNextScale.ScaleX = 1.05;
         ThumbnailNextScale.ScaleY = 1.05;
         ThumbnailImageNext.Opacity = 0.0;
-        ThumbnailNextBlur.Radius = expandedPeakBlur;
+        ThumbnailNextBlur.Radius = 0;
 
         CompactThumbnailNextScale.ScaleX = 1.05;
         CompactThumbnailNextScale.ScaleY = 1.05;
         CompactThumbnailNext.Opacity = 0.0;
-        CompactThumbnailNextBlur.Radius = compactPeakBlur;
+        CompactThumbnailNextBlur.Radius = 0;
 
         ThumbnailOutScale.ScaleX = 1.0;
         ThumbnailOutScale.ScaleY = 1.0;
@@ -493,26 +490,10 @@ public partial class MainWindow
                                 CompactThumbnailBorder.Opacity < 0.01;
         CompactThumbnail.Opacity = compactWasHidden ? 0.0 : 1.0;
 
-        var outBlurExpanded = new DoubleAnimation(startOutExpandedBlur, expandedPeakBlur, outDur) { EasingFunction = cubicOut };
-        var outBlurCompact = new DoubleAnimation(startOutCompactBlur, compactPeakBlur, outDur) { EasingFunction = cubicOut };
         var outFade = new DoubleAnimation(1.0, 0.0, outDur) { EasingFunction = cubicIn };
         var outScale = new DoubleAnimation(1.0, 0.96, totalDur) { EasingFunction = sineInOut };
-        Timeline.SetDesiredFrameRate(outBlurExpanded, VNotch.Services.AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(outBlurCompact, VNotch.Services.AnimationConfig.TargetFps);
         Timeline.SetDesiredFrameRate(outFade, VNotch.Services.AnimationConfig.TargetFps);
         Timeline.SetDesiredFrameRate(outScale, VNotch.Services.AnimationConfig.TargetFps);
-
-        DoubleAnimationUsingKeyFrames MakeInBlur(double peak)
-        {
-            var a = new DoubleAnimationUsingKeyFrames();
-            a.KeyFrames.Add(new DiscreteDoubleKeyFrame(peak, KeyTime.FromTimeSpan(TimeSpan.Zero)));
-            a.KeyFrames.Add(new DiscreteDoubleKeyFrame(peak, KeyTime.FromTimeSpan(overlap)));
-            a.KeyFrames.Add(new EasingDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(totalDur), quintOut));
-            return a;
-        }
-
-        var inBlurExpanded = MakeInBlur(expandedPeakBlur);
-        var inBlurCompact = MakeInBlur(compactPeakBlur);
 
         var inFade = new DoubleAnimationUsingKeyFrames();
         inFade.KeyFrames.Add(new DiscreteDoubleKeyFrame(0.0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
@@ -524,8 +505,6 @@ public partial class MainWindow
         inScale.KeyFrames.Add(new DiscreteDoubleKeyFrame(1.05, KeyTime.FromTimeSpan(overlap)));
         inScale.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(totalDur), quintOut));
 
-        Timeline.SetDesiredFrameRate(inBlurExpanded, VNotch.Services.AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(inBlurCompact, VNotch.Services.AnimationConfig.TargetFps);
         Timeline.SetDesiredFrameRate(inFade, VNotch.Services.AnimationConfig.TargetFps);
         Timeline.SetDesiredFrameRate(inScale, VNotch.Services.AnimationConfig.TargetFps);
 
@@ -560,27 +539,11 @@ public partial class MainWindow
                 LyricsBlurImage.BeginAnimation(OpacityProperty, null);
                 LyricsBlurImage.Opacity = 1;
             }
-            ThumbnailImageNext.Source = null;
-            CompactThumbnailNext.Source = null;
-            ThumbnailImageNext.Visibility = Visibility.Collapsed;
-            CompactThumbnailNext.Visibility = Visibility.Collapsed;
-
+            ClearThumbnailNextOverlay();
             ThumbnailImage.Opacity = 1.0;
             CompactThumbnail.Opacity = 1.0;
-            ThumbnailImageNext.Opacity = 0.0;
-            CompactThumbnailNext.Opacity = 0.0;
-            ThumbnailOutScale.ScaleX = 1.0;
-            ThumbnailOutScale.ScaleY = 1.0;
-            CompactThumbnailOutScale.ScaleX = 1.0;
-            CompactThumbnailOutScale.ScaleY = 1.0;
-            ThumbnailNextScale.ScaleX = 1.0;
-            ThumbnailNextScale.ScaleY = 1.0;
-            CompactThumbnailNextScale.ScaleX = 1.0;
-            CompactThumbnailNextScale.ScaleY = 1.0;
-            ThumbnailOutBlur.Radius = 0.0;
-            ThumbnailNextBlur.Radius = 0.0;
-            CompactThumbnailOutBlur.Radius = 0.0;
-            CompactThumbnailNextBlur.Radius = 0.0;
+            ResetExpandedThumbnailTransforms();
+            ResetCompactThumbnailTransforms();
 
             RestoreMusicCanonicalCover();
 
@@ -594,28 +557,20 @@ public partial class MainWindow
         ThumbnailImage.BeginAnimation(OpacityProperty, outFade);
         ThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleXProperty, outScale);
         ThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleYProperty, outScale);
-        _ = outBlurExpanded;
         ThumbnailImageNext.BeginAnimation(OpacityProperty, inFade);
         ThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleXProperty, inScale);
         ThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleYProperty, inScale);
-        _ = inBlurExpanded;
 
         CompactThumbnail.BeginAnimation(OpacityProperty, outFade);
         CompactThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleXProperty, outScale);
         CompactThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleYProperty, outScale);
-        _ = outBlurCompact;
         CompactThumbnailNext.BeginAnimation(OpacityProperty, inFade);
         CompactThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleXProperty, inScale);
         CompactThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleYProperty, inScale);
-        _ = inBlurCompact;
     }
-#pragma warning restore S3776
 
-    private void CancelThumbnailSwitchAnimations(ImageSource? targetThumb = null)
+    private void CancelExpandedThumbnailAnimations()
     {
-        ++_thumbnailSwitchGeneration;
-        _isThumbnailSwitchActive = false;
-
         ThumbnailImage.BeginAnimation(OpacityProperty, null);
         ThumbnailImage.BeginAnimation(Image.SourceProperty, null);
         ThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
@@ -626,6 +581,61 @@ public partial class MainWindow
         ThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         ThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         ThumbnailNextBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
+    }
+
+    private void ResetExpandedThumbnailTransforms()
+    {
+        ThumbnailOutScale.ScaleX = 1.0;
+        ThumbnailOutScale.ScaleY = 1.0;
+        ThumbnailNextScale.ScaleX = 1.0;
+        ThumbnailNextScale.ScaleY = 1.0;
+        ThumbnailOutBlur.Radius = 0.0;
+        ThumbnailNextBlur.Radius = 0.0;
+    }
+
+    private void ResetCompactThumbnailTransforms()
+    {
+        CompactThumbnailOutScale.ScaleX = 1.0;
+        CompactThumbnailOutScale.ScaleY = 1.0;
+        CompactThumbnailNextScale.ScaleX = 1.0;
+        CompactThumbnailNextScale.ScaleY = 1.0;
+        CompactThumbnailOutBlur.Radius = 0.0;
+        CompactThumbnailNextBlur.Radius = 0.0;
+    }
+
+    private void ClearThumbnailNextOverlay()
+    {
+        ThumbnailImageNext.Source = null;
+        CompactThumbnailNext.Source = null;
+        ThumbnailImageNext.Visibility = Visibility.Collapsed;
+        CompactThumbnailNext.Visibility = Visibility.Collapsed;
+        ThumbnailImageNext.Opacity = 0.0;
+        CompactThumbnailNext.Opacity = 0.0;
+    }
+
+    private void ResolveAndCommitActiveThumbnail(ImageSource? targetThumb)
+    {
+        var overlayTarget = ThumbnailImageNext.Source ?? CompactThumbnailNext.Source;
+        var resolvedThumb = targetThumb ?? overlayTarget
+                            ?? ThumbnailImage.Source ?? CompactThumbnail.Source;
+        if (!_showingEmptyThumbnail && resolvedThumb != null)
+        {
+            ThumbnailImage.Source = resolvedThumb;
+            CompactThumbnail.Source = resolvedThumb;
+            ThumbnailImage.Visibility = Visibility.Visible;
+            ThumbnailFallback.Visibility = Visibility.Collapsed;
+        }
+
+        ClearThumbnailNextOverlay();
+        ThumbnailImage.Opacity = 1.0;
+    }
+
+    private void CancelThumbnailSwitchAnimations(ImageSource? targetThumb = null)
+    {
+        ++_thumbnailSwitchGeneration;
+        _isThumbnailSwitchActive = false;
+
+        CancelExpandedThumbnailAnimations();
 
         CompactThumbnail.BeginAnimation(OpacityProperty, null);
         CompactThumbnail.BeginAnimation(Image.SourceProperty, null);
@@ -638,37 +648,9 @@ public partial class MainWindow
         CompactThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         CompactThumbnailNextBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
 
-        ThumbnailOutScale.ScaleX = 1.0;
-        ThumbnailOutScale.ScaleY = 1.0;
-        CompactThumbnailOutScale.ScaleX = 1.0;
-        CompactThumbnailOutScale.ScaleY = 1.0;
-        ThumbnailNextScale.ScaleX = 1.0;
-        ThumbnailNextScale.ScaleY = 1.0;
-        CompactThumbnailNextScale.ScaleX = 1.0;
-        CompactThumbnailNextScale.ScaleY = 1.0;
-        ThumbnailOutBlur.Radius = 0.0;
-        ThumbnailNextBlur.Radius = 0.0;
-        CompactThumbnailOutBlur.Radius = 0.0;
-        CompactThumbnailNextBlur.Radius = 0.0;
-
-        var overlayTarget = ThumbnailImageNext.Source ?? CompactThumbnailNext.Source;
-        var resolvedThumb = targetThumb ?? overlayTarget
-                            ?? ThumbnailImage.Source ?? CompactThumbnail.Source;
-        if (!_showingEmptyThumbnail && resolvedThumb != null)
-        {
-            ThumbnailImage.Source = resolvedThumb;
-            CompactThumbnail.Source = resolvedThumb;
-            ThumbnailImage.Visibility = Visibility.Visible;
-            ThumbnailFallback.Visibility = Visibility.Collapsed;
-        }
-
-        ThumbnailImageNext.Source = null;
-        CompactThumbnailNext.Source = null;
-        ThumbnailImageNext.Visibility = Visibility.Collapsed;
-        CompactThumbnailNext.Visibility = Visibility.Collapsed;
-        ThumbnailImageNext.Opacity = 0.0;
-        CompactThumbnailNext.Opacity = 0.0;
-        ThumbnailImage.Opacity = 1.0;
+        ResetExpandedThumbnailTransforms();
+        ResetCompactThumbnailTransforms();
+        ResolveAndCommitActiveThumbnail(targetThumb);
         CompactThumbnail.Opacity = 1.0;
     }
 
@@ -677,17 +659,7 @@ public partial class MainWindow
         ++_thumbnailSwitchGeneration;
         _isThumbnailSwitchActive = false;
 
-        ThumbnailImage.BeginAnimation(OpacityProperty, null);
-        ThumbnailImage.BeginAnimation(Image.SourceProperty, null);
-        ThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        ThumbnailOutScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        ThumbnailOutBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-        ThumbnailImageNext.BeginAnimation(OpacityProperty, null);
-        ThumbnailImageNext.BeginAnimation(Image.SourceProperty, null);
-        ThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        ThumbnailNextScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        ThumbnailNextBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-
+        CancelExpandedThumbnailAnimations();
         CompactThumbnail.BeginAnimation(Image.SourceProperty, null);
 
         double compactOutScaleX = CompactThumbnailOutScale.ScaleX;
@@ -710,31 +682,8 @@ public partial class MainWindow
         CompactThumbnail.BeginAnimation(OpacityProperty, null);
         CompactThumbnail.Opacity = compactThumbOpacity;
 
-        ThumbnailOutScale.ScaleX = 1.0;
-        ThumbnailOutScale.ScaleY = 1.0;
-        ThumbnailNextScale.ScaleX = 1.0;
-        ThumbnailNextScale.ScaleY = 1.0;
-        ThumbnailOutBlur.Radius = 0.0;
-        ThumbnailNextBlur.Radius = 0.0;
-
-        var overlayTarget = ThumbnailImageNext.Source ?? CompactThumbnailNext.Source;
-        var resolvedThumb = overlayTarget
-                            ?? ThumbnailImage.Source ?? CompactThumbnail.Source;
-        if (!_showingEmptyThumbnail && resolvedThumb != null)
-        {
-            ThumbnailImage.Source = resolvedThumb;
-            CompactThumbnail.Source = resolvedThumb;
-            ThumbnailImage.Visibility = Visibility.Visible;
-            ThumbnailFallback.Visibility = Visibility.Collapsed;
-        }
-
-        ThumbnailImageNext.Source = null;
-        CompactThumbnailNext.Source = null;
-        ThumbnailImageNext.Visibility = Visibility.Collapsed;
-        CompactThumbnailNext.Visibility = Visibility.Collapsed;
-        ThumbnailImageNext.Opacity = 0.0;
-        CompactThumbnailNext.Opacity = 0.0;
-        ThumbnailImage.Opacity = 1.0;
+        ResetExpandedThumbnailTransforms();
+        ResolveAndCommitActiveThumbnail(null);
     }
 
     private void ResetCompactThumbnailNextLayer()
@@ -851,116 +800,111 @@ public partial class MainWindow
 
     private void CancelPendingMusicCompactExit() => _musicCompactExitDebounceTimer?.Stop();
 
-#pragma warning disable S3776 // Complex multi-state music compact visual mode transition
-    private void ApplyMusicCompactMode(bool shouldBeCompact, MediaInfo? info)
+    private void UpdateCompactVisualizer(MediaInfo? info)
     {
-        if (shouldBeCompact == _isMusicCompactMode)
+        if (info != null && !_isClipboardPeekActive)
         {
-            if (shouldBeCompact)
+            MusicViz.TrackId = info.GetSignature();
+            MusicViz.IsPlaying = info.IsPlaying;
+
+            if (info.IsPlaying && !_isVolumeIndicatorActive)
             {
-                if (info?.Thumbnail != null && !_isClipboardPeekActive && _mediaDisplayController.ShouldAnimateCompactThumbnail(info))
-                {
-                    AnimateThumbnailSwitchOnly(info.Thumbnail);
-                    PlayTrackChangeBounce();
-                }
-
-                if (info != null && !_isClipboardPeekActive)
-                {
-                    MusicViz.TrackId = info.GetSignature();
-                    MusicViz.IsPlaying = info.IsPlaying;
-
-                    if (info.IsPlaying && !_isVolumeIndicatorActive)
-                    {
-                        ShowMusicVisualizer(duration: _dur200);
-                    }
-                }
+                ShowMusicVisualizer(duration: _dur200);
             }
-            return;
         }
+    }
 
-        if (!_isExpanded)
+    private void RevealCompactArtwork(MediaInfo? info)
+    {
+        if (info?.Thumbnail != null && !_isClipboardPeekActive)
         {
-            if (_isBluetoothNotificationVisible || _isChargingNotificationVisible || _isClaudeNotificationVisible || _appPillToken != 0 || _isAppNotificationBannerVisible || _isGreetingActive || _isAnimating)
+            bool wasHidden = CompactThumbnailBorder.Visibility != Visibility.Visible ||
+                             CompactThumbnailBorder.Opacity < 0.01;
+
+            if (wasHidden)
             {
-                return;
-            }
-
-            _isMusicCompactMode = shouldBeCompact;
-            _collapsedWidth = GetCollapsedWidth();
-            if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: true);
-
-            VNotch.Services.RuntimeLog.Log("NOTCH-WIDTH",
-                $"UpdateMusicCompactMode -> animating to _collapsedWidth={_collapsedWidth}, shouldBeCompact={shouldBeCompact}, _isExpanded={_isExpanded}");
-
-            // The pill pops wider when music arrives and settles back calmer when it leaves.
-            VNotch.Services.Motion.To(NotchBorder, WidthProperty, _collapsedWidth,
-                shouldBeCompact ? VNotch.Services.Motion.Pop : VNotch.Services.Motion.PopBack);
-
-            if (_isMusicCompactMode)
-            {
-                if (info?.Thumbnail != null && !_isClipboardPeekActive)
-                {
-                    bool wasHidden = CompactThumbnailBorder.Visibility != Visibility.Visible ||
-                                     CompactThumbnailBorder.Opacity < 0.01;
-
-                    if (wasHidden)
-                    {
-                        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-                        CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-                        CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
-                        CompactThumbnailBorder.Visibility = Visibility.Visible;
-                        CompactThumbnail.Source = info.Thumbnail;
-                        ThumbnailImage.Source = info.Thumbnail;
-                        PlayThumbnailRevealAnimation();
-                    }
-                    else
-                    {
-                        AnimateThumbnailSwitchOnly(info.Thumbnail);
-                    }
-                    _thumbnailShownForCurrentTrack = true;
-                }
-                else
-                {
-                    ResetCompactThumbnailRestingState();
-                }
-
-                if (info != null && !_isClipboardPeekActive)
-                {
-                    MusicViz.TrackId = info.GetSignature();
-                    MusicViz.IsPlaying = info.IsPlaying;
-
-                    if (info.IsPlaying && !_isVolumeIndicatorActive)
-                    {
-                        ShowMusicVisualizer(duration: _dur200);
-                    }
-                }
-
-                if (!_isClipboardPeekActive)
-                {
-                    FadeSwitch(CollapsedContent, MusicCompactContent);
-                }
+                CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                CompactThumbnailScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                CompactThumbnailBorder.BeginAnimation(OpacityProperty, null);
+                CompactThumbnailBorder.Visibility = Visibility.Visible;
+                CompactThumbnail.Source = info.Thumbnail;
+                ThumbnailImage.Source = info.Thumbnail;
+                PlayThumbnailRevealAnimation();
             }
             else
             {
-                PlayCompactThumbnailExitAnimation(() =>
-                {
-                    if (_isMusicCompactMode) return;
-                    FadeSwitch(MusicCompactContent, CollapsedContent);
-                });
+                AnimateThumbnailSwitchOnly(info.Thumbnail);
             }
         }
         else
         {
-            _isMusicCompactMode = shouldBeCompact;
-            _collapsedWidth = GetCollapsedWidth();
-            if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: true);
+            ResetCompactThumbnailRestingState();
+        }
+    }
+
+    private void ApplyMusicCompactMode(bool shouldBeCompact, MediaInfo? info)
+    {
+        if (shouldBeCompact == _isMusicCompactMode)
+        {
+            if (shouldBeCompact) RefreshCompactMusic(info);
+            return;
+        }
+
+        if (!_isExpanded && (_isBluetoothNotificationVisible || _isChargingNotificationVisible ||
+            _isClaudeNotificationVisible || _appPillToken != 0 || _isAppNotificationBannerVisible ||
+            _isGreetingActive || _isAnimating)) return;
+        _isMusicCompactMode = shouldBeCompact;
+        _collapsedWidth = GetCollapsedWidth();
+        if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: true);
+        if (_isExpanded)
+        {
             MusicCompactContent.Visibility = Visibility.Collapsed;
             MusicCompactContent.Opacity = 0;
             CollapsedContent.Visibility = Visibility.Collapsed;
             CollapsedContent.Opacity = 0;
+            return;
+        }
+        AnimateCompactMusicMode(info);
+    }
+
+    private void RefreshCompactMusic(MediaInfo? info)
+    {
+        if (info?.Thumbnail != null && !_isClipboardPeekActive && _mediaDisplayController.ShouldAnimateCompactThumbnail(info))
+        {
+            AnimateThumbnailSwitchOnly(info.Thumbnail);
+            PlayTrackChangeBounce();
+        }
+
+        UpdateCompactVisualizer(info);
+    }
+
+    private void AnimateCompactMusicMode(MediaInfo? info)
+    {
+        VNotch.Services.RuntimeLog.Log("NOTCH-WIDTH",
+            $"UpdateMusicCompactMode -> animating to _collapsedWidth={_collapsedWidth}, shouldBeCompact={_isMusicCompactMode}, _isExpanded={_isExpanded}");
+
+        // The pill pops wider when music arrives and settles back calmer when it leaves.
+        Motion.To(NotchBorder, WidthProperty, _collapsedWidth, _isMusicCompactMode ? Motion.Pop : Motion.PopBack);
+
+        if (_isMusicCompactMode)
+        {
+            RevealCompactArtwork(info);
+            UpdateCompactVisualizer(info);
+
+            if (!_isClipboardPeekActive)
+            {
+                FadeSwitch(CollapsedContent, MusicCompactContent);
+            }
+        }
+        else
+        {
+            PlayCompactThumbnailExitAnimation(() =>
+            {
+                if (_isMusicCompactMode) return;
+                FadeSwitch(MusicCompactContent, CollapsedContent);
+            });
         }
     }
-#pragma warning restore S3776
 
     #endregion
 

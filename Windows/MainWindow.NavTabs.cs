@@ -10,6 +10,7 @@ using System.Windows.Media.Effects;
 using VNotch.Models;
 using VNotch.Services;
 using static VNotch.Services.AnimationPrimitives;
+using static VNotch.Services.VNotchNative;
 
 namespace VNotch;
 
@@ -64,22 +65,6 @@ public partial class MainWindow
         }
         _navSelectionView = target;
     }
-
-    [LibraryImport("VNotch.Native")]
-    private static partial int vn_nav_tabs_calculate_target_slot_hysteresis(
-        int current_target,
-        double visual_pos,
-        double pitch,
-        int total_slots,
-        out int out_slot);
-
-    [LibraryImport("VNotch.Native")]
-    private static partial int vn_nav_tabs_calculate_neighbor_offset(
-        int index,
-        int initial_slot,
-        int target_slot,
-        double pitch,
-        out double out_offset);
 
     private static TranslateTransform? FindTranslateTransform(TransformGroup group)
     {
@@ -440,7 +425,8 @@ public partial class MainWindow
             (_isPiView && item == PiIconButton) ||
             (_isSchoolView && item == SchoolIconButton) ||
             (_isRobloxView && item == RobloxIconButton) ||
-            (!_isAudioView && !_isTimerView && !_isSecondaryView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isRobloxView && item == HomeIconButton))
+            (_isAiUsageView && item == AiUsageIconButton) ||
+            (!_isAudioView && !_isTimerView && !_isSecondaryView && !_isCameraView && !_isAiUsageView && !_isClaudeView && !_isPiView && !_isSchoolView && !_isRobloxView && item == HomeIconButton))
         {
             targetOpacity = 1.0;
         }
@@ -608,6 +594,7 @@ public partial class MainWindow
         if ((_isAudioView && !visibleTokens.Contains("AudioMixer")) ||
             (_isTimerView && !visibleTokens.Contains("Timer")) ||
             (_isSecondaryView && !visibleTokens.Contains("Secondary")) || (_isCameraView && !visibleTokens.Contains("Camera")) ||
+            (_isAiUsageView && !visibleTokens.Contains("AiUsage")) ||
             (_isClaudeView && !visibleTokens.Contains("Claude")) ||
             (_isPiView && !visibleTokens.Contains("Pi")) ||
             (_isSchoolView && !visibleTokens.Contains("School")) ||

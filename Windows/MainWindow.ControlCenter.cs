@@ -62,6 +62,7 @@ public partial class MainWindow
         ClaudeCenter.AttachSoundSwitch(() => _settings?.PlayClaudeSounds ?? false, SetClaudeSounds);
         ClaudeCenter.AttachNotchSwitch(() => _settings?.ShowClaudeInNotch ?? true, SetClaudeInNotch);
         InitializeCodexJobs();
+        InitializeScriptJobs();
 
         _claudeSweepTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = ClaudeSweepInterval };
         _claudeSweepTimer.Tick += (_, _) =>
@@ -85,10 +86,13 @@ public partial class MainWindow
 
     private void DisposeControlCenter()
     {
+        ResetAskSheet();
+        _askSettledTimer?.Stop();
         _claudeSweepTimer?.Stop();
         _claudeNotificationTimer?.Stop();
         _claudeAttentionRetry?.Stop();
         DisposeCodexJobs();
+        DisposeScriptJobs();
         DisposeAppNotifications();
         DisposePi();
         DisposeUpstreamWatch();
@@ -136,6 +140,7 @@ public partial class MainWindow
     private void OpenClaudeTabForAttention()
     {
         if (_cleanedUp || _isClaudeView || _settings?.ShowClaudeInNotch == false) return;
+        if (_askSheet != null || _askSettledTimer?.IsEnabled == true) return;
         // A tool to allow or a question goes to the pill in the closed notch; a plan to read opens the tab.
         if (NewestAskForPill() is { } ask && (IsAskPillShown || TryShowClaudeAskPill(ask)))
         {
@@ -229,9 +234,9 @@ public partial class MainWindow
     /// <summary>Grows or shrinks the open tab when sessions or requests come and go.</summary>
     private void SettleClaudeNotchToFit()
     {
-        if (!_isClaudeView || _isAnimating || _cleanedUp) return;
+        if (_transitionCoordinator.TargetView != NotchView.Claude || _cleanedUp) return;
         _claudeViewHeight = MeasureClaudeViewHeight();
-        SettleNotchToContent(ClaudeContent, _claudeViewHeight, () => _isClaudeView);
+        SettleNotchToContent(ClaudeContent, _claudeViewHeight, () => _transitionCoordinator.TargetView == NotchView.Claude);
     }
 
     #endregion
@@ -287,6 +292,11 @@ public partial class MainWindow
     private bool TryHandleNotificationTap()
     {
         if (!_isClaudeNotificationVisible) return false;
+        if (IsScriptJobPillShown)
+        {
+            DismissScriptJobPill(openLog: _scriptJobPill?.State == ScriptJobState.Failed);
+            return true;
+        }
         if (IsCodexJobPillShown)
         {
             _transitionCoordinator.RequestView(NotchView.Claude, "CodexJobPill");
@@ -314,15 +324,21 @@ public partial class MainWindow
         => ShowCompactNotification(title, status, appIcon, isClaude, tap, doneSessionId, glyph, duration, accent);
 
     private bool ShowCompactNotification(string title, string status, ImageSource? appIcon, bool isClaude, Func<bool>? tap,
-        string? doneSessionId, string? glyph, TimeSpan? duration, Brush? accent, string? jobId = null)
+        string? doneSessionId, string? glyph, TimeSpan? duration, Brush? accent, string? jobId = null,
+        ScriptJobStatus? scriptJob = null)
     {
         if (_allowancePill || _cleanedUp || _isGreetingActive || _isAnimating || _isExpanded || _isMusicExpanded || !CanShowClaudeAttention) return false;
         bool replacing = _isClaudeNotificationVisible &&
             (ClaudeNotificationTitle.Text != title || ClaudeNotificationStatus.Text != status ||
              NotificationAppIcon.Source != appIcon || _isClaudePill != isClaude || NotificationBellIcon.Text != (glyph ?? NotificationBellGlyph) ||
-             _codexPillId != jobId);
+             _codexPillId != jobId || _scriptJobPill != scriptJob);
+        ResetAskSheet();
+        _askSettledTimer?.Stop();
+        if (ClaudeNotificationStatus.Foreground == AskAllowBrush || ClaudeNotificationStatus.Foreground == AskDenyBrush)
+            ClaudeNotificationStatus.Foreground = DefaultPillStatus;
         if (replacing) KeepCompactDeparture(ClaudeNotification);
         if (jobId == null && IsCodexJobPillShown) ClearCodexPill();
+        _scriptJobPill = scriptJob;
         _isClaudePeek = false;
         _isCopiedPillShown = false;
         _askRequest = null;
@@ -333,7 +349,7 @@ public partial class MainWindow
             ToolTipService.SetIsEnabled(ClaudeNotificationStatus, false);
         }
         ClaudeNotificationTitle.Text = title;
-        ClaudeNotificationTitle.Foreground = jobId != null ? AllowanceWhite : accent ?? UiPalette.PrimaryBrush;
+        ClaudeNotificationTitle.Foreground = jobId != null || scriptJob != null ? AllowanceWhite : accent ?? UiPalette.PrimaryBrush;
         NotificationBellIcon.Foreground = accent ?? UiPalette.PrimaryBrush;
         ClaudeNotificationStatus.Text = status;
         NotificationClaudeIcon.Visibility = isClaude ? Visibility.Visible : Visibility.Collapsed;
@@ -348,6 +364,7 @@ public partial class MainWindow
             if (!TryAcquireCompactSlot(CompactPillSlot.Claude, out int token))
             {
                 if (jobId != null) ClearCodexPill();
+                _scriptJobPill = null;
                 return false;
             }
             _claudeNotificationToken = token;
@@ -360,24 +377,30 @@ public partial class MainWindow
 
         _claudeNotificationTimer ??= CreateClaudeNotificationTimer();
         _claudeNotificationTimer.Stop();
-        if (jobId != null && duration == null) return true;
+        if ((jobId != null || scriptJob != null) && duration == null) return true;
         _claudeNotificationTimer.Interval = duration ?? (isClaude ? ClaudeNotificationDuration : AppNotificationDuration);
         _claudeNotificationTimer.Start();
         return true;
     }
 
     private const double PillMaxWidth = 460;
+    private double NotificationPillMaxWidth => Math.Max(PillMaxWidth, _collapsedWidth + 28);
     private VNotch.Presenters.CompactSurfaceAttachment? _claudePillAttachment;
 
     /// <summary>Widens the closed notch until name and status read in full; it narrows again with the pill.</summary>
     private void FitNotchToPill() => FitNotificationPill(0, 0);
 
-    private void FitNotificationPill(double extraHeight, double minimumWidth)
+    private double GetNotificationPillWidth(double minimumWidth = 0)
     {
         NotchPillRow.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var margin = ClaudeNotification.Margin;
         double wanted = Math.Ceiling(NotchPillRow.DesiredSize.Width + margin.Left + margin.Right + 28);
-        double target = Math.Clamp(Math.Max(wanted, minimumWidth), _collapsedWidth + 28, Math.Max(PillMaxWidth, _collapsedWidth + 28));
+        return Math.Clamp(Math.Max(wanted, minimumWidth), _collapsedWidth + 28, NotificationPillMaxWidth);
+    }
+
+    private void FitNotificationPill(double extraHeight, double minimumWidth)
+    {
+        double target = GetNotificationPillWidth(minimumWidth);
         _notchShellPresenter?.CancelCurrentAnimation();
         _claudePillAttachment ??= new(NotchBorder, ClaudeNotification, () => new Size(_collapsedWidth, _collapsedHeight));
         _claudePillAttachment.MoveTo(target, _collapsedHeight + extraHeight, Motion.Pop, shown: true);
@@ -411,7 +434,7 @@ public partial class MainWindow
         Motion.Stop(ClaudeNotification, OpacityProperty, 1);
         Motion.Stop(ClaudeNotificationTranslate, TranslateTransform.YProperty, 0);
 
-        if (!IsCodexJobPillShown)
+        if (!IsJobPillShown)
         {
             Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
             Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
@@ -421,7 +444,10 @@ public partial class MainWindow
     private void AnimateClaudeNotificationOut()
     {
         if (!_isClaudeNotificationVisible) return;
+        ResetAskSheet();
+        _askSettledTimer?.Stop();
         ClearCodexPill();
+        _scriptJobPill = null;
         int token = _claudeNotificationToken;
         _isClaudePeek = false;
         _isCopiedPillShown = false;
@@ -453,7 +479,10 @@ public partial class MainWindow
     /// <summary>The notch opens or another alert takes the pill: drop it without an exit animation.</summary>
     private void CancelClaudeNotificationImmediate()
     {
+        ResetAskSheet();
+        _askSettledTimer?.Stop();
         ClearCodexPill();
+        _scriptJobPill = null;
         _claudeNotificationTimer?.Stop();
         _claudeDoneShownId = null;
         _isCopiedPillShown = false;

@@ -33,7 +33,7 @@ internal sealed class CodexUsageClient : IDisposable
 
     internal CodexUsageClient(HttpMessageHandler? handler = null, string? codexDirectory = null, bool useRolloutFallback = true)
     {
-        _http = new HttpClient(handler ?? new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(10) };
+        _http = new HttpClient(handler ?? NetworkPrivacy.CreateHttpHandler(allowAutoRedirect: true)) { Timeout = TimeSpan.FromSeconds(10) };
         _directory = codexDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
         _useRolloutFallback = useRolloutFallback;
     }

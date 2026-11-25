@@ -1,8 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Windows.Interop;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Interop;
 using System.Windows.Threading;
 
 namespace VNotch.Services;
@@ -33,6 +33,9 @@ public static partial class InputMonitorService
     [LibraryImport("VNotch.Native.dll")]
     private static partial int vn_input_read_left_click(long rawInput, out byte leftDown, out int x, out int y);
 
+    [LibraryImport("user32.dll")]
+    private static partial int GetMessageTime();
+
     [LibraryImport("VNotch.Native.dll")]
     private static partial int vn_input_monitor_decode_message_position(
         uint packed,
@@ -40,11 +43,14 @@ public static partial class InputMonitorService
         out int outY);
 
     private static HwndSource? _source;
+    private static HwndSource? _primarySource;
+    private static readonly List<Subscription> Subscriptions = [];
     private static Dispatcher? _inputDispatcher;
     private static HwndSource? _inputWindow;
     private static int _generation;
     internal static bool IsStarted => _source != null;
-    internal static int InputThreadId { get; private set; }
+    internal static Dispatcher? InputDispatcher => _inputDispatcher;
+    internal static Action? InitializeWorkerThread { private get; set; }
 
     public static event EventHandler<POINT>? MouseActionTriggered;
 
@@ -52,16 +58,44 @@ public static partial class InputMonitorService
     {
         if (windowHandle == IntPtr.Zero) return;
         var source = HwndSource.FromHwnd(windowHandle);
-        if (source == null || source.IsDisposed || ReferenceEquals(source, _source)) return;
+        if (source == null || source.IsDisposed) return;
         source.Dispatcher.VerifyAccess();
-        Stop();
+        _primarySource = source;
+        UpdateSource();
+    }
+
+    // Independent consumers keep the one process-wide raw-input registration
+    // alive without taking ownership away from the notch's Start/Stop calls.
+    internal static IDisposable Subscribe(IntPtr windowHandle, Action<POINT, uint> onPress)
+    {
+        var source = HwndSource.FromHwnd(windowHandle);
+        if (source == null || source.IsDisposed) throw new InvalidOperationException("A live window is required.");
+        source.Dispatcher.VerifyAccess();
+        var subscription = new Subscription(source, onPress);
+        Subscriptions.Add(subscription);
+        UpdateSource();
+        return subscription;
+    }
+
+    private static void UpdateSource()
+    {
+        var source = _primarySource is { IsDisposed: false } ? _primarySource
+            : Subscriptions.Select(subscription => subscription.Source).FirstOrDefault(candidate => !candidate.IsDisposed);
+        if (ReferenceEquals(source, _source) && (source == null || _inputDispatcher != null)) return;
+        StopCore();
+        if (source != null) StartCore(source);
+    }
+
+    private static void StartCore(HwndSource source)
+    {
         int generation = ++_generation;
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
-            var dispatcher = Dispatcher.CurrentDispatcher;
             try
             {
+                InitializeWorkerThread?.Invoke();
+                var dispatcher = Dispatcher.CurrentDispatcher;
                 using var input = new HwndSource(new HwndSourceParameters("VNotch input worker")
                 { ParentWindow = new IntPtr(-3), Width = 0, Height = 0, WindowStyle = 0 });
                 input.AddHook((IntPtr hwnd, int message, IntPtr wp, IntPtr lp, ref bool handled) =>
@@ -71,10 +105,11 @@ public static partial class InputMonitorService
                         !source.Dispatcher.HasShutdownStarted)
                     {
                         // Movement and wheel packets never wake the WPF UI dispatcher.
+                        uint timestamp = unchecked((uint)GetMessageTime());
                         source.Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
                         {
                             if (generation == _generation && ReferenceEquals(_source, source))
-                                MouseActionTriggered?.Invoke(null, new POINT { x = x, y = y });
+                                DispatchClick(new POINT { x = x, y = y }, timestamp);
                         });
                     }
                     return IntPtr.Zero; // DefWindowProc still owns raw-input cleanup.
@@ -87,9 +122,14 @@ public static partial class InputMonitorService
                 }
                 _inputDispatcher = dispatcher;
                 _inputWindow = input;
-                InputThreadId = Environment.CurrentManagedThreadId;
                 ready.TrySetResult(true);
-                Dispatcher.Run();
+                try { Dispatcher.Run(); }
+                finally
+                {
+                    if (!dispatcher.HasShutdownStarted) dispatcher.InvokeShutdown();
+                    Interlocked.CompareExchange(ref _inputDispatcher, null, dispatcher);
+                    Interlocked.CompareExchange(ref _inputWindow, null, input);
+                }
             }
             catch (Exception ex)
             {
@@ -105,6 +145,13 @@ public static partial class InputMonitorService
 
     public static void Stop()
     {
+        _primarySource?.Dispatcher.VerifyAccess();
+        _primarySource = null;
+        UpdateSource();
+    }
+
+    private static void StopCore()
+    {
         var source = _source;
         if (source == null) return;
         source.Dispatcher.VerifyAccess();
@@ -112,7 +159,7 @@ public static partial class InputMonitorService
         _source = null;
         var dispatcher = _inputDispatcher;
         _inputDispatcher = null;
-        if (dispatcher == null || dispatcher.HasShutdownStarted) return;
+        if (dispatcher == null || !dispatcher.Thread.IsAlive || dispatcher.HasShutdownStarted) return;
         // Unregister before another Start can register its window. No thread join
         // or hardware callback is needed on the WPF dispatcher.
         dispatcher.Invoke(() =>
@@ -122,6 +169,44 @@ public static partial class InputMonitorService
             _inputWindow = null;
             dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
         }, DispatcherPriority.Send);
+    }
+
+    internal static void DispatchClick(POINT point, uint timestamp)
+    {
+        // A handler may show or hide another window; deliver only to consumers
+        // that existed when this click was queued, never to a newly opened popup.
+        var listeners = Subscriptions.ToArray();
+        MouseActionTriggered?.Invoke(null, point);
+        foreach (var listener in listeners)
+            if (!listener.IsDisposed && unchecked((int)(timestamp - listener.StartedAt)) > 0)
+                listener.OnPress(point, timestamp);
+    }
+
+    private sealed class Subscription : IDisposable
+    {
+        internal HwndSource Source { get; }
+        internal Action<POINT, uint> OnPress { get; }
+        internal uint StartedAt { get; } = unchecked((uint)Environment.TickCount);
+        internal bool IsDisposed { get; private set; }
+
+        internal Subscription(HwndSource source, Action<POINT, uint> onPress)
+        {
+            Source = source;
+            OnPress = onPress;
+            source.Disposed += SourceDisposed;
+        }
+
+        private void SourceDisposed(object? sender, EventArgs e) => Dispose();
+
+        public void Dispose()
+        {
+            Source.Dispatcher.VerifyAccess();
+            if (IsDisposed) return;
+            IsDisposed = true;
+            Source.Disposed -= SourceDisposed;
+            Subscriptions.Remove(this);
+            UpdateSource();
+        }
     }
 
     internal static bool IsLeftButtonDown(ReadOnlySpan<byte> packet)

@@ -24,6 +24,7 @@ public sealed class SpringAnimationTests
             Assert.InRange(Overshoot(close), 0, 0.04);
         }
     }
+
     [Fact]
     public void VelocityIsTheSlopeOfThePosition()
     {

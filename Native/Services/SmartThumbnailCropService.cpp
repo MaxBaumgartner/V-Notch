@@ -50,52 +50,37 @@ public:
         return true;
     }
 
-    static void FillTensorFromBgra32(
-        const uint8_t* pixels, int32_t scaled_w, int32_t scaled_h, int32_t stride,
-        float* tensor_buffer) noexcept
-    {
-        if (!tensor_buffer || !IsValidPixelArgs(pixels, scaled_w, scaled_h, stride, 1)) return;
-        constexpr int32_t plane_size = kModelInputSize * kModelInputSize;
-        std::fill_n(tensor_buffer, 3 * plane_size, 114.0f);
-
-        int32_t max_y = std::min(scaled_h, kModelInputSize);
-        int32_t max_x = std::min(scaled_w, kModelInputSize);
-        for (int32_t y = 0; y < max_y; y++) {
-            int32_t row_offset = y * stride;
-            int32_t tensor_row_base = y * kModelInputSize;
-            for (int32_t x = 0; x < max_x; x++) {
-                int32_t pixel_idx = row_offset + x * 4;
-                int32_t tensor_idx = tensor_row_base + x;
-
-                tensor_buffer[tensor_idx] = static_cast<float>(pixels[pixel_idx]);
-                tensor_buffer[plane_size + tensor_idx] = static_cast<float>(pixels[pixel_idx + 1]);
-                tensor_buffer[2 * plane_size + tensor_idx] = static_cast<float>(pixels[pixel_idx + 2]);
-            }
-        }
-    }
-
-    static std::vector<VnDetection> ApplyNms(std::span<const VnDetection> detections) {
-        std::vector<VnDetection> sorted(detections.begin(), detections.end());
-        std::stable_sort(sorted.begin(), sorted.end(), [](const VnDetection& a, const VnDetection& b) {
+    static void ApplyNmsInPlace(std::vector<VnDetection>& detections) noexcept {
+        if (detections.size() <= 1) return;
+        std::stable_sort(detections.begin(), detections.end(), [](const VnDetection& a, const VnDetection& b) noexcept {
             if (!std::isfinite(a.confidence)) return false;
             if (!std::isfinite(b.confidence)) return true;
             return a.confidence > b.confidence;
         });
 
-        std::vector<VnDetection> result;
-        result.reserve(sorted.size());
-        std::vector<uint8_t> suppressed(sorted.size(), 0);
-
-        for (size_t i = 0; i < sorted.size(); i++) {
-            if (suppressed[i]) continue;
-            result.push_back(sorted[i]);
-            for (size_t j = i + 1; j < sorted.size(); j++) {
-                if (suppressed[j]) continue;
-                if (sorted[i].class_id == sorted[j].class_id && IoU(sorted[i], sorted[j]) > kNmsThreshold) {
-                    suppressed[j] = 1;
+        size_t kept = 0;
+        for (size_t i = 0; i < detections.size(); ++i) {
+            bool is_suppressed = false;
+            for (size_t k = 0; k < kept; ++k) {
+                if (detections[k].class_id == detections[i].class_id &&
+                    IoU(detections[k], detections[i]) > kNmsThreshold) {
+                    is_suppressed = true;
+                    break;
                 }
             }
+            if (!is_suppressed) {
+                if (kept != i) {
+                    detections[kept] = detections[i];
+                }
+                ++kept;
+            }
         }
+        detections.resize(kept);
+    }
+
+    static std::vector<VnDetection> ApplyNms(std::span<const VnDetection> detections) {
+        std::vector<VnDetection> result(detections.begin(), detections.end());
+        ApplyNmsInPlace(result);
         return result;
     }
 
@@ -126,7 +111,8 @@ public:
         }
 
         if (out_raw_count) *out_raw_count = static_cast<int32_t>(detections.size());
-        return detections.size() > 1 ? ApplyNms(detections) : detections;
+        ApplyNmsInPlace(detections);
+        return detections;
     }
 
     static bool FindBestSubjectBounds(
@@ -450,40 +436,6 @@ public:
         return true;
     }
 
-    static int32_t DetectTextRegions(
-        const uint8_t* pixels, int32_t w, int32_t h, int32_t stride,
-        int32_t img_width, int32_t img_height,
-        VnCropRect* out_regions, int32_t out_cap) noexcept
-    {
-        if (img_width <= 0 || img_height <= 0 || !IsValidPixelArgs(pixels, w, h, stride, 8)) {
-            return 0;
-        }
-        constexpr int32_t grid_size = 8;
-        int32_t cell_w = img_width / grid_size;
-        int32_t cell_h = img_height / grid_size;
-        int32_t a_cell_w = w / grid_size;
-        int32_t a_cell_h = h / grid_size;
-
-        int32_t count = 0;
-        for (int32_t gy = 0; gy < grid_size; gy++) {
-            for (int32_t gx = 0; gx < grid_size; gx++) {
-                int32_t sx = gx * a_cell_w;
-                int32_t sy = gy * a_cell_h;
-                int32_t ex = std::min(sx + a_cell_w, w - 1);
-                int32_t ey = std::min(sy + a_cell_h, h - 1);
-
-                double edge_ratio = CalculateCellEdgeRatio(pixels, stride, w, h, sx, sy, ex, ey);
-                if (edge_ratio > 0.30) {
-                    if (out_regions && count < out_cap) {
-                        out_regions[count] = VnCropRect{gx * cell_w, gy * cell_h, cell_w, cell_h};
-                    }
-                    count++;
-                }
-            }
-        }
-        return count;
-    }
-
     static VnCropRect BuildCropRect(float center_x, float center_y, int32_t img_width, int32_t img_height, int32_t crop_size) noexcept {
         img_width = std::max(1, img_width);
         img_height = std::max(1, img_height);
@@ -718,17 +670,6 @@ private:
 } // namespace vnotch::services
 
 extern "C" {
-
-VN_EXPORT int32_t vn_smartcrop_fill_tensor_from_bgra32(
-    const uint8_t* pixels, int32_t scaled_w, int32_t scaled_h, int32_t stride,
-    float* tensor_buffer) noexcept
-{
-    if (!tensor_buffer || !vnotch::services::SmartThumbnailCropService::IsValidPixelArgs(pixels, scaled_w, scaled_h, stride, 1)) {
-        return VN_ERR_INVALID_ARG;
-    }
-    vnotch::services::SmartThumbnailCropService::FillTensorFromBgra32(pixels, scaled_w, scaled_h, stride, tensor_buffer);
-    return VN_OK;
-}
 
 VN_EXPORT int32_t vn_smartcrop_apply_nms(
     const vnotch::services::VnDetection* in_detections, int32_t in_count,

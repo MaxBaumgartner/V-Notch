@@ -107,14 +107,8 @@ internal static unsafe partial class Win32Interop
     [LibraryImport(NativeDll, EntryPoint = "vn_win32_get_current_thread_times")]
     private static partial int NativeGetCurrentThreadTimes(out FILETIME_METRICS kernel, out FILETIME_METRICS user);
 
-    [LibraryImport(NativeDll, EntryPoint = "vn_win32_get_process_handle_count")]
-    private static partial int NativeGetProcessHandleCount(long process, out uint count);
-
     [LibraryImport(NativeDll, EntryPoint = "vn_win32_get_process_memory_info")]
     private static partial int NativeGetProcessMemoryInfo(long process, out PROCESS_MEMORY_COUNTERS_EX counters);
-
-    [LibraryImport(NativeDll, EntryPoint = "vn_win32_global_memory_status")]
-    private static partial int NativeGlobalMemoryStatus(out MEMORYSTATUSEX_METRICS status);
 
     #endregion
 
@@ -179,10 +173,10 @@ internal static unsafe partial class Win32Interop
         return false;
     }
 
-    public static bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity) =>
-        WindowAnimationPolicy.SetCaptureAffinity(hWnd, dwAffinity);
+    public static bool ApplyWindowCapturePolicy(IntPtr hWnd) =>
+        WindowAnimationPolicy.ApplyCaptureAffinity(hWnd);
 
-    public static int DwmSetWindowAttributeInt(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute)
+    public static int DwmSetWindowAttributeInt(IntPtr hwnd, int dwAttribute, ref int pvAttribute)
     {
         NativeDwmSetWindowAttributeInt(hwnd, dwAttribute, pvAttribute, out int hresult);
         return hresult;
@@ -218,22 +212,6 @@ internal static unsafe partial class Win32Interop
     [LibraryImport(NativeDll, EntryPoint = "vn_win32_get_monitor_dpi_for_window")]
     private static partial int NativeGetMonitorDpiForWindow(long hwnd, uint monitorFlags, out uint dpiX, out uint dpiY);
 
-    [LibraryImport(NativeDll, EntryPoint = "vn_win32_window_class_contains", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int NativeWindowClassContains(long hwnd, ReadOnlySpan<char> needle, int needleLength, out byte matches);
-
-    [LibraryImport(NativeDll, EntryPoint = "vn_win32_enum_large_visible_windows", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int NativeEnumLargeVisibleWindows(
-        int minSize, ReadOnlySpan<char> classNeedle, int classNeedleLength,
-        VnLargeWindow* buffer, int capacity, out int written);
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    internal struct VnLargeWindow
-    {
-        public long Hwnd;
-        public uint ProcessId;
-        public byte ClassMatches;
-    }
-
     public static bool IsWindowVisible(IntPtr hWnd) => NativeIsWindowVisible(hWnd, out byte visible) == 0 && visible != 0;
 
     public static bool IsIconic(IntPtr hWnd) => NativeIsIconic(hWnd, out byte iconic) == 0 && iconic != 0;
@@ -250,25 +228,6 @@ internal static unsafe partial class Win32Interop
     /// <summary>Effective horizontal DPI of the monitor nearest to the window, or 0 when unavailable.</summary>
     public static uint GetMonitorDpiForWindow(IntPtr hwnd, uint monitorFlags = MONITOR_DEFAULTTONEAREST) =>
         NativeGetMonitorDpiForWindow(hwnd, monitorFlags, out uint dpiX, out _) == 0 ? dpiX : 0;
-
-    /// <summary>True when the window class name contains <paramref name="needle"/> (ordinal, ignore case).</summary>
-    public static bool WindowClassContains(IntPtr hwnd, string needle) =>
-        NativeWindowClassContains(hwnd, needle, needle.Length, out byte matches) == 0 && matches != 0;
-
-    /// <summary>
-    /// Visible top-level windows at least <paramref name="minSize"/> pixels in both dimensions.
-    /// Returns the number of entries written to <paramref name="buffer"/>.
-    /// </summary>
-    internal static int EnumLargeVisibleWindows(int minSize, string classNeedle, Span<VnLargeWindow> buffer)
-    {
-        if (buffer.IsEmpty) return 0;
-        fixed (VnLargeWindow* pinned = buffer)
-        {
-            return NativeEnumLargeVisibleWindows(minSize, classNeedle, classNeedle.Length, pinned, buffer.Length, out int written) == 0
-                ? written
-                : 0;
-        }
-    }
 
     #endregion
 
@@ -305,8 +264,6 @@ internal static unsafe partial class Win32Interop
     private static partial int NativeCaptureScreenRect(long destDc, int width, int height, long sourceDc, int srcX, int srcY);
 
     public const int WAIT_OBJECT_0 = 0;
-    public const int WAIT_TIMEOUT = 0x102;
-
     public static uint TimeBeginPeriod(uint period)
     {
         NativeTimeBeginPeriod(period, out uint result);
@@ -387,9 +344,6 @@ internal static unsafe partial class Win32Interop
     [LibraryImport(NativeDll, EntryPoint = "vn_win32_monitor_from_point")]
     private static partial int NativeMonitorFromPoint(int x, int y, uint flags, out long monitor);
 
-    [LibraryImport(NativeDll, EntryPoint = "vn_win32_monitor_from_window")]
-    private static partial int NativeMonitorFromWindow(long hwnd, uint flags, out long monitor);
-
     [LibraryImport(NativeDll, EntryPoint = "vn_win32_get_monitor_info")]
     private static partial int NativeGetMonitorInfo(long monitor, out MONITORINFO info);
 
@@ -433,9 +387,6 @@ internal static unsafe partial class Win32Interop
 
     public static IntPtr MonitorFromPoint(POINT pt, uint dwFlags) =>
         NativeMonitorFromPoint(pt.X, pt.Y, dwFlags, out long monitor) == 0 ? (IntPtr)monitor : IntPtr.Zero;
-
-    public static IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags) =>
-        NativeMonitorFromWindow(hwnd, dwFlags, out long monitor) == 0 ? (IntPtr)monitor : IntPtr.Zero;
 
     public static bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi)
     {
@@ -707,7 +658,11 @@ internal static unsafe partial class Win32Interop
         {
             int slot = Interlocked.Exchange(ref _slot, -1);
             if (slot < 0) return;
-            NativeWinEventHookUninstall(slot);
+            if (NativeWinEventHookUninstall(slot) != 0)
+            {
+                Volatile.Write(ref _slot, slot);
+                return;
+            }
             if (_self.IsAllocated) _self.Free();
         }
 
@@ -739,17 +694,13 @@ internal static unsafe partial class Win32Interop
     public const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
     public const uint GW_HWNDPREV = 3;
-    public const uint GW_HWNDNEXT = 2;
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
-    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
-    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
     public const uint MONITOR_DEFAULTTOPRIMARY = 0x00000001;
     public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
     public const int MDT_EFFECTIVE_DPI = 0;
 
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
-    public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOZORDER = 0x0004;
@@ -760,9 +711,6 @@ internal static unsafe partial class Win32Interop
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
     public const int SW_HIDE = 0;
-    public const int SW_RESTORE = 9;
-    public const int SW_SHOW = 5;
-    public const int SW_SHOWMAXIMIZED = 3;
     public const int SW_SHOWNA = 8;
     public const int WS_CAPTION = 0x00C00000;
     public const int WS_THICKFRAME = 0x00040000;
@@ -770,7 +718,6 @@ internal static unsafe partial class Win32Interop
     public const int WS_EX_TOPMOST = 0x00000008;
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_EX_LAYERED = 0x00080000;
-    public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int WS_EX_APPWINDOW = 0x00040000;
     public const int WM_WINDOWPOSCHANGING = 0x0046;
     public const int WM_ACTIVATE = 0x0006;
@@ -784,18 +731,11 @@ internal static unsafe partial class Win32Interop
     public const int WM_KEYUP = 0x0101;
     public const int WM_SYSKEYDOWN = 0x0104;
     public const int WM_SYSKEYUP = 0x0105;
-    public const int WH_KEYBOARD_LL = 13;
     public const int HTTRANSPARENT = -1;
-    public const int HTCLIENT = 1;
     public const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
     public const byte VK_MEDIA_NEXT_TRACK = 0xB0;
     public const byte VK_MEDIA_PREV_TRACK = 0xB1;
-    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
-    public const uint KEYEVENTF_KEYUP = 0x0002;
-    public const int VK_LBUTTON = 0x01;
-    public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
     public const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
-    public const int DWMWA_CLOAKED = 14;
     public const uint MOD_ALT = 0x0001;
     public const uint MOD_NOREPEAT = 0x4000;
     public const uint VK_SPACE = 0x20;
@@ -873,9 +813,6 @@ internal static unsafe partial class Win32Interop
     public static IntPtr GetCurrentProcess() =>
         NativeGetCurrentProcess(out long handle) == 0 ? (IntPtr)handle : IntPtr.Zero;
 
-    public static bool GetProcessHandleCount(IntPtr hProcess, out uint pdwHandleCount) =>
-        NativeGetProcessHandleCount(hProcess, out pdwHandleCount) == 0;
-
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public struct PROCESS_MEMORY_COUNTERS_EX
     {
@@ -892,25 +829,8 @@ internal static unsafe partial class Win32Interop
         public ulong PrivateUsage;
     }
 
-    public static bool GetProcessMemoryInfo(IntPtr hProcess, out PROCESS_MEMORY_COUNTERS_EX counters, uint cb) =>
+    public static bool GetProcessMemoryInfo(IntPtr hProcess, out PROCESS_MEMORY_COUNTERS_EX counters) =>
         NativeGetProcessMemoryInfo(hProcess, out counters) == 0;
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct MEMORYSTATUSEX_METRICS
-    {
-        public uint dwLength;
-        public uint dwMemoryLoad;
-        public ulong ullTotalPhys;
-        public ulong ullAvailPhys;
-        public ulong ullTotalPageFile;
-        public ulong ullAvailPageFile;
-        public ulong ullTotalVirtual;
-        public ulong ullAvailVirtual;
-        public ulong ullAvailExtendedVirtual;
-    }
-
-    public static bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX_METRICS lpBuffer) =>
-        NativeGlobalMemoryStatus(out lpBuffer) == 0;
 
     #endregion
 }

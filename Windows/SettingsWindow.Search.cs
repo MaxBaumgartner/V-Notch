@@ -18,6 +18,7 @@ using VNotch.Models;
 using VNotch.Modules;
 using VNotch.Presenters;
 using VNotch.Services;
+using static VNotch.Services.VNotchNative;
 
 namespace VNotch;
 
@@ -42,27 +43,6 @@ public partial class SettingsWindow
         public int RowIndex;
         public int Score;
     }
-
-    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int vn_settings_search_normalize(
-        ReadOnlySpan<char> inputPtr,
-        int inputLen,
-        Span<char> outBuf,
-        int outCap,
-        out int outLen);
-
-    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int vn_settings_search_score_row(
-        ReadOnlySpan<char> normTitlePtr,
-        int normTitleLen,
-        ReadOnlySpan<char> normContentPtr,
-        int normContentLen,
-        ReadOnlySpan<char> normCombinedPtr,
-        int normCombinedLen,
-        ReadOnlySpan<char> normQueryPtr,
-        int normQueryLen,
-        byte allowFuzzy,
-        out int outScore);
 
     [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_settings_search_normalize_row(
@@ -90,15 +70,14 @@ public partial class SettingsWindow
         out int outMatchCount);
 
     private UiScheduledTimer? _searchDebounce;
+    internal bool IsSearchMode => _isSearchMode;
     private bool _isSearchMode;
     private readonly List<SearchRowEntry> _searchRows = new();
-    private readonly List<SearchRowEntry> _restoreRowsBuffer = new(64);
+    private SearchRowEntry[][] _rowsByParent = [];
     private char[] _searchArena = new char[16384];
     private int _searchArenaLen;
     private VnSettingsSearchRowSpan[] _searchRowSpans = new VnSettingsSearchRowSpan[128];
 
-    private static readonly Comparison<SearchRowEntry> s_restoreOrderComparison =
-        static (a, b) => a.OriginalIndex.CompareTo(b.OriginalIndex);
 
     private void SettingsSearchSurface_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -172,7 +151,7 @@ public partial class SettingsWindow
         }
     }
 
-    private void ExecuteSearch(string query)
+    internal void ExecuteSearch(string query)
     {
         if (string.IsNullOrWhiteSpace(query)) return;
 
@@ -213,34 +192,22 @@ public partial class SettingsWindow
         }
     }
 
-    private void SearchingClearButton_Click(object sender, RoutedEventArgs e)
+    internal void SearchingClearButton_Click(object sender, RoutedEventArgs e)
     {
         SettingsSearchBox.Clear();
         SettingsSearchBox.Focus();
     }
 
-    private static int GetSearchRowScore(SearchRowEntry row, string query, bool allowFuzzy)
-    {
-        ReadOnlySpan<char> titleSpan = row.NormalizedTitleText.AsSpan();
-        ReadOnlySpan<char> contentSpan = row.NormalizedSearchText.AsSpan();
-        ReadOnlySpan<char> combinedSpan = row.NormalizedCombinedText.AsSpan();
-        ReadOnlySpan<char> querySpan = query.AsSpan();
-        vn_settings_search_score_row(
-            titleSpan, titleSpan.Length,
-            contentSpan, contentSpan.Length,
-            combinedSpan, combinedSpan.Length,
-            querySpan, querySpan.Length,
-            allowFuzzy ? (byte)1 : (byte)0,
-            out int score);
-        return score;
-    }
-
     private bool EnterSearchMode()
     {
+        bool leavingChangelog = ChangelogPage.IsVisible;
+        if (!_isSearchMode || leavingChangelog)
+            SettingsPageWave.Capture(SettingsPane, Orientation.Vertical, forward: false);
+        HideChangelog();
         if (_isSearchMode)
         {
             RefreshSearchRowsIfNeeded();
-            return false;
+            return leavingChangelog;
         }
 
         _isSearchMode = true;
@@ -278,8 +245,13 @@ public partial class SettingsWindow
         SyncNavIndicators(animate: true);
     }
 
-    private void ExitSearchMode()
+    internal void ExitSearchMode()
     {
+        if (_isSearchMode)
+        {
+            SettingsPageWave.Capture(SettingsPane, Orientation.Vertical, forward: true);
+            HideChangelog();
+        }
         RestoreSearchRows();
         SearchResultsStack.Children.Clear();
         SearchingEmptyState.Visibility = Visibility.Collapsed;
@@ -295,13 +267,16 @@ public partial class SettingsWindow
         _updatingSearchPresentation = true;
         try
         {
-            ShowAllNavItems();
             if (_navButtons.TryGetValue(NavSectionSearching, out var searchButton))
             {
                 searchButton.Visibility = Visibility.Collapsed;
             }
+            // Resolve the active indicator's slot after removing the Searching row.
+            NavItemsStack.UpdateLayout();
         }
         finally { _updatingSearchPresentation = false; }
+
+        ShowAllNavItems();
 
         foreach (var kvp in _navPanels)
         {
@@ -344,6 +319,8 @@ public partial class SettingsWindow
                     sectionText));
             }
         }
+        _rowsByParent = _searchRows.GroupBy(row => row.OriginalParent)
+            .Select(group => group.OrderBy(row => row.OriginalIndex).ToArray()).ToArray();
         foreach (var row in _searchRows)
             ObserveSearchInputs(row.Row, row);
         foreach (var button in _navButtons.Values)
@@ -353,21 +330,8 @@ public partial class SettingsWindow
 
     private void RestoreSearchRows()
     {
-        _restoreRowsBuffer.Clear();
-        for (int i = 0; i < _searchRows.Count; i++)
-        {
-            if (!ReferenceEquals(_searchRows[i].Row.Parent, _searchRows[i].OriginalParent))
-                _restoreRowsBuffer.Add(_searchRows[i]);
-        }
-
-        _restoreRowsBuffer.Sort(s_restoreOrderComparison);
-
         _updatingSearchPresentation = true;
-        try
-        {
-            foreach (var row in _restoreRowsBuffer)
-                RestoreSearchRow(row);
-        }
+        try { RestoreRowsExcept(null); }
         finally { _updatingSearchPresentation = false; }
     }
 
@@ -631,6 +595,8 @@ public partial class SettingsWindow
         }
     }
 
+    internal string IndexedSearchText(Border row) => _searchRows.Single(entry => ReferenceEquals(entry.Row, row)).NormalizedSearchText;
+
     private sealed class SearchRowEntry
     {
         public SearchRowEntry(
@@ -696,11 +662,11 @@ public partial class SettingsWindow
             {
                 if (rc == 0)
                 {
-                    NormalizedTitleText = span.TitleLen > 0 ? new string(arenaBuf.Slice(span.TitleOffset, span.TitleLen)) : string.Empty;
-                    NormalizedSearchText = span.ContentLen > 0 ? new string(arenaBuf.Slice(span.ContentOffset, span.ContentLen)) : string.Empty;
-                    NormalizedCombinedText = span.CombinedLen > 0 ? new string(arenaBuf.Slice(span.CombinedOffset, span.CombinedLen)) : string.Empty;
+                    NormalizedTitleText = ReuseOrAllocate(NormalizedTitleText, arenaBuf, span.TitleOffset, span.TitleLen);
+                    NormalizedSearchText = ReuseOrAllocate(NormalizedSearchText, arenaBuf, span.ContentOffset, span.ContentLen);
+                    NormalizedCombinedText = ReuseOrAllocate(NormalizedCombinedText, arenaBuf, span.CombinedOffset, span.CombinedLen);
                     int sectionLen = Math.Max(0, span.CombinedLen - span.ContentLen - 1);
-                    NormalizedSectionText = sectionLen > 0 ? new string(arenaBuf.Slice(span.CombinedOffset, sectionLen)) : string.Empty;
+                    NormalizedSectionText = ReuseOrAllocate(NormalizedSectionText, arenaBuf, span.CombinedOffset, sectionLen);
                 }
             }
             finally
@@ -710,6 +676,14 @@ public partial class SettingsWindow
                     ArrayPool<char>.Shared.Return(rented);
                 }
             }
+        }
+
+        // Repeated queries keep the same strings so unchanged rows stay stable.
+        private static string ReuseOrAllocate(string? existing, ReadOnlySpan<char> arena, int offset, int length)
+        {
+            if (length <= 0) return string.Empty;
+            var text = arena.Slice(offset, length);
+            return existing != null && text.SequenceEqual(existing.AsSpan()) ? existing : new string(text);
         }
     }
 

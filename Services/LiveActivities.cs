@@ -11,7 +11,8 @@ internal enum LiveActivity
     Countdown,
     Lesson,
     Download,
-    Charging
+    Charging,
+    Job
 }
 
 /// <summary>
@@ -29,7 +30,7 @@ internal static class LiveActivities
     /// <param name="lesson">A lesson or a break at school is running (see <see cref="ControlCenter.LessonClock"/>).
     /// Last, so upstream's order of the others stays as it is.</param>
     public static (LiveActivity Main, LiveActivity Bubble) Arrange(bool music, ClaudeSessionStatus? claude, bool countdown, bool moreClaude = false,
-        bool download = false, bool charging = false, bool lesson = false)
+        bool download = false, bool charging = false, bool job = false, bool lesson = false)
     {
         // Highest first.
         var ranked = new LiveActivity[5];
@@ -57,6 +58,7 @@ internal static class LiveActivities
         }
         if (bubble == LiveActivity.None && main == LiveActivity.Claude && moreClaude) bubble = LiveActivity.Claude;
         if (bubble == LiveActivity.None && charging) bubble = LiveActivity.Charging;
+        if (bubble == LiveActivity.None && job) bubble = LiveActivity.Job;
         return (main, bubble);
     }
 }

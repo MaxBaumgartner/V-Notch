@@ -159,22 +159,6 @@ public sealed class NotchShellPresenter : IDisposable
         return true;
     }
 
-    public void SnapTo(double width, double height, double cornerRadius)
-    {
-        if (_disposed) return;
-        StopWatch();
-        ++_animationVersion;
-        ++_activeSessionId;
-        _heightArrived = null;
-        _canceledWidthVelocity = _canceledHeightVelocity = null;
-        Motion.Stop(_refs.NotchBorder, FrameworkElement.WidthProperty, width);
-        Motion.Stop(_refs.NotchBorder, FrameworkElement.HeightProperty, height);
-        Motion.Stop(_corner, CornerValue.ValueProperty, cornerRadius);
-        if (_refs.AnimateCornerRadius is { } snapCorner) snapCorner(cornerRadius, null);
-        else SetCornerRadius(cornerRadius);
-        _refs.Attachment?.Detach(false);
-    }
-
     internal void SetReleaseVelocity(double heightVelocity, double widthPerHeight)
     {
         _canceledHeightVelocity = heightVelocity;

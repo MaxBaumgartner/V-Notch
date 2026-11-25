@@ -1,34 +1,88 @@
 #include "SmartCropInference.h"
 #include "../vnotch_handle_registry.h"
+#include "../vnotch_session_replacement.h"
 #define ORT_API_MANUAL_INIT
 #include <onnxruntime_cxx_api.h>
 #include <array>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 using Detection = vnotch::services::VnDetection;
 using AppendDml = OrtStatus*(ORT_API_CALL*)(OrtSessionOptions*, int);
 
-// Keep the runtime loaded while any Ort object (including the managed compatibility API) exists.
-void InitializeRuntime(const std::wstring& directory) {
-    static const bool initialized = [&] {
-        HMODULE module = LoadLibraryExW((directory + L"\\onnxruntime.dll").c_str(), nullptr,
-            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (!module) module = LoadLibraryExW((directory + L"\\runtimes\\win-x64\\native\\onnxruntime.dll").c_str(),
-            nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+std::wstring ResolveNativeModuleDirectory() {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&ResolveNativeModuleDirectory),
+            &self) || !self) {
+        throw std::runtime_error("Could not resolve VNotch.Native module handle");
+    }
+    std::wstring path(MAX_PATH, L'\0');
+    while (true) {
+        const DWORD len = GetModuleFileNameW(self, path.data(), static_cast<DWORD>(path.size()));
+        if (len == 0) throw std::runtime_error("Could not resolve VNotch.Native module path");
+        if (len < path.size()) {
+            path.resize(len);
+            break;
+        }
+        if (path.size() >= 32768) throw std::runtime_error("VNotch.Native module path too long");
+        path.resize(path.size() * 2);
+    }
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) throw std::runtime_error("Invalid VNotch.Native module path");
+    path.resize(slash);
+    return path;
+}
+
+std::mutex runtime_gate;
+HMODULE runtime_module = nullptr;
+size_t runtime_leases = 0;
+
+// One loader reference while native sessions exist. Managed ONNX consumers own
+// their own loader references; releasing ours cannot unload their runtime.
+// This must be the first CropSession member so all Ort objects die before it.
+class RuntimeLease {
+public:
+    RuntimeLease() {
+        std::lock_guard lock(runtime_gate);
+        if (runtime_module) { ++runtime_leases; return; }
+        constexpr DWORD kLoadFlags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+        const std::wstring module_dir = ResolveNativeModuleDirectory();
+        HMODULE module = LoadLibraryExW((module_dir + L"\\onnxruntime.dll").c_str(), nullptr, kLoadFlags);
+        if (!module) {
+            module = LoadLibraryExW((module_dir + L"\\runtimes\\win-x64\\native\\onnxruntime.dll").c_str(),
+                nullptr, kLoadFlags);
+        }
         if (!module) throw std::runtime_error("ONNX Runtime unavailable");
         const auto get_api = reinterpret_cast<const OrtApiBase*(ORT_API_CALL*)()>(GetProcAddress(module, "OrtGetApiBase"));
         const OrtApi* api = get_api ? get_api()->GetApi(ORT_API_VERSION) : nullptr;
         if (!api) { FreeLibrary(module); throw std::runtime_error("Incompatible ONNX Runtime"); }
         Ort::InitApi(api);
-        return true;
-    }();
-    (void)initialized;
-}
+        runtime_module = module;
+        runtime_leases = 1;
+    }
+
+    ~RuntimeLease() {
+        std::lock_guard lock(runtime_gate);
+        if (--runtime_leases != 0) return;
+        // Serialize unload with the next acquisition, including failed session
+        // construction and sessions still held by an in-flight inference.
+        // No Ort objects remain. InitApi(nullptr) is a getter/no-op in ORT;
+        // the next lease installs a fresh API before constructing any object.
+        FreeLibrary(runtime_module);
+        runtime_module = nullptr;
+    }
+
+    RuntimeLease(const RuntimeLease&) = delete;
+    RuntimeLease& operator=(const RuntimeLease&) = delete;
+};
 
 struct CropSession {
+    RuntimeLease runtime;
     Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "VNotch.SmartCrop"};
     Ort::Session session{nullptr};
     Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -50,32 +104,38 @@ struct CropSession {
     }
 
     void Open(bool prefer_dml) {
-        Ort::SessionOptions options;
-        options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
-        options.DisableMemPattern();
-        options.DisableCpuMemArena();
-        options.SetInterOpNumThreads(1); options.SetIntraOpNumThreads(1);
-        if (prefer_dml) {
-            const auto append = reinterpret_cast<AppendDml>(GetProcAddress(GetModuleHandleW(L"onnxruntime.dll"),
-                "OrtSessionOptionsAppendExecutionProvider_DML"));
-            if (!append) throw std::runtime_error("DirectML provider unavailable");
-            Ort::ThrowOnError(append(options, 0));
-        }
-        Ort::Session candidate(env, model.c_str(), options);
-        if (candidate.GetInputCount() != 1 || candidate.GetOutputCount() != 1 ||
-            candidate.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape() != std::vector<int64_t>{1, 3, 416, 416} ||
-            candidate.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape() != std::vector<int64_t>{1, 3549, 85} ||
-            candidate.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-            candidate.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)
-            throw std::runtime_error("Unexpected YOLOX model signature");
-        Ort::AllocatorWithDefaultOptions allocator;
-        input_name = candidate.GetInputNameAllocated(0, allocator).get();
-        output_name = candidate.GetOutputNameAllocated(0, allocator).get();
-        session = std::move(candidate); dml = prefer_dml;
+        dml = false;
+        vnotch::ReplaceSession(session, [&]() {
+            Ort::SessionOptions options;
+            options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+            options.DisableMemPattern();
+            options.DisableCpuMemArena();
+            options.SetInterOpNumThreads(1); options.SetIntraOpNumThreads(1);
+            if (prefer_dml) {
+                const auto append = reinterpret_cast<AppendDml>(GetProcAddress(GetModuleHandleW(L"onnxruntime.dll"),
+                    "OrtSessionOptionsAppendExecutionProvider_DML"));
+                if (!append) throw std::runtime_error("DirectML provider unavailable");
+                Ort::ThrowOnError(append(options, 0));
+            }
+            Ort::Session candidate(env, model.c_str(), options);
+            if (candidate.GetInputCount() != 1 || candidate.GetOutputCount() != 1 ||
+                candidate.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape() != std::vector<int64_t>{1, 3, 416, 416} ||
+                candidate.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape() != std::vector<int64_t>{1, 3549, 85} ||
+                candidate.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                candidate.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)
+                throw std::runtime_error("Unexpected YOLOX model signature");
+            Ort::AllocatorWithDefaultOptions allocator;
+            input_name = candidate.GetInputNameAllocated(0, allocator).get();
+            output_name = candidate.GetOutputNameAllocated(0, allocator).get();
+            return candidate;
+        });
+        dml = prefer_dml;
     }
 
     void Run() {
+        // A failed CPU fallback may have left an empty session. Never call ORT with it.
+        if (!session) Open(false);
         const char* inputs[]{input_name.c_str()}, *outputs[]{output_name.c_str()};
         session.Run(Ort::RunOptions{nullptr}, inputs, &input_value, 1, outputs, &output_value, 1);
     }
@@ -91,10 +151,13 @@ VN_EXPORT int32_t __stdcall vn_smartcrop_session_create(const wchar_t* model, in
     int64_t* out_handle, uint8_t* out_dml) noexcept {
     if (!model || model_length <= 0 || !directory || directory_length <= 0 || !out_handle || !out_dml)
         return VN_ERR_INVALID_ARG;
+    std::wstring_view model_view(model, static_cast<size_t>(model_length));
+    std::wstring_view dir_view(directory, static_cast<size_t>(directory_length));
+    if (model_view.find(L'\0') != std::wstring_view::npos || dir_view.find(L'\0') != std::wstring_view::npos)
+        return VN_ERR_INVALID_ARG;
     *out_handle = 0; *out_dml = 0;
     try {
-        InitializeRuntime(std::wstring(directory, directory_length));
-        auto session = std::make_unique<CropSession>(std::wstring(model, model_length), prefer_dml != 0);
+        auto session = std::make_unique<CropSession>(std::wstring(model_view), prefer_dml != 0);
         *out_dml = session->dml ? 1 : 0;
         *out_handle = sessions.Add(std::move(session));
         return VN_OK;
@@ -109,7 +172,7 @@ VN_EXPORT int32_t __stdcall vn_smartcrop_session_infer(int64_t handle, const uin
     int32_t width, int32_t height, int32_t stride, Detection* detections, int32_t capacity,
     int32_t* out_count, uint8_t* out_dml) noexcept {
     if (!out_count || !out_dml || capacity < 3549 || !detections) return VN_ERR_INVALID_ARG;
-    *out_count = 0;
+    *out_count = 0; *out_dml = 0;
     try {
         auto session = sessions.Acquire(handle);
         if (!session) return VN_ERR_INVALID_ARG;

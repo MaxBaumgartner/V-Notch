@@ -3,23 +3,23 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using Xunit;
 using VNotch;
 using VNotch.Models;
 using VNotch.Services;
+using Xunit;
 
 namespace VNotch.Tests;
 
 public sealed class SettingsLivePreviewAndTabOrderTests
 {
     [Fact]
-    public void ResolveFullNavTabOrder_AppendsMissingCameraToLegacyFourTabString()
+    public void ResolveFullNavTabOrder_AppendsMissingCameraAndAiUsageToLegacyFourTabString()
     {
         const string legacyOrder = "Media,Secondary,Timer,AudioMixer";
 
         List<string> resolved = SettingsWindow.ResolveFullNavTabOrder(legacyOrder);
 
-        Assert.Equal(new[] { "Media", "Secondary", "Timer", "AudioMixer", "Camera", "Claude", "Pi", "School" }, resolved);
+        Assert.Equal(new[] { "Media", "Secondary", "Timer", "AudioMixer", "Camera", "AiUsage", "Claude", "Pi", "School" }, resolved);
     }
 
     [Fact]
@@ -38,18 +38,17 @@ public sealed class SettingsLivePreviewAndTabOrderTests
         orderTokens.Insert(targetSlot, movedToken);
         string updatedOrder = string.Join(",", orderTokens);
 
-        Assert.Equal("Media,Camera,Secondary,Timer,AudioMixer,Claude,Pi,School", updatedOrder);
+        Assert.Equal("Media,Camera,Secondary,Timer,AudioMixer,AiUsage,Claude,Pi,School", updatedOrder);
     }
 
     [Fact]
     public void ResolveFullNavTabOrder_DeduplicatesCaseInsensitivelyAndHandlesNull()
     {
         List<string> fromNull = SettingsWindow.ResolveFullNavTabOrder(null);
-        Assert.Equal(8, fromNull.Count);
-        Assert.Contains("Camera", fromNull, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "Media", "Secondary", "Timer", "AudioMixer", "Camera", "AiUsage", "Claude", "Pi", "School" }, fromNull);
 
-        List<string> deduplicated = SettingsWindow.ResolveFullNavTabOrder("Media,camera,Timer,CAMERA,Secondary");
-        Assert.Equal(new[] { "Media", "camera", "Timer", "Secondary", "AudioMixer", "Claude", "Pi", "School" }, deduplicated);
+        List<string> deduplicated = SettingsWindow.ResolveFullNavTabOrder("Media,camera,Timer,CAMERA,Secondary,aiusage,AIUSAGE");
+        Assert.Equal(new[] { "Media", "camera", "Timer", "Secondary", "aiusage", "AudioMixer", "Claude", "Pi", "School" }, deduplicated);
     }
 
     [Fact]

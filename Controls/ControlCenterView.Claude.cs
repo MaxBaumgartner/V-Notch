@@ -7,8 +7,8 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using VNotch.Services;
 using VNotch.Services.ClaudeCode;
 
@@ -32,8 +32,6 @@ public partial class ControlCenterView
     private static readonly Color DoneSage = Hex(0x9BC7BC);
     private static readonly Color IdleGrey = Hex(0x8C8C96);
     private static readonly Brush WaitingDot = FrozenOf(WaitingAmber);
-    private static readonly Brush DoneDot = FrozenOf(DoneSage);
-    private static readonly Brush IdleDot = FrozenOf(IdleGrey);
 
     private static readonly Color CardRest = Color.FromArgb(0x0F, 0xFF, 0xFF, 0xFF);
     private static readonly Color CardLifted = Color.FromArgb(0x17, 0xFF, 0xFF, 0xFF);
@@ -64,32 +62,40 @@ public partial class ControlCenterView
     #region State
 
     // The hero's state colour (its word, tick and accent button), kept across rebuilds so a change fades.
-    private readonly SolidColorBrush _heroInk = new(IdleGrey);
+    private readonly ClaudeStatusTint _heroTint = new(IdleGrey);
+    private SolidColorBrush _heroInk => _heroTint.Brush;
     private string? _heroSessionId;
     // The colour of work (terracotta, rosé near a limit): a working session keeps it even while the tab is amber.
     private Color _workColor = ClaudeAtWork.Main;
-    private readonly SolidColorBrush _workDot = new(ClaudeAtWork.Main);
     // A chip tapped to bring its session up; it holds until that session goes or another starts to wait.
     private string? _focusedSessionId;
     private readonly HashSet<string> _waitingSeen = new(StringComparer.Ordinal);
     private TextBlock? _heroTick;
-    private string? _heroTickKey;
-    private string? _tickShownFor;
 
     // Request cards on the page by id, so an answer can fold its card away before it goes.
     private readonly Dictionary<string, FrameworkElement> _requestCards = new(StringComparer.Ordinal);
 
     private Color? _claudeMoodMain;
     private readonly Dictionary<(string Session, string Part), TextBlock> _claudeTexts = new();
+    private readonly List<(TextBlock Text, string Value, bool Animate, bool Optional)> _claudeTextUpdates = new();
+    private readonly Dictionary<string, ClaudeStatusTint> _claudeDots = new(StringComparer.Ordinal);
+    private Dictionary<string, Border> _claudeSessionRows = new(StringComparer.Ordinal);
+    private Dictionary<string, ClaudeSession> _claudeShownSessions = new(StringComparer.Ordinal);
+    private string? _claudeShownHeroId;
+    private readonly List<(Border Row, bool Chip, int Index)> _claudeSessionExits = new();
+    private bool _claudeWasShown;
 
     #endregion
 
     #region Building
 
-    private void BuildClaudeSection()
+    private void BuildClaudeSection() => UpdateClaudeSection(entering: false);
+
+    private void UpdateClaudeSection(bool entering)
     {
         _accent = _mood;
-        if (_disposed || _claude == null) return;
+        if (_disposed || _claude == null || (!IsVisible && _claudeWasShown)) return;
+        if (_settlingClaudeRequests.Count > 0 || _swipingClaudePermission != null) return;
         var sessions = _claude.GetSessions();
         var pending = _claude.GetPending();
         var limits = _usage?.Latest;
@@ -108,18 +114,16 @@ public partial class ControlCenterView
         string key = ClaudeKey(order, pending, limits, listening);
         if (key == _claudeKey)
         {
+            if (IsVisible && !_claudeWasShown) RememberClaudeSessions(sessions);
+            UpdateClaudeClock();
+            UpdateTokenClock(lead);
             if (FitClaudeAccountFace()) ContentHeightChanged?.Invoke();
             return;
         }
         _claudeKey = key;
 
         ApplyClaudeMood(ClaudeMoodFor(sessions, limits));
-        var work = NearLimit(limits) ? ClaudeNearLimit.Main : ClaudeAtWork.Main;
-        if (work != _workColor)
-        {
-            _workColor = work;
-            SetOrTint(_workDot, work, IsVisible ? MoodFadeMs : 0);
-        }
+        _workColor = NearLimit(limits) ? ClaudeNearLimit.Main : ClaudeAtWork.Main;
 
         _elapsedLabels.Clear();
         _firstRequestCard = null;
@@ -129,38 +133,110 @@ public partial class ControlCenterView
         foreach (var seen in new List<string>(_tokensSeen.Keys))
             if (!sessions.Exists(s => s.Id == seen)) _tokensSeen.Remove(seen);
         ForgetAnsweredQuestions(pending);
-        _rebuildingResetRows = true;
-        while (_claudeSection.Children.Count > 1) _claudeSection.Children.RemoveAt(_claudeSection.Children.Count - 1);
-
-        if (!_claudeInstalled) _claudeSection.Children.Add(SetupCard(listening));
-        // Hooks in a project's own settings report here too, without our entry in the user settings.
-        if ((_claudeInstalled || sessions.Count > 0) && !listening)
-            _claudeSection.Children.Add(HintCard("", Loc.Get("control.claude.portBusy", ClaudeHookServer.DefaultPort)));
-        if (lead != null && (lead.Cwd.Length > 0 || pending.Count > 0 || _composingSessionId != null ||
-            !string.IsNullOrEmpty(lead.Activity ?? lead.Prompt ?? lead.Summary)))
-            _claudeSection.Children.Add(Hero(lead, pending));
-        if (order.Count > 1 || _codexSessions.Count > 0) _claudeSection.Children.Add(Chips(order));
-        if (_accountsOpen) AddResetRows(limits, _inlineClaudeGrant);
-        foreach (var detail in _claudeSection.Children.OfType<FrameworkElement>().Skip(1))
+        var previousRows = _claudeSessionRows;
+        _claudeSessionRows = new(StringComparer.Ordinal);
+        var activeIds = sessions.Select(session => session.Id).ToHashSet(StringComparer.Ordinal);
+        var leaving = previousRows.Where(pair => !activeIds.Contains(pair.Key)).Select(pair =>
         {
-            var margin = detail.Margin;
-            detail.Margin = new Thickness(margin.Left + 20, margin.Top, margin.Right + 20, margin.Bottom);
+            var parent = (Panel)pair.Value.Parent;
+            return (Row: pair.Value, Chip: parent is WrapPanel, Index: parent.Children.IndexOf(pair.Value));
+        }).ToList();
+        foreach (var exit in leaving)
+            ((Panel)exit.Row.Parent).Children.Remove(exit.Row);
+        _rebuildingResetRows = true;
+        try
+        {
+            foreach (var exit in _claudeSessionExits)
+                ((Panel)exit.Row.Parent).Children.Remove(exit.Row);
+            while (_claudeSection.Children.Count > 1) _claudeSection.Children.RemoveAt(_claudeSection.Children.Count - 1);
+
+            if (!_claudeInstalled) _claudeSection.Children.Add(SetupCard(listening));
+            // Hooks in a project's own settings report here too, without our entry in the user settings.
+            if ((_claudeInstalled || sessions.Count > 0) && !listening)
+                _claudeSection.Children.Add(HintCard("", Loc.Get("control.claude.portBusy", ClaudeHookServer.DefaultPort)));
+            if (lead != null && (lead.Cwd.Length > 0 || pending.Count > 0 || _composingSessionId != null ||
+                !string.IsNullOrEmpty(lead.Activity ?? lead.Prompt ?? lead.Summary)))
+                _claudeSection.Children.Add(_claudeSessionRows[lead.Id] = Hero(lead, pending));
+            else _heroSessionId = null;
+
+            bool animateRows = _claudeWasShown && IsVisible && !AnimationConfig.ReduceMotion;
+            // Rows removed while the tab was away are already offscreen.
+            if (!animateRows || entering) leaving.Clear();
+            bool exitingChips = _claudeSessionExits.Concat(leaving).Any(exit => exit.Chip);
+            var chips = order.Count > 1 || _codexSessions.Count > 0 || exitingChips ? Chips(order) : null;
+            if (chips != null) _claudeSection.Children.Add(chips);
+            if (_accountsOpen) AddResetRows(limits, _inlineClaudeGrant);
+            foreach (var detail in _claudeSection.Children.OfType<FrameworkElement>().Skip(1))
+            {
+                var margin = detail.Margin;
+                detail.Margin = new Thickness(margin.Left + 20, margin.Top, margin.Right + 20, margin.Bottom);
+            }
+            foreach (var exit in _claudeSessionExits.Concat(leaving))
+            {
+                Panel panel = exit.Chip ? chips! : _claudeSection;
+                panel.Children.Insert(Math.Min(exit.Index, panel.Children.Count), exit.Row);
+            }
+            foreach (var exit in leaving)
+            {
+                _claudeSessionExits.Add(exit);
+                FoldClaudeCard(exit.Row, () => RemoveClaudeSessionExit(exit));
+            }
+            if (animateRows)
+                foreach (var (id, row) in _claudeSessionRows)
+                    if (!previousRows.ContainsKey(id)) GlideIn(row);
         }
-        _rebuildingResetRows = false;
+        finally { _rebuildingResetRows = false; }
+        foreach (var (text, value, animate, optional) in _claudeTextUpdates)
+            ApplyClaudeText(text, value, animate, optional);
+        _claudeTextUpdates.Clear();
         FitClaudeAccountFace();
         foreach (var pair in _claudeTexts.ToList())
         {
-            if (!pair.Value.IsVisible && DetailTexts.TryGetValue(pair.Value, out var state))
+            if ((!pair.Value.IsVisible || !activeIds.Contains(pair.Key.Session)) && DetailTexts.TryGetValue(pair.Value, out var state))
                 SettleDetailText(pair.Value, state);
-            if (!sessions.Exists(s => s.Id == pair.Key.Session)) _claudeTexts.Remove(pair.Key);
+            if (!activeIds.Contains(pair.Key.Session)) _claudeTexts.Remove(pair.Key);
         }
+        foreach (var id in _claudeDots.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+            if (_claudeDots.Remove(id, out var dot)) dot.Stop();
 
         if (IsVisible)
         {
-            PopTick(0);
+            if (lead != null && _claudeShownSessions.TryGetValue(lead.Id, out var previous) &&
+                (previous.Status != lead.Status || previous.FinishedUtc != lead.FinishedUtc))
+                PopTick();
+            RememberClaudeSessions(sessions);
+            UpdateTokenClock(lead);
             RefreshTokens();
         }
+        UpdateClaudeClock();
         ContentHeightChanged?.Invoke();
+    }
+
+    private void RememberClaudeSessions(List<ClaudeSession> sessions)
+    {
+        _claudeShownSessions = sessions.ToDictionary(session => session.Id, StringComparer.Ordinal);
+        _claudeShownHeroId = _heroSessionId;
+        _claudeWasShown = true;
+    }
+
+    private readonly Dictionary<TextBlock, (string Value, bool Optional)> _deferredClaudeText = new();
+
+    private void ApplyClaudeText(TextBlock text, string value, bool animate, bool optional = false)
+    {
+        if (animate && IsVisible && !AnimationConfig.ReduceMotion && !text.IsVisible &&
+            DetailTexts.TryGetValue(text, out var state) && state.Target != value)
+        {
+            bool queued = _deferredClaudeText.ContainsKey(text);
+            _deferredClaudeText[text] = (value, optional);
+            if (!queued) Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (_deferredClaudeText.Remove(text, out var next) && !_disposed && IsVisible)
+                    SetDetailText(text, next.Value, rollUp: true, collapseEmpty: next.Optional);
+            }));
+            return;
+        }
+        _deferredClaudeText.Remove(text);
+        SetDetailText(text, value, rollUp: true, animate: animate, collapseEmpty: optional);
     }
 
     private string ClaudeKey(List<ClaudeSession> order, List<ClaudePermissionRequest> pending, ClaudeLimits? limits, bool listening)
@@ -265,13 +341,49 @@ public partial class ControlCenterView
         _ => IdleGrey
     };
 
-    private Brush DotBrush(ClaudeSessionStatus status) => status switch
+    private Brush SessionDot(ClaudeSession session, ClaudeSession? previous)
     {
-        ClaudeSessionStatus.Waiting => WaitingDot,
-        ClaudeSessionStatus.Working => _workDot,
-        ClaudeSessionStatus.Done => DoneDot,
-        _ => IdleDot
-    };
+        Color color = StatusColor(session.Status);
+        if (!_claudeDots.TryGetValue(session.Id, out var tint))
+            _claudeDots[session.Id] = tint = new ClaudeStatusTint(previous == null ? color : StatusColor(previous.Status));
+        else if (previous != null)
+            tint.Set(StatusColor(previous.Status), animate: false);
+        tint.Set(color, IsVisible);
+        return tint.Brush;
+    }
+
+    private sealed class ClaudeStatusTint
+    {
+        private readonly WeatherTween _mix = new();
+        private Color _from, _target;
+        public SolidColorBrush Brush { get; }
+
+        public ClaudeStatusTint(Color color)
+        {
+            Brush = new SolidColorBrush(color);
+            _from = _target = color;
+            _mix.Step = progress => Brush.Color = Mix(_from, _target, progress);
+        }
+
+        public void Set(Color color, bool animate)
+        {
+            if (animate && color == _target) return;
+            _from = Brush.Color;
+            _target = color;
+            if (!animate || AnimationConfig.ReduceMotion || _from == color) Stop();
+            else
+            {
+                _mix.Stop(0);
+                Motion.To(_mix, WeatherTween.ValueProperty, 1, Motion.StatusRollIn, done: Stop);
+            }
+        }
+
+        public void Stop()
+        {
+            _mix.Stop(1);
+            if (Brush.Color != _target) Brush.Color = _target;
+        }
+    }
 
     private static string StateWord(ClaudeSession session) => session.Status switch
     {
@@ -315,11 +427,13 @@ public partial class ControlCenterView
     /// The session that matters most, big: its name, its state in large type, what it does, how long the
     /// turn runs, and its requests with big buttons. A click brings its terminal tab or app to the front.
     /// </summary>
-    private FrameworkElement Hero(ClaudeSession lead, List<ClaudePermissionRequest> pending)
+    private Border Hero(ClaudeSession lead, List<ClaudePermissionRequest> pending)
     {
         bool sameLead = lead.Id == _heroSessionId;
+        var previous = sameLead ? null : _claudeShownSessions.GetValueOrDefault(lead.Id);
         _heroSessionId = lead.Id;
-        SetOrTint(_heroInk, StatusColor(lead.Status), sameLead && IsVisible ? 900 : 0);
+        if (previous != null) _heroTint.Set(StatusColor(previous.Status), animate: false);
+        _heroTint.Set(StatusColor(lead.Status), (sameLead || previous != null) && IsVisible);
         bool waiting = lead.Status == ClaudeSessionStatus.Waiting;
 
         var top = new Grid();
@@ -339,7 +453,7 @@ public partial class ControlCenterView
             FontWeight = FontWeights.Bold,
             Foreground = _heroInk,
             VerticalAlignment = VerticalAlignment.Center
-        }));
+        }, before: previous == null ? null : StateWord(previous)));
         if (lead.Status == ClaudeSessionStatus.Done)
         {
             // A small tick springs up next to "Done" the first time it shows.
@@ -353,13 +467,14 @@ public partial class ControlCenterView
                 Margin = new Thickness(7, 2, 0, 0)
             };
             _heroTick = tick;
-            _heroTickKey = lead.Id + (lead.FinishedUtc?.Ticks ?? 0);
             state.Children.Add(tick);
         }
         Grid.SetRow(state, 1);
         top.Children.Add(state);
 
-        if (HeroLine(lead) is { Length: > 0 } line)
+        string line = HeroLine(lead) ?? "";
+        string? previousLine = previous == null ? null : HeroLine(previous) ?? "";
+        if (line.Length > 0 || previousLine is { Length: > 0 } || _claudeTexts.ContainsKey((lead.Id, "activity")))
         {
             var doing = ClaudeText(lead.Id, "activity", new TextBlock
             {
@@ -371,12 +486,12 @@ public partial class ControlCenterView
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 12, 0)
-            });
+            }, optional: true, before: previousLine);
             Grid.SetRow(doing, 2);
             top.Children.Add(doing);
         }
 
-        if (HeroTimeLabel(lead) is { } time)
+        if (HeroTimeLabel(lead, previous) is { } time)
         {
             Grid.SetColumn(time, 1);
             Grid.SetRowSpan(time, 2);
@@ -476,26 +591,24 @@ public partial class ControlCenterView
         return hero;
     }
 
-    private TextBlock ClaudeText(string session, string part, TextBlock next)
+    private TextBlock ClaudeText(string session, string part, TextBlock next, bool animate = true, bool optional = false,
+        string? before = null)
     {
+        string value = next.Text;
         if (!_claudeTexts.TryGetValue((session, part), out var text))
         {
-            PreserveClaudeText(next);
-            _claudeTexts[(session, part)] = next;
-            return next;
+            _claudeTexts[(session, part)] = text = next;
+            SetDetailText(text, before ?? value, rollUp: true, animate: false, collapseEmpty: optional);
+            if (DetailTexts.TryGetValue(text, out var state)) state.Reparenting = () => _rebuildingResetRows;
         }
-        if (text.Parent is Panel previous) previous.Children.Remove(text);
-        text.Foreground = next.Foreground;
-        // Rebuilds reparent the label. Start its swap once the new card is back in the visible tree.
-        string value = next.Text;
-        Dispatcher.BeginInvoke(new Action(() => SetDetailText(text, value)));
+        else
+        {
+            if (text.Parent is Panel previous) previous.Children.Remove(text);
+            if (before != null) SetDetailText(text, before, rollUp: true, animate: false, collapseEmpty: optional);
+            text.Foreground = next.Foreground;
+        }
+        _claudeTextUpdates.Add((text, value, animate, optional));
         return text;
-    }
-
-    private void PreserveClaudeText(TextBlock text)
-    {
-        SetDetailText(text, text.Text);
-        if (DetailTexts.TryGetValue(text, out var state)) state.Reparenting = () => _rebuildingResetRows;
     }
 
     /// <summary>The star and the session's name; the folder follows a name Claude Code gave it.</summary>
@@ -524,17 +637,25 @@ public partial class ControlCenterView
     }
 
     /// <summary>The turn's time in large light digits: ticking while it runs, how long it took once done.</summary>
-    private TextBlock? HeroTimeLabel(ClaudeSession session)
+    private static string? HeroTimeText(ClaudeSession session, DateTime now)
     {
-        string? text = null;
         if (session.TurnStartedUtc is { } started && session.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting)
-            text = FormatElapsed(DateTime.UtcNow - started);
-        else if (session.Status == ClaudeSessionStatus.Done && session.FinishedUtc is { } finished && session.TurnStartedUtc is { } turnStart)
-            text = FormatElapsed(finished - turnStart);
-        if (text == null) return null;
+            return FormatElapsed(now - started);
+        if (session.Status == ClaudeSessionStatus.Done && session.FinishedUtc is { } finished && session.TurnStartedUtc is { } turnStart)
+            return FormatElapsed(finished - turnStart);
+        return null;
+    }
+
+    private TextBlock? HeroTimeLabel(ClaudeSession session, ClaudeSession? previousSession)
+    {
+        DateTime now = DateTime.UtcNow;
+        string? text = HeroTimeText(session, now);
+        string? before = previousSession == null ? null : HeroTimeText(previousSession, now) ?? "";
+        _claudeTexts.TryGetValue((session.Id, "time"), out var previous);
+        if (text == null && previous == null && before is not { Length: > 0 }) return null;
         var label = new TextBlock
         {
-            Text = text,
+            Text = text ?? "",
             FontFamily = ControlFont,
             FontSize = 20,
             FontWeight = FontWeights.Light,
@@ -544,45 +665,62 @@ public partial class ControlCenterView
             Margin = new Thickness(12, -2, 0, 0)
         };
         Typography.SetNumeralAlignment(label, FontNumeralAlignment.Tabular);
+        bool running = session.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting;
+        var timeKey = (session.TurnStartedUtc, running ? null : session.FinishedUtc);
+        label = ClaudeText(session.Id, "time", label, animate: !running || !Equals(previous?.Tag, timeKey),
+            optional: true, before: before);
+        label.Tag = timeKey;
         if (session.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting && session.TurnStartedUtc is { } from)
             _elapsedLabels.Add((label, from));
         return label;
     }
 
     /// <summary>The tick next to "Done" springs up with a little twist, once per finished turn.</summary>
-    private void PopTick(double delayMs)
+    private void PopTick()
     {
-        if (_heroTick is not { } tick || _tickShownFor == _heroTickKey) return;
-        _tickShownFor = _heroTickKey;
-        if (AnimationConfig.ReduceMotion) return;
+        if (_heroTick is not { } tick || AnimationConfig.ReduceMotion) return;
         var scale = new ScaleTransform(0, 0);
         var turn = new RotateTransform(-30);
         tick.RenderTransformOrigin = new Point(0.5, 0.5);
         tick.RenderTransform = new TransformGroup { Children = { scale, turn } };
         tick.Opacity = 0;
-        tick.BeginAnimation(OpacityProperty, WeatherMotion.To(0, 1, 220, WeatherMotion.Out, delayMs));
-        Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: TimeSpan.FromMilliseconds(delayMs));
-        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: TimeSpan.FromMilliseconds(delayMs));
-        Motion.To(turn, RotateTransform.AngleProperty, 0, Motion.Press, from: -30, delay: TimeSpan.FromMilliseconds(delayMs));
+        Motion.To(tick, OpacityProperty, 1, Motion.Exit, from: 0);
+        Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
+        Motion.To(turn, RotateTransform.AngleProperty, 0, Motion.Press, from: -30);
+        tick.IsVisibleChanged += (_, _) => { if (!tick.IsVisible) StopClaudeTick(tick); };
+    }
+
+    private static void StopClaudeTick(TextBlock? tick)
+    {
+        if (tick?.RenderTransform is not TransformGroup { Children: [ScaleTransform scale, RotateTransform turn] }) return;
+        Motion.Stop(tick, OpacityProperty, 1);
+        Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
+        Motion.Stop(turn, RotateTransform.AngleProperty, 0);
     }
 
     #endregion
 
     #region Chips
 
-    private FrameworkElement Chips(List<ClaudeSession> order)
+    private WrapPanel Chips(List<ClaudeSession> order)
     {
         var wrap = new WrapPanel { Margin = new Thickness(0, 0, 0, 10), Tag = ChipsTag };
-        for (int i = 1; i < order.Count; i++) wrap.Children.Add(Chip(order[i]));
+        foreach (var session in order.Skip(1))
+        {
+            var previous = session.Id == _claudeShownHeroId ? _claudeShownSessions.GetValueOrDefault(session.Id) : null;
+            wrap.Children.Add(_claudeSessionRows[session.Id] = Chip(session, previous));
+        }
         foreach (var session in _codexSessions) wrap.Children.Add(CodexChip(session));
         return wrap;
     }
 
     /// <summary>Another session as a small pill: its dot, name and state. A tap brings it up into the hero.</summary>
-    private Border Chip(ClaudeSession session)
+    private Border Chip(ClaudeSession session, ClaudeSession? previous)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        row.Children.Add(ChipDot(DotBrush(session.Status)));
+        row.Children.Add(ChipDot(SessionDot(session, previous)));
         row.Children.Add(ClaudeText(session.Id, "chip-name", new TextBlock
         {
             Text = session.Name,
@@ -594,7 +732,7 @@ public partial class ControlCenterView
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(7, 0, 0, 0)
-        }));
+        }, animate: false));
         row.Children.Add(ClaudeText(session.Id, "chip-state", new TextBlock
         {
             Text = ChipLine(session),
@@ -606,7 +744,7 @@ public partial class ControlCenterView
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(7, 0, 0, 0)
-        }));
+        }, before: previous == null ? null : ChipLine(previous)));
         var fill = new SolidColorBrush(CardRest);
         var chip = new Border
         {
@@ -662,60 +800,115 @@ public partial class ControlCenterView
     /// <summary>A card rises a little under the pointer and brightens, and settles back with a spring.</summary>
     private static void HoverLift(Border card, SolidColorBrush fill, Action<bool>? onHover)
     {
-        var (_, shift) = LiftParts(card);
+        var (scale, shift) = LiftParts(card);
         Squish(card);
         card.MouseEnter += (_, _) =>
         {
+            if (!card.IsVisible || !card.IsHitTestVisible) return;
             WeatherMotion.Tint(fill, CardLifted, 140);
             Motion.To(shift, TranslateTransform.YProperty, -1.5, Motion.Press);
             onHover?.Invoke(true);
         };
         card.MouseLeave += (_, _) =>
         {
+            if (!card.IsVisible || !card.IsHitTestVisible) return;
             WeatherMotion.Tint(fill, CardRest, 160);
             Motion.To(shift, TranslateTransform.YProperty, 0, Motion.Press);
             onHover?.Invoke(false);
         };
+        card.IsVisibleChanged += (_, _) =>
+        {
+            if (card.IsVisible || !card.IsHitTestVisible) return;
+            SetOrTint(fill, CardRest, 0);
+            Motion.Stop(card, OpacityProperty, 1);
+            Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
+            Motion.Stop(shift, TranslateTransform.XProperty, 0);
+            Motion.Stop(shift, TranslateTransform.YProperty, 0);
+        };
     }
 
-    /// <summary>Glides in from a little above with a soft overshoot, the way new sessions and requests arrive.</summary>
-    private static void GlideIn(FrameworkElement element, double delayMs, int? fps = null)
+    private static void GlideIn(FrameworkElement element)
     {
-        if (AnimationConfig.ReduceMotion) return;
-        var (scale, shift) = LiftParts(element);
-        element.Opacity = 0;
-        var fade = WeatherMotion.To(0, 1, 160, WeatherMotion.Out, delayMs);
-        if (fps.HasValue) Timeline.SetDesiredFrameRate(fade, fps.Value);
-        element.BeginAnimation(OpacityProperty, fade);
-        var delay = TimeSpan.FromMilliseconds(delayMs);
-        Motion.To(shift, TranslateTransform.YProperty, 0, Motion.Tile, from: -8, delay: delay, fps: fps);
-        Motion.To(scale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: delay, fps: fps);
-        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale, delay: delay, fps: fps);
+        Motion.To(element, OpacityProperty, 1, Motion.Exit, from: 0);
+        Motion.To(LiftParts(element).Shift, TranslateTransform.YProperty, 0, Motion.Tile, from: -8);
     }
 
-    /// <summary>
-    /// An answer folds its request card away while it goes to Claude Code.
-    /// </summary>
-    private void Settle(string requestId, Action answer)
+    private void RemoveClaudeSessionExit((Border Row, bool Chip, int Index) exit)
     {
-        if (!_requestCards.Remove(requestId, out var card) || !IsVisible || AnimationConfig.ReduceMotion)
+        _claudeSessionExits.Remove(exit);
+        if (exit.Row.Parent is Panel parent)
         {
-            answer();
-            return;
+            parent.Children.Remove(exit.Row);
+            if (exit.Chip && parent.Children.Count == 0) _claudeSection.Children.Remove(parent);
         }
-        bool sent = false;
-        void Send()
+        if (IsVisible && !_disposed) ContentHeightChanged?.Invoke();
+    }
+
+    private void StopClaudeDetailsMotion()
+    {
+        if (_claudeFace == null) return;
+        if (_deferredClaudeText.Count != 0) _claudeKey = "";
+        _deferredClaudeText.Clear();
+        _swipingClaudePermission?.Stop();
+        foreach (var exit in _claudeSessionExits.ToArray())
         {
-            if (sent) return;
-            sent = true;
-            answer();
+            StopClaudeFold(exit.Row);
+            RemoveClaudeSessionExit(exit);
         }
+        foreach (var card in _settlingClaudeRequests)
+        {
+            StopClaudeFold(card);
+            if (card.Parent is Panel parent) parent.Children.Remove(card);
+        }
+        _settlingClaudeRequests.Clear();
+        foreach (var dot in _claudeDots.Values) dot.Stop();
+        _heroTint.Stop();
+        _faceStatusTint.Stop();
+        foreach (var text in _claudeTexts.Values.Append(_accountStatus))
+            if (DetailTexts.TryGetValue(text, out var state)) SettleDetailText(text, state);
+        StopClaudeTick(_heroTick);
+    }
+
+    private static void FoldClaudeCard(FrameworkElement card, Action done)
+    {
         card.IsHitTestVisible = false;
         var squash = new ScaleTransform(1, 1);
         card.LayoutTransform = squash;
-        card.BeginAnimation(OpacityProperty, WeatherMotion.To(1, 0, 170, WeatherMotion.Out));
-        Motion.To(squash, ScaleTransform.ScaleYProperty, 0, Motion.Exit);
-        Send();
+        Motion.To(card, OpacityProperty, 0, Motion.Exit);
+        Motion.To(squash, ScaleTransform.ScaleYProperty, 0, Motion.Exit, done: done);
+    }
+
+    private static void StopClaudeFold(FrameworkElement card)
+    {
+        Motion.Stop(card, OpacityProperty, 0);
+        if (card.RenderTransform is TranslateTransform shift)
+            Motion.Stop(shift, TranslateTransform.XProperty);
+        if (card.LayoutTransform is ScaleTransform squash)
+            Motion.Stop(squash, ScaleTransform.ScaleYProperty, 0);
+    }
+
+    private readonly HashSet<FrameworkElement> _settlingClaudeRequests = new();
+
+    private bool Settle(string requestId, Func<bool> answer, int swipeDirection = 0)
+    {
+        if (!answer()) return false;
+        if (!IsVisible || AnimationConfig.ReduceMotion || !_requestCards.Remove(requestId, out var card)) return true;
+        _settlingClaudeRequests.Add(card);
+        card.IsHitTestVisible = false;
+        void Finish()
+        {
+            _settlingClaudeRequests.Remove(card);
+            if (card.Parent is Panel parent) parent.Children.Remove(card);
+            if (IsVisible) BuildClaudeSection();
+        }
+        if (swipeDirection != 0 && card.RenderTransform is TranslateTransform shift)
+        {
+            Motion.To(shift, TranslateTransform.XProperty, shift.X + swipeDirection * 12, Motion.StatusRollOut);
+            Motion.To(card, OpacityProperty, 0, Motion.StatusRollOut, done: () => FoldClaudeCard(card, Finish));
+        }
+        else FoldClaudeCard(card, Finish);
+        return true;
     }
 
     #endregion

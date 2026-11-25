@@ -57,11 +57,19 @@ public partial class MainWindow
         // The attachment reveals the whole face with the shell; only a message replacement swaps in place.
         SetAppNotificationOpacity(AppNotificationBanner, 1);
         SetAppNotificationValue(AppNotificationBannerTranslate, TranslateTransform.YProperty, 0);
-        TransitionAppNotificationBlurCover(entering: true);
+        if (!_isAiQuotaNotification) TransitionAppNotificationBlurCover(entering: true);
         Motion.To(AppNotificationBannerTranslate, TranslateTransform.XProperty, 0, Motion.Exit,
             from: replacing ? 6 : null);
-        SetAppNotificationValue(AppNotificationBannerScale, ScaleTransform.ScaleXProperty, 1);
-        SetAppNotificationValue(AppNotificationBannerScale, ScaleTransform.ScaleYProperty, 1);
+        if (_isAiQuotaNotification && !AnimationConfig.ReduceMotion)
+        {
+            Motion.To(AppNotificationBannerScale, ScaleTransform.ScaleXProperty, 1, Motion.Pop, from: .98);
+            Motion.To(AppNotificationBannerScale, ScaleTransform.ScaleYProperty, 1, Motion.Pop, from: .96);
+        }
+        else
+        {
+            SetAppNotificationValue(AppNotificationBannerScale, ScaleTransform.ScaleXProperty, 1);
+            SetAppNotificationValue(AppNotificationBannerScale, ScaleTransform.ScaleYProperty, 1);
+        }
         AppNotificationHoverSurface.Visibility = Visibility.Visible;
         AnimateAppNotificationHoverFeedback();
     }
@@ -109,7 +117,8 @@ public partial class MainWindow
         _isAppNotificationHovered = false;
         int generation = ++_appNotificationGeneration;
         AppNotificationBanner.IsHitTestVisible = false;
-        if (!immediate) TransitionAppNotificationBlurCover(entering: false);
+        if (_isAiQuotaNotification) AiQuotaBannerContent.PlayExit(immediate);
+        else if (!immediate) TransitionAppNotificationBlurCover(entering: false);
         AnimateAppNotificationHoverFeedback();
         if (direction != 0)
         {

@@ -10,12 +10,6 @@ using VNotch.Models;
 
 namespace VNotch.Services.Spotlight;
 
-internal sealed record SpotlightAiMessage(string Role, string Content)
-{
-    public JsonElement[]? GeminiParts { get; init; }
-    public bool IsIncomplete { get; init; }
-}
-
 public sealed class SpotlightAiException(string resourceKey, string? diagnostic = null) : InvalidOperationException(resourceKey)
 {
     internal string? Diagnostic { get; } = diagnostic;
@@ -73,7 +67,7 @@ internal sealed partial class SpotlightAiService
         out byte outStatus,
         out byte outCompleted);
 
-    private static readonly HttpClient SharedClient = new(NetworkPrivacy.Handler(NetworkFeature.Ai, new NativeWinHttpHandler { AllowAutoRedirect = false }))
+    private static readonly HttpClient SharedClient = new(NetworkPrivacy.Handler(NetworkFeature.Ai))
     { Timeout = TimeSpan.FromSeconds(90), MaxResponseContentBufferSize = 2 * 1024 * 1024 };
     private readonly HttpClient _client;
     internal SpotlightAiService(HttpClient? client = null) => _client = client ?? SharedClient;
@@ -115,6 +109,7 @@ internal sealed partial class SpotlightAiService
         if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(model))
             throw new SpotlightAiException("spotlight.ai.configure");
         key = key.Trim();
+        model = model.Trim();
         // Reject invalid header values before HTTP code can include them in an exception.
         if (vn_spotlight_ai_validate_api_key(key.AsSpan(), key.Length, out byte validKey) != 0 || validKey == 0)
             throw new SpotlightAiException("spotlight.ai.authError");
@@ -122,7 +117,7 @@ internal sealed partial class SpotlightAiService
         string url;
         if (provider == "Gemini")
         {
-            url = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model.Trim())}:{(streaming ? "streamGenerateContent?alt=sse" : "generateContent")}";
+            url = $"https://generativelanguage.googleapis.com/v1beta/models/{Uri.EscapeDataString(model)}:{(streaming ? "streamGenerateContent?alt=sse" : "generateContent")}";
             var contents = new object[history.Count];
             for (int i = 0; i < history.Count; i++)
             {
@@ -148,19 +143,19 @@ internal sealed partial class SpotlightAiService
                 _ => throw new SpotlightAiException("spotlight.ai.configure")
             };
             url = $"{Uri.UriSchemeHttps}://{endpoint}";
-            if (provider == "Claude") body = new { model = model.Trim(), max_tokens = 4096, messages, stream = streaming };
-            else if (streaming) body = new { model = model.Trim(), messages, stream = true, stream_options = new { include_usage = true } };
-            else body = new { model = model.Trim(), messages, stream = false };
+            if (provider == "Claude") body = new { model, max_tokens = 4096, messages, stream = streaming };
+            else if (streaming) body = new { model, messages, stream = true, stream_options = new { include_usage = true } };
+            else body = new { model, messages, stream = false };
         }
         var request = new HttpRequestMessage(HttpMethod.Post, url)
         { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
-        if (provider == "Gemini") request.Headers.Add("x-goog-api-key", key.Trim());
+        if (provider == "Gemini") request.Headers.Add("x-goog-api-key", key);
         else if (provider == "Claude")
         {
-            request.Headers.Add("x-api-key", key.Trim());
+            request.Headers.Add("x-api-key", key);
             request.Headers.Add("anthropic-version", "2023-06-01");
         }
-        else request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key.Trim());
+        else request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         return request;
     }
 
@@ -176,206 +171,214 @@ internal sealed partial class SpotlightAiService
             throw ProviderError((int)response.StatusCode);
         using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
-        var data = new StringBuilder();
-        var lineBuilder = new StringBuilder();
-        bool received = false;
-        bool completed = false;
-        int total = 0;
-        int totalResponseChars = 0;
-
-        string? ProcessLine(string? line)
-        {
-            if (line == null || line.Length == 0)
-            {
-                if (data.Length > 0)
-                {
-                    string payload = data.ToString();
-                    data.Clear();
-                    string provider = settings.SpotlightAiProvider ?? string.Empty;
-
-                    if (onGeminiParts == null || provider != "Gemini")
-                    {
-                        Span<char> fastDeltaBuf = stackalloc char[4096];
-                        if (vn_spotlight_ai_extract_json_delta(
-                            payload.AsSpan(), payload.Length,
-                            provider.AsSpan(), provider.Length,
-                            fastDeltaBuf, fastDeltaBuf.Length,
-                            out int fastDeltaLen,
-                            out byte fastStatus,
-                            out byte fastCompleted) == 0)
-                        {
-                            if (fastStatus == 1)
-                            {
-                                completed = true;
-                                return null;
-                            }
-                            if (fastStatus == 2)
-                            {
-                                if (fastCompleted != 0)
-                                    completed = true;
-                                onUsage?.Invoke(usage);
-                                if (fastDeltaLen > 0)
-                                {
-                                    total += fastDeltaLen;
-                                    if (total > 200000) throw new SpotlightAiException("spotlight.ai.tooLong");
-                                    received = true;
-                                    return new string(fastDeltaBuf[..fastDeltaLen]);
-                                }
-                                return null;
-                            }
-                        }
-                    }
-
-                    if (payload == "[DONE]") { completed = true; return null; }
-                    JsonDocument json;
-                    try { json = JsonDocument.Parse(payload); }
-                    catch (JsonException) { throw new SpotlightAiException("spotlight.ai.emptyError"); }
-                    using (json)
-                    {
-                        var root = json.RootElement;
-                        if (settings.SpotlightAiProvider == "Gemini" &&
-                            root.TryGetProperty("candidates", out var finishedCandidates) && finishedCandidates.ValueKind == JsonValueKind.Array)
-                        {
-                            foreach (var c in finishedCandidates.EnumerateArray())
-                            {
-                                if (c.TryGetProperty("finishReason", out var reason) && reason.GetString() == "STOP")
-                                {
-                                    completed = true;
-                                    break;
-                                }
-                            }
-                        }
-                        usage = usage.Read(root, provider);
-                        onUsage?.Invoke(usage);
-                        if (root.TryGetProperty("error", out var error))
-                        {
-                            throw StreamError(error);
-                        }
-                        if (settings.SpotlightAiProvider == "Gemini" && onGeminiParts != null &&
-                            root.TryGetProperty("candidates", out var candidates) && candidates.ValueKind == JsonValueKind.Array && candidates.GetArrayLength() > 0 &&
-                            candidates[0].TryGetProperty("content", out var content) && content.TryGetProperty("parts", out var parts) && parts.ValueKind == JsonValueKind.Array)
-                        {
-                            int partCount = parts.GetArrayLength();
-                            var clonedParts = new JsonElement[partCount];
-                            int partIdx = 0;
-                            foreach (var part in parts.EnumerateArray())
-                            {
-                                clonedParts[partIdx++] = part.Clone();
-                            }
-                            onGeminiParts.Invoke(clonedParts);
-                        }
-                        string delta = ReadDelta(root, provider);
-                        string? yielded = null;
-                        if (delta.Length > 0)
-                        {
-                            total += delta.Length;
-                            if (total > 200000) throw new SpotlightAiException("spotlight.ai.tooLong");
-                            received = true;
-                            yielded = delta;
-                        }
-                        if (settings.SpotlightAiProvider == "Claude" &&
-                            root.TryGetProperty("type", out var eventType) && eventType.GetString() == "message_stop")
-                        {
-                            completed = true;
-                        }
-                        return yielded;
-                    }
-                }
-            }
-            else if (vn_spotlight_ai_parse_sse_data_line(
-                line.AsSpan(), line.Length,
-                out int payloadOffset, out int payloadLen,
-                out byte isData, out _) == 0 && isData != 0)
-            {
-                if (data.Length > 0) data.Append('\n');
-                data.Append(line.AsSpan(payloadOffset, payloadLen));
-                if (data.Length > MaxStreamResponseChars) throw new SpotlightAiException("spotlight.ai.tooLong");
-            }
-            return null;
-        }
-
+        var events = new StreamEvents(settings, usage, onGeminiParts, onUsage);
+        var lines = new StreamLines(events);
         char[] rentedBuffer = ArrayPool<char>.Shared.Rent(4096);
         try
         {
-            while (!completed)
+            while (!events.Completed)
             {
-                int charsRead;
-                using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(token))
+                int count = await ReadStreamChunkAsync(reader, rentedBuffer, token).ConfigureAwait(false);
+                if (count == 0)
                 {
-                    readCts.CancelAfter(StreamReadIdleTimeout);
-                    try
-                    {
-                        charsRead = await reader.ReadAsync(rentedBuffer.AsMemory(), readCts.Token).AsTask().WaitAsync(readCts.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!token.IsCancellationRequested)
-                    {
-                        throw new TimeoutException("AI stream stalled waiting for data.");
-                    }
-                }
-
-                int offset = 0;
-                while (offset < charsRead && !completed)
-                {
-                    int remainingLen = charsRead - offset;
-                    int newlinePos = Array.IndexOf(rentedBuffer, '\n', offset, remainingLen);
-                    int sliceLen = newlinePos >= 0 ? (newlinePos - offset) : remainingLen;
-
-                    if (lineBuilder.Length + sliceLen > MaxStreamResponseChars ||
-                        totalResponseChars + lineBuilder.Length + sliceLen > MaxStreamResponseChars)
-                    {
-                        throw new InvalidOperationException("AI stream response exceeded maximum allowed size.");
-                    }
-
-                    lineBuilder.Append(rentedBuffer, offset, sliceLen);
-                    if (newlinePos < 0)
-                    {
-                        break;
-                    }
-
-                    offset += sliceLen + 1;
-                    if (lineBuilder.Length > 0 && lineBuilder[^1] == '\r')
-                    {
-                        lineBuilder.Length--;
-                    }
-                    totalResponseChars += lineBuilder.Length;
-                    string line = lineBuilder.ToString();
-                    lineBuilder.Clear();
-                    if (ProcessLine(line) is { } delta)
-                    {
-                        yield return delta;
-                    }
-                }
-
-                if (charsRead == 0)
-                {
-                    if (lineBuilder.Length > 0 && !completed)
-                    {
-                        if (lineBuilder[^1] == '\r')
-                        {
-                            lineBuilder.Length--;
-                        }
-                        totalResponseChars += lineBuilder.Length;
-                        string lastLine = lineBuilder.ToString();
-                        lineBuilder.Clear();
-                        if (ProcessLine(lastLine) is { } delta)
-                        {
-                            yield return delta;
-                        }
-                    }
-                    if (!completed && ProcessLine(null) is { } finalDelta)
-                    {
-                        yield return finalDelta;
-                    }
+                    foreach (var delta in lines.Finish()) yield return delta;
                     break;
                 }
+                foreach (var delta in lines.Process(rentedBuffer, count)) yield return delta;
             }
         }
         finally
         {
             ArrayPool<char>.Shared.Return(rentedBuffer);
         }
-        if (!received) throw new SpotlightAiException("spotlight.ai.emptyError");
-        if (!completed) throw new SpotlightAiException("spotlight.ai.networkError");
+        if (!events.Received) throw new SpotlightAiException("spotlight.ai.emptyError");
+        if (!events.Completed) throw new SpotlightAiException("spotlight.ai.networkError");
+    }
+
+    private async Task<int> ReadStreamChunkAsync(StreamReader reader, char[] buffer, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(StreamReadIdleTimeout);
+        try
+        {
+            return await reader.ReadAsync(buffer.AsMemory(), timeout.Token).AsTask().WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new TimeoutException("AI stream stalled waiting for data.");
+        }
+    }
+
+    private sealed class StreamLines(StreamEvents events)
+    {
+        private readonly StringBuilder partialLine = new();
+        private int responseChars;
+
+        internal IEnumerable<string> Process(char[] buffer, int count)
+        {
+            int offset = 0;
+            while (offset < count && !events.Completed)
+            {
+                int newline = Array.IndexOf(buffer, '\n', offset, count - offset);
+                int length = (newline < 0 ? count : newline) - offset;
+                if (responseChars + partialLine.Length + length > MaxStreamResponseChars)
+                    throw new InvalidOperationException("AI stream response exceeded maximum allowed size.");
+                if (newline < 0)
+                {
+                    partialLine.Append(buffer, offset, length);
+                    yield break;
+                }
+                string? delta = ConsumeLine(buffer, offset, length);
+                offset = newline + 1;
+                if (delta != null) yield return delta;
+            }
+        }
+
+        private string? ConsumeLine(char[] buffer, int offset, int length)
+        {
+            if (partialLine.Length == 0) return Dispatch(buffer.AsSpan(offset, length));
+            partialLine.Append(buffer, offset, length);
+            return FlushPartialLine();
+        }
+
+        private string? Dispatch(ReadOnlySpan<char> line)
+        {
+            if (!line.IsEmpty && line[^1] == '\r') line = line[..^1];
+            responseChars += line.Length;
+            return events.ProcessLineSpan(line);
+        }
+
+        private string? FlushPartialLine()
+        {
+            string line = partialLine.ToString();
+            partialLine.Clear();
+            return Dispatch(line.AsSpan());
+        }
+
+        internal IEnumerable<string> Finish()
+        {
+            if (partialLine.Length > 0 && !events.Completed && FlushPartialLine() is { } delta) yield return delta;
+            if (!events.Completed && events.FlushEventPayload() is { } finalDelta) yield return finalDelta;
+        }
+    }
+
+    private sealed class StreamEvents(NotchSettings settings, AiUsageSnapshot usage, Action<JsonElement[]>? onGeminiParts, Action<AiUsageSnapshot>? onUsage)
+    {
+        private readonly StringBuilder data = new();
+        private int total;
+        internal bool Received { get; private set; }
+        internal bool Completed { get; private set; }
+
+        internal string? FlushEventPayload()
+        {
+            if (data.Length == 0) return null;
+
+            string payload = data.ToString();
+            data.Clear();
+            string provider = settings.SpotlightAiProvider ?? string.Empty;
+
+            if (TryReadNativeDelta(payload, provider, out var fastDelta)) return fastDelta;
+
+            if (payload == "[DONE]")
+            {
+                Completed = true;
+                return null;
+            }
+
+            JsonDocument json;
+            try { json = JsonDocument.Parse(payload); }
+            catch (JsonException) { throw new SpotlightAiException("spotlight.ai.emptyError"); }
+
+            using (json)
+            {
+                var root = json.RootElement;
+                JsonElement candidates = default;
+                bool hasGeminiCandidates = provider == "Gemini" &&
+                    root.TryGetProperty("candidates", out candidates) &&
+                    candidates.ValueKind == JsonValueKind.Array;
+
+                if (hasGeminiCandidates) ReadGeminiCompletion(candidates);
+
+                usage = usage.Read(root, provider);
+                onUsage?.Invoke(usage);
+                if (root.TryGetProperty("error", out var error))
+                    throw StreamError(error);
+
+                if (hasGeminiCandidates) ReportGeminiParts(candidates);
+
+                string? yielded = RecordDelta(ReadDelta(root, provider));
+
+                if (provider == "Claude" &&
+                    root.TryGetProperty("type", out var eventType) && eventType.GetString() == "message_stop")
+                {
+                    Completed = true;
+                }
+                return yielded;
+            }
+        }
+
+        private bool TryReadNativeDelta(string payload, string provider, out string? delta)
+        {
+            delta = null;
+            if (provider == "Gemini" && onGeminiParts != null) return false;
+            Span<char> buffer = stackalloc char[4096];
+            if (vn_spotlight_ai_extract_json_delta(payload.AsSpan(), payload.Length, provider.AsSpan(), provider.Length,
+                buffer, buffer.Length, out int length, out byte status, out byte completed) != 0) return false;
+            if (status == 1) { Completed = true; return true; }
+            if (status != 2) return false;
+            if (completed != 0) Completed = true;
+            onUsage?.Invoke(usage);
+            if (length > 0) delta = RecordDelta(new string(buffer[..length]));
+            return true;
+        }
+
+        private string? RecordDelta(string delta)
+        {
+            if (delta.Length == 0) return null;
+            total += delta.Length;
+            if (total > 200000) throw new SpotlightAiException("spotlight.ai.tooLong");
+            Received = true;
+            return delta;
+        }
+
+        private void ReadGeminiCompletion(JsonElement candidates)
+        {
+            foreach (var candidate in candidates.EnumerateArray())
+            {
+                if (!candidate.TryGetProperty("finishReason", out var reason) || reason.ValueKind != JsonValueKind.String ||
+                    reason.GetString() is null or "" or "FINISH_REASON_UNSPECIFIED") continue;
+                Completed = true;
+                return;
+            }
+        }
+
+        private void ReportGeminiParts(JsonElement candidates)
+        {
+            if (onGeminiParts == null || candidates.GetArrayLength() == 0 ||
+                !candidates[0].TryGetProperty("content", out var content) ||
+                !content.TryGetProperty("parts", out var parts) || parts.ValueKind != JsonValueKind.Array) return;
+            var clonedParts = new JsonElement[parts.GetArrayLength()];
+            int index = 0;
+            foreach (var part in parts.EnumerateArray()) clonedParts[index++] = part.Clone();
+            onGeminiParts(clonedParts);
+        }
+
+        internal string? ProcessLineSpan(ReadOnlySpan<char> line)
+        {
+            if (line.IsEmpty)
+                return FlushEventPayload();
+
+            if (vn_spotlight_ai_parse_sse_data_line(
+                line, line.Length,
+                out int payloadOffset, out int payloadLen,
+                out byte isData, out _) == 0 && isData != 0)
+            {
+                if (data.Length > 0) data.Append('\n');
+                data.Append(line.Slice(payloadOffset, payloadLen));
+                if (data.Length > MaxStreamResponseChars) throw new SpotlightAiException("spotlight.ai.tooLong");
+            }
+            return null;
+        }
     }
 
     private async Task<HttpResponseMessage> OpenStreamAsync(NotchSettings settings,
@@ -468,18 +471,15 @@ internal sealed partial class SpotlightAiService
         return sb.ToString();
     }
 
-    private static string ConcatClaudeTextBlocks(JsonElement contentArray)
-    {
-        var sb = new StringBuilder();
-        foreach (var p in contentArray.EnumerateArray())
-        {
-            if (p.GetProperty("type").GetString() == "text")
-            {
-                sb.Append(p.GetProperty("text").GetString());
-            }
-        }
-        return sb.ToString();
-    }
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_spotlight_ai_extract_response_text(
+        ReadOnlySpan<char> jsonPtr,
+        int jsonLen,
+        int providerKind,
+        Span<char> outBuf,
+        int outCap,
+        out int outLen,
+        out byte outOk);
 
     internal async Task<string> SendAsync(NotchSettings settings, IReadOnlyList<SpotlightAiMessage> history, CancellationToken token)
     {
@@ -490,21 +490,37 @@ internal sealed partial class SpotlightAiService
         RuntimeLog.Debug("SPOTLIGHT-AI", $"response; HTTP {(int)response.StatusCode}");
         if (!response.IsSuccessStatusCode)
             throw ProviderError((int)response.StatusCode);
-        try
+
+        string body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+        int providerKind = settings.SpotlightAiProvider switch
         {
-            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token).ConfigureAwait(false));
-            var root = json.RootElement;
-            string? text = settings.SpotlightAiProvider switch
+            "Gemini" => 1,
+            "Claude" => 2,
+            _ => 0
+        };
+        return ExtractResponseText(body, providerKind);
+    }
+
+    private static string ExtractResponseText(string body, int providerKind)
+    {
+        ReadOnlySpan<char> bodySpan = body.AsSpan();
+        Span<char> stackBuf = stackalloc char[1024];
+        int rc = vn_spotlight_ai_extract_response_text(
+            bodySpan, bodySpan.Length, providerKind, stackBuf, stackBuf.Length, out int written, out byte ok);
+        if (ok == 0)
+            throw new SpotlightAiException("spotlight.ai.emptyError");
+        if (rc == 0)
+            return new string(stackBuf[..written]);
+        if (rc == -2 && written > 0)
+        {
+            char[] heapBuf = new char[written];
+            if (vn_spotlight_ai_extract_response_text(
+                    bodySpan, bodySpan.Length, providerKind, heapBuf, heapBuf.Length, out written, out ok) == 0 && ok != 0)
             {
-                "Gemini" => ConcatNonThoughtGeminiParts(root.GetProperty("candidates")[0].GetProperty("content").GetProperty("parts")),
-                "Claude" => ConcatClaudeTextBlocks(root.GetProperty("content")),
-                _ => root.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()
-            };
-            if (string.IsNullOrWhiteSpace(text)) throw new SpotlightAiException("spotlight.ai.emptyError");
-            return text;
+                return new string(heapBuf, 0, written);
+            }
         }
-        catch (Exception ex) when (ex is not SpotlightAiException and (JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException))
-        { throw new SpotlightAiException("spotlight.ai.emptyError"); }
+        throw new SpotlightAiException("spotlight.ai.emptyError");
     }
 
     internal static void EnsurePrivacy(NotchSettings settings)

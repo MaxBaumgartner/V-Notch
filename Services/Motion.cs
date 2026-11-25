@@ -71,6 +71,8 @@ internal static partial class Motion
     // Exit: leaving is shorter than arriving and never overshoots.
     public static readonly SpringMotion Exit = Ms(220, 0);
     public const double ExitToScale = 0.86;
+    public static readonly SpringMotion StatusRollOut = Ms(75, 0);
+    public static readonly SpringMotion StatusRollIn = Ms(165, 0);
 
     private static SpringMotion Ms(double response, double bounce) => new(TimeSpan.FromMilliseconds(response), bounce);
 

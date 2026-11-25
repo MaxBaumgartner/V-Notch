@@ -6,13 +6,8 @@ namespace VNotch;
 
 public partial class MainWindow
 {
-    private SettingsWindow? _preparedSettingsWindow;
-    private SettingsWindow? _activeSettingsWindow;
-    private NotchSettings? _preparedSettingsSnapshot;
+    internal SettingsPreparationCoordinator SettingsPreparation { get; }
     private bool _firstOpenUiPrepared;
-    private bool _settingsPreparationScheduled;
-    private int _settingsPreparationGeneration;
-    private UiScheduledTimer? _settingsPreparationExpiry;
 
     protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() =>
         new MainWindowAutomationPeer(this);
@@ -37,56 +32,6 @@ public partial class MainWindow
         _firstOpenUiPrepared = true;
         PrepareExpandedContentForFirstOpen();
         PrepareSecondaryContentForFirstOpen();
-    }
-
-    private void ScheduleSettingsFirstOpenPreparation()
-    {
-        if (_cleanedUp || _activeSettingsWindow != null) return;
-        if (_settingsPreparationExpiry != null)
-        {
-            _settingsPreparationExpiry.Stop();
-            _settingsPreparationExpiry.Start();
-            return;
-        }
-        if (_settingsPreparationScheduled) return;
-        _settingsPreparationScheduled = true;
-        int generation = _settingsPreparationGeneration;
-        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() =>
-            PrepareSettingsFirstOpenAsync(generation).SafeFireAndForget("SETTINGS-PREPARE")));
-    }
-
-    private async Task PrepareSettingsFirstOpenAsync(int generation)
-    {
-        if (!await WaitForSettingsPreparationIdleAsync(generation)) return;
-        try
-        {
-            // Both stages run after the notch's entrance. Yield between XAML
-            // construction and native template realization so input can run.
-            _preparedSettingsSnapshot = _settings.Clone();
-            var prepared = CreateSettingsWindow(prepareForFirstShow: true);
-            _preparedSettingsWindow = prepared;
-            _settingsPreparationExpiry = new UiScheduledTimer(TimeSpan.FromSeconds(30),
-                System.Windows.Threading.DispatcherPriority.Background, (_, _) => DetachPreparedSettingsWindow()?.Close(), Dispatcher);
-            await Dispatcher.InvokeAsync(static () => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
-            if (!await WaitForSettingsPreparationIdleAsync(generation)) return;
-            await prepared.PrepareForFirstShowAsync();
-        }
-        catch (Exception ex)
-        {
-            if (generation == _settingsPreparationGeneration) DetachPreparedSettingsWindow()?.Close();
-            RuntimeLog.Warn("FIRST-OPEN", $"Settings preparation skipped: {ex.GetType().Name}");
-        }
-    }
-
-    private async Task<bool> WaitForSettingsPreparationIdleAsync(int generation)
-    {
-        // Dispatcher idle can fall between frames of the notch entrance or an expansion.
-        while (!_cleanedUp && generation == _settingsPreparationGeneration)
-        {
-            if (_postAppearInitializationStarted && !_isAnimating) return true;
-            await Task.Delay(50);
-        }
-        return false;
     }
 
     private void PrepareSecondaryContentForFirstOpen()
@@ -136,39 +81,5 @@ public partial class MainWindow
             ExpandedContent.Visibility = visibility;
             ExpandedContent.Opacity = opacity;
         }
-    }
-
-    private SettingsWindow TakeSettingsWindow()
-    {
-        var snapshot = _preparedSettingsSnapshot;
-        var prepared = DetachPreparedSettingsWindow();
-        if (prepared == null) return CreateSettingsWindow();
-
-        prepared.ActivatePreparedWindow(
-            _settings,
-            snapshotMatches: snapshot?.ValueEquals(_settings) == true,
-            _spotlightController.IsHotkeyRegistered);
-        return prepared;
-    }
-
-    private SettingsWindow? DetachPreparedSettingsWindow()
-    {
-        // Opening Settings while the hidden warm-up yields takes ownership of the window.
-        _settingsPreparationGeneration++;
-        _settingsPreparationScheduled = false;
-        _settingsPreparationExpiry?.Dispose();
-        _settingsPreparationExpiry = null;
-        var prepared = _preparedSettingsWindow;
-        _preparedSettingsWindow = null;
-        _preparedSettingsSnapshot = null;
-        return prepared;
-    }
-
-    private void DiscardPreparedSettingsWindow()
-    {
-        DetachPreparedSettingsWindow()?.Close();
-        var active = _activeSettingsWindow;
-        _activeSettingsWindow = null;
-        active?.Close();
     }
 }

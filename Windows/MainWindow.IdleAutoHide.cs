@@ -9,6 +9,7 @@ public partial class MainWindow
 {
 
     private IdleAutoHideController? _idleAutoHide;
+    internal IdleAutoHideController? IdleAutoHide => _idleAutoHide;
     private bool _idlePointerInRevealZone;
 
     private void InitializeIdleAutoHide() => InitializeIdleAutoHideController();
@@ -34,7 +35,7 @@ public partial class MainWindow
         _notchManager.HoverService.MousePositionChanged += HoverService_MousePositionChangedForIdleAutoHide;
     }
 
-    private void ApplyIdleAutoHideSettings()
+    internal void ApplyIdleAutoHideSettings()
     {
         _notchManager.HoverService.SetResponsivePolling(_settings.EnableIdleAutoHide);
         _idlePointerInRevealZone = _settings.EnableIdleAutoHide
@@ -87,7 +88,7 @@ public partial class MainWindow
         if (_compactPillArbiter.ActiveSlot != CompactPillSlot.None)
             return false;
 
-        if (_isCountdownRunning || IsCountdownCompletionVisualActive || IsAppNotificationBannerActive)
+        if (_isCountdownRunning || IsCountdownCompletionVisualActive || IsAppNotificationBannerActive || RunningScriptJob != null)
             return false;
 
         if (_idlePointerInRevealZone || NotchWrapper.IsMouseOver)

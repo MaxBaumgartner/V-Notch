@@ -40,7 +40,6 @@ public sealed class CountdownController : IDisposable
     public event EventHandler<long>? RunReset;
     public event EventHandler? Tick;
 
-    public long ActiveRunId => _activeRunId;
     public bool IsRunning => _viewModel.IsRunning;
     public TimeSpan Duration => _viewModel.Duration;
     public TimeSpan Remaining => _viewModel.Remaining;

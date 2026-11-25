@@ -1,12 +1,13 @@
 #include "vnotch_common.h"
 #include "vnotch_json_view.h"
+#include "LyricsInternal.h"
 #include <array>
 #include <charconv>
 #include <functional>
 
-VN_EXPORT int32_t vn_spotify_extract_track_id(const char16_t*, int32_t, char16_t*, int32_t, int32_t*, uint8_t*) noexcept;
-VN_EXPORT int32_t vn_spotify_match_normalized_score(const char16_t*, int32_t, const char16_t*, int32_t, int32_t, int32_t, int32_t*) noexcept;
-VN_EXPORT int32_t vn_spotify_calculate_duration_score_delta(int64_t, int64_t, int32_t*) noexcept;
+extern "C" int32_t vn_spotify_extract_track_id(const char16_t*, int32_t, char16_t*, int32_t, int32_t*, uint8_t*) noexcept;
+extern "C" int32_t vn_spotify_match_normalized_score(const char16_t*, int32_t, const char16_t*, int32_t, int32_t, int32_t, int32_t*) noexcept;
+extern "C" int32_t vn_spotify_calculate_duration_score_delta(int64_t, int64_t, int32_t*) noexcept;
 // These calls stay entirely inside the DLL, sharing the existing scoring rules.
 namespace {
 using Text = std::u16string;
@@ -272,7 +273,7 @@ VN_EXPORT int32_t vn_catalog_select_utf8(const uint8_t* bytes, int32_t length, i
                 }
                 if (milliseconds < INT32_MIN || milliseconds > INT32_MAX) milliseconds = 0;
                 int32_t value = 0; uint8_t accepted = 0;
-                vn_lyrics_score_netease_candidate(raw_title.data(), static_cast<int32_t>(raw_title.size()), raw_artist.data(), static_cast<int32_t>(raw_artist.size()),
+                vnotch::services::lyrics_internal::ScoreNetEaseCandidate(raw_title.data(), static_cast<int32_t>(raw_title.size()), raw_artist.data(), static_cast<int32_t>(raw_artist.size()),
                     static_cast<int32_t>(std::clamp<int64_t>(target_ms / 1000, 0, INT32_MAX)), candidate_title.data(), static_cast<int32_t>(candidate_title.size()),
                     candidate_artists.data(), static_cast<int32_t>(candidate_artists.size()), static_cast<int32_t>(milliseconds), &value, &accepted);
                 if (accepted && value > best_value) { best_value = value; best = std::move(candidate_id); best_key = std::move(candidate_key); *numeric_id = number_id; }

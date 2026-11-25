@@ -21,11 +21,13 @@ public partial class ControlCenterView
     {
         if (_disposed) return;
         StopClaudeFaceMotion();
+        StopClaudeDetailsMotion();
         foreach (var row in _resetRows.Values)
         {
             row.Stop();
             if (IsVisible && Page == ControlCenterPage.Claude) row.Refresh();
         }
+        if (IsVisible && Page == ControlCenterPage.Claude) BuildClaudeSection();
     }));
 
     private void AddResetRow(string provider, List<ResetOption> options)

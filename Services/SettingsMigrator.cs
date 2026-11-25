@@ -24,12 +24,6 @@ public static partial class SettingsMigrator
         out int outFps);
 
     [LibraryImport(NativeDll)]
-    private static partial int vn_settings_migrator_is_supported_version(
-        int version,
-        int currentVersion,
-        out byte outSupported);
-
-    [LibraryImport(NativeDll)]
     private static partial int vn_settings_migrator_should_revoke_canvas_consent(
         byte hasAccepted,
         byte enableCanvas,
@@ -37,7 +31,18 @@ public static partial class SettingsMigrator
         int consentVersion,
         out byte outRevoke);
 
-    public const int CurrentVersion = 20;
+    [LibraryImport(NativeDll)]
+    private static unsafe partial int vn_settings_migrator_append_csv_token_if_missing(
+        char* csvPtr,
+        int csvLen,
+        char* tokenPtr,
+        int tokenLen,
+        char* outBuf,
+        int outCap,
+        out int outLen);
+
+
+    public const int CurrentVersion = 21;
 
     private static readonly IReadOnlyDictionary<int, Func<JsonObject, JsonObject>> _migrations =
         new Dictionary<int, Func<JsonObject, JsonObject>>
@@ -62,6 +67,7 @@ public static partial class SettingsMigrator
             [17] = MigrateV17,
             [18] = MigrateV18,
             [19] = MigrateV19,
+            [20] = MigrateV20,
         };
 
     private static void EnsureProperty(JsonObject root, string propertyName, JsonNode? defaultValue)
@@ -250,6 +256,50 @@ public static partial class SettingsMigrator
         root[propertyName] = string.Join(",", tabs);
     }
 
+    private static JsonObject MigrateV20(JsonObject root)
+    {
+        if (root.TryGetPropertyValue(nameof(NotchSettings.NavTabOrder), out var orderNode)
+            && orderNode is JsonValue orderVal
+            && orderVal.TryGetValue<string>(out var navOrder)
+            && navOrder is not null)
+        {
+            root[nameof(NotchSettings.NavTabOrder)] = AppendCsvTokenIfMissing(navOrder, "AiUsage");
+        }
+
+        return root;
+    }
+
+    public static unsafe string AppendCsvTokenIfMissing(string csv, string token)
+    {
+        if (string.IsNullOrEmpty(token)) return csv ?? string.Empty;
+        ReadOnlySpan<char> csvSpan = csv.AsSpan();
+        ReadOnlySpan<char> tokenSpan = token.AsSpan();
+        int cap = csvSpan.Length + tokenSpan.Length + 2;
+        Span<char> buf = cap <= 256 ? stackalloc char[cap] : new char[cap];
+
+        fixed (char* pCsv = csvSpan)
+        fixed (char* pToken = tokenSpan)
+        fixed (char* pOut = buf)
+        {
+            char dummy = '\0';
+            int rc = vn_settings_migrator_append_csv_token_if_missing(
+                csvSpan.IsEmpty ? &dummy : pCsv,
+                csvSpan.Length,
+                pToken,
+                tokenSpan.Length,
+                pOut,
+                buf.Length,
+                out int outLen);
+            if (rc == 0 && outLen >= 0 && outLen <= buf.Length)
+            {
+                return new string(buf[..outLen]);
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(csv) ? token : $"{csv},{token}";
+    }
+
+
     public static (NotchSettings settings, bool migrated) Migrate(string rawJson)
     {
         if (string.IsNullOrWhiteSpace(rawJson))
@@ -271,13 +321,18 @@ public static partial class SettingsMigrator
             startVersion = parsed;
         }
 
-        bool versionSupported = vn_settings_migrator_is_supported_version(startVersion, CurrentVersion, out byte outSupported) == 0
-            ? outSupported != 0
-            : (startVersion >= 0 && startVersion <= CurrentVersion);
-        if (startVersion > CurrentVersion) { RuntimeLog.Warn("SettingsMigrator", $"Settings schema version {startVersion} is newer than supported version {CurrentVersion}; loading forward-compatible fields without overwriting."); }
-        else if (!versionSupported)
-            throw new JsonException(
-                $"Unsupported settings version: {startVersion}");
+        if (startVersion < 0)
+        {
+            throw new JsonException($"Unsupported settings version: {startVersion}");
+        }
+
+        bool isForwardVersion = startVersion > CurrentVersion;
+        if (isForwardVersion)
+        {
+            RuntimeLog.Warn(
+                "SettingsMigrator",
+                $"Settings schema version {startVersion} is newer than supported version {CurrentVersion}; loading forward-compatible fields without overwriting.");
+        }
 
         int currentVersion = startVersion;
         bool migrated = false;
@@ -293,7 +348,10 @@ public static partial class SettingsMigrator
             currentVersion++;
         }
 
-        root[nameof(NotchSettings.SettingsVersion)] = currentVersion;
+        if (!isForwardVersion)
+        {
+            root[nameof(NotchSettings.SettingsVersion)] = CurrentVersion;
+        }
 
         // Inspect all files for legacy plaintext keys regardless of reported version;
         // callers must preserve the old file if protection fails.
@@ -321,6 +379,7 @@ public static partial class SettingsMigrator
 
         var normalizedJson = root.ToJsonString();
         var settings = JsonSerializer.Deserialize<NotchSettings>(normalizedJson) ?? new NotchSettings();
+        settings.SettingsVersion = isForwardVersion ? startVersion : CurrentVersion;
 
         bool hasAccepted = SpotifyCanvasConsent.HasAccepted(settings);
         byte acceptedFlag = hasAccepted ? (byte)1 : (byte)0;
@@ -338,14 +397,21 @@ public static partial class SettingsMigrator
         if (shouldRevoke)
         {
             SpotifyCanvasConsent.Revoke(settings);
-            migrated = true;
+            if (!isForwardVersion)
+            {
+                migrated = true;
+            }
         }
 
         if (startVersion < CurrentVersion)
         {
             migrated = true;
         }
+        else if (isForwardVersion)
+        {
+            migrated = false;
+        }
 
-        return (settings, startVersion <= CurrentVersion && migrated);
+        return (settings, migrated);
     }
 }

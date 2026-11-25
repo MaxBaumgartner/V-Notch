@@ -12,4 +12,17 @@ public enum NotchView
     Pi,
     School,
     Roblox,
+    AiUsage,
+}
+
+public enum NotchShapeState
+{
+    Collapsed,
+    Expanding,
+    Expanded,
+    Collapsing,
+    MusicExpanding,
+    MusicExpanded,
+    MusicCollapsing,
+    Hidden
 }

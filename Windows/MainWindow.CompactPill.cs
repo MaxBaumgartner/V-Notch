@@ -165,7 +165,7 @@ public partial class MainWindow
             return false;
         }
         // A finished Claude turn holds the pill for good, so any other alert may pass it; it returns afterwards.
-        if (slot != CompactPillSlot.Claude && (IsClaudeDonePillShown || IsCodexJobPillShown)) StepClaudePillAside();
+        if (slot != CompactPillSlot.Claude && (IsClaudeDonePillShown || IsJobPillShown)) StepClaudePillAside();
 
         var result = _compactPillArbiter.TryAcquire(slot);
         token = result.Token;

@@ -23,7 +23,6 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private const string LogTag = "SPOTLIGHT-HOTKEY";
     private const int HotkeyId = 0x564E;
 
-
     private readonly Func<SpotlightWindow> _windowFactory;
     private SpotlightWindow? _window;
     private Window? _host;
@@ -37,7 +36,6 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private bool _nativeRegistered;
     private NotchSettings? _settings;
     private bool _disposed;
-    private bool _preparationQueued;
     private int _hostGeneration;
 
     public bool IsHotkeyRegistered => _nativeRegistered || _keyboardHook?.IsInstalled == true;
@@ -81,9 +79,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
                 VNotch.Services.Spotlight.SpotlightAiService.Configuration(_settings, provider)
                 != VNotch.Services.Spotlight.SpotlightAiService.Configuration(settings, provider));
 
-        bool introSeen = _settings?.HasSeenSpotlightIntro == true;
         _settings = settings.Clone();
-        _settings.HasSeenSpotlightIntro |= introSeen;
         if (glassChanged || historyChanged || languageChanged || aiChanged)
         {
             _window?.ApplySettings(_settings);
@@ -233,7 +229,6 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
         window.OpenStateChanged -= Window_OpenStateChanged;
         window.IsVisibleChanged -= Window_IsVisibleChanged;
         window.Closed -= Window_Closed;
-        window.IntroDismissed -= Window_IntroDismissed;
         _window = null;
         UpdateKeyboardHook();
     }
@@ -253,15 +248,7 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
         window.OpenStateChanged += Window_OpenStateChanged;
         window.IsVisibleChanged += Window_IsVisibleChanged;
         window.Closed += Window_Closed;
-        window.IntroDismissed += Window_IntroDismissed;
         return window;
-    }
-
-    private void Window_IntroDismissed(object? sender, EventArgs e)
-    {
-        if (_settings != null) _settings.HasSeenSpotlightIntro = true;
-        if (_host is MainWindow host)
-            host.MarkSpotlightIntroSeenAsync().SafeFireAndForget("SPOTLIGHT-INTRO-SAVE");
     }
 
     private void RemoveKeyboardHook()
@@ -284,33 +271,6 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
         _window.RevealTaskbarOnNextOpen = _winTapToggle;
         _window.ToggleFromHotkey();
         UpdateKeyboardHook();
-    }
-
-    private void QueuePreparation()
-    {
-        if (_preparationQueued || _host == null) return;
-        _preparationQueued = true;
-        int generation = _hostGeneration;
-        _host.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ContextIdle, (Action)(() =>
-        {
-            if (generation != _hostGeneration) return;
-            _preparationQueued = false;
-            if (_disposed || _host == null || _settings?.EnableSpotlight != true) return;
-            try
-            {
-                if (_window == null)
-                {
-                    _window = CreateWindow();
-                    _window.Owner = _host;
-                    _window.ApplySettings(_settings);
-                }
-                _window.PrepareGlassForOpening();
-            }
-            catch (Exception ex)
-            {
-                RuntimeLog.Log(LogTag, $"Spotlight idle preparation skipped: {ex.Message}");
-            }
-        }));
     }
 
     private void DisableHotkey()
@@ -359,7 +319,6 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     private void DetachHost()
     {
         ++_hostGeneration;
-        _preparationQueued = false;
         DisableHotkey();
         _startHooks?.Dispose();
         _startHooks = null;
@@ -373,18 +332,12 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
             _window.OpenStateChanged -= Window_OpenStateChanged;
             _window.IsVisibleChanged -= Window_IsVisibleChanged;
             _window.Closed -= Window_Closed;
-            _window.IntroDismissed -= Window_IntroDismissed;
             _window.Shutdown();
             _window = null;
         }
     }
 
-    public void Dispose()
-    {
-        var window = _window;
-        DisposeCore();
-        window?.FlushPersistenceAsync().GetAwaiter().GetResult();
-    }
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     private void DisposeCore()
     {
@@ -397,6 +350,9 @@ internal sealed partial class SpotlightController : ISpotlightController, IAsync
     {
         var window = _window;
         DisposeCore();
-        if (window != null) await window.FlushPersistenceAsync().ConfigureAwait(false);
+        if (window == null) return;
+        try { await window.FlushPersistenceAsync().ConfigureAwait(false); }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or AggregateException)
+        { RuntimeLog.Warn("SPOTLIGHT", $"Could not flush window preferences: {ex.Message}"); }
     }
 }

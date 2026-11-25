@@ -1,13 +1,11 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Forms;
-using VNotch.Contracts;
-using VNotch.Controllers;
 using VNotch.Models;
 
 namespace VNotch.Services;
 
-public sealed partial class NotchManager : INotchManager
+public sealed partial class NotchManager : IDisposable
 {
     private const string NativeDll = "VNotch.Native.dll";
 
@@ -39,22 +37,22 @@ public sealed partial class NotchManager : INotchManager
     private readonly HoverDetectionService? _hoverService;
 
     private Screen? _currentScreen;
+    private VnNotchGeometryOut _geometry;
+    internal Func<System.Drawing.Point?>? GetAnchor { get; set; }
     private Rect _safeArea;
     private bool _disposed;
 
     internal int GeometryComputeCount { get; private set; }
 
-    public NotchTransitionCoordinator TransitionCoordinator { get; }
     public HoverDetectionService HoverService => _hoverService!;
     public Rect SafeArea => _safeArea;
 
     public event EventHandler<Rect>? SafeAreaChanged;
     public event EventHandler? PositionUpdated;
 
-    public NotchManager(Window window, NotchSettings settings, NotchTransitionCoordinator transitionCoordinator)
+    public NotchManager(Window window, NotchSettings settings)
     {
         _settings = settings;
-        TransitionCoordinator = transitionCoordinator;
         if (window != null)
         {
             _hoverService = new HoverDetectionService(settings.HoverZoneMargin, window);
@@ -62,17 +60,20 @@ public sealed partial class NotchManager : INotchManager
         }
     }
 
-    internal NotchManager(NotchSettings settings, NotchTransitionCoordinator? transitionCoordinator = null)
+    internal NotchManager(NotchSettings settings)
     {
         _settings = settings;
-        TransitionCoordinator = transitionCoordinator!;
     }
 
     public void UpdateSettings(NotchSettings settings)
     {
-        _settings = settings;
         AnimationConfig.Configure(settings.AnimationFps, settings.AutoAnimationFps);
+        UpdatePosition(settings);
+    }
 
+    internal void UpdatePosition(NotchSettings settings)
+    {
+        _settings = settings;
         UpdatePosition();
     }
 
@@ -82,12 +83,26 @@ public sealed partial class NotchManager : INotchManager
 
         AnimationConfig.Refresh(_currentScreen.DeviceName);
 
-        ComputeGeometry(_currentScreen, out var geom);
+        ComputeGeometry(_currentScreen, out _geometry);
+        RefreshAnchor();
+        PositionUpdated?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal void RefreshAnchor()
+    {
+        var geom = _geometry;
+        if (GetAnchor?.Invoke() is { } anchor)
+        {
+            double dx = anchor.X - geom.NotchWidth / 2 - geom.NotchLeft;
+            double dy = anchor.Y - geom.NotchTop;
+            geom.NotchLeft += dx;
+            geom.SafeLeft += dx;
+            geom.NotchTop += dy;
+            geom.SafeTop += dy;
+        }
         _hoverService?.UpdateNotchBounds(geom.NotchLeft, geom.NotchTop, geom.NotchWidth, geom.NotchHeight);
 
         ApplySafeArea(in geom);
-
-        PositionUpdated?.Invoke(this, EventArgs.Empty);
     }
 
     private void ComputeGeometry(Screen screen, out VnNotchGeometryOut geom)
@@ -122,32 +137,6 @@ public sealed partial class NotchManager : INotchManager
     {
         return MonitorSelection.Resolve(_settings);
     }
-
-    #region Public Controls
-
-    public void Expand(NotchExpandMode mode = NotchExpandMode.Compact)
-    {
-        TransitionCoordinator.RequestView(NotchView.Media, $"NotchManager.Expand({mode})");
-    }
-
-    public void Collapse()
-    {
-        TransitionCoordinator.RequestCollapse("NotchManager.Collapse");
-    }
-
-    public void Hide()
-    {
-        _hoverService?.Stop();
-        TransitionCoordinator.SetEffectivelyVisible(false, "NotchManager.Hide");
-    }
-
-    public void Show()
-    {
-        _hoverService?.Start();
-        TransitionCoordinator.SetEffectivelyVisible(true, "NotchManager.Show");
-    }
-
-    #endregion
 
     public void Dispose()
     {

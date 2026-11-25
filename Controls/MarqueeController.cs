@@ -25,8 +25,6 @@ internal sealed class MarqueeController : IDisposable
     #region State
 
     private static readonly TimeSpan MorphThrottleInterval = TimeSpan.FromMilliseconds(400);
-    private double _titleScrollDistance;
-    private double _artistScrollDistance;
     private string _lastTitleText;
     private string _lastArtistText;
     private string? _pendingTitleText;
@@ -92,8 +90,8 @@ internal sealed class MarqueeController : IDisposable
     }
     public void RefreshMediaMarquee()
     {
-        RestartMarqueeFor(_title, _isTitleActiveA, isTitle: true);
-        RestartMarqueeFor(_artist, _isArtistActiveA, isTitle: false);
+        RestartMarqueeFor(_title, _isTitleActiveA);
+        RestartMarqueeFor(_artist, _isArtistActiveA);
     }
 
     public void TransitionTrackText(string title, string artist, int direction = 1)
@@ -243,8 +241,7 @@ internal sealed class MarqueeController : IDisposable
         _lastTitleText = newText;
         _lastTitleMorphTimeUtc = DateTime.UtcNow;
 
-        MorphAndRestart(_title, ref _isTitleActiveA, newText,
-            setDistance: d => _titleScrollDistance = d);
+        MorphAndRestart(_title, ref _isTitleActiveA, newText);
     }
 
     private void ApplyArtistText(string newText)
@@ -254,11 +251,10 @@ internal sealed class MarqueeController : IDisposable
         _lastArtistText = newText;
         _lastArtistMorphTimeUtc = DateTime.UtcNow;
 
-        MorphAndRestart(_artist, ref _isArtistActiveA, newText,
-            setDistance: d => _artistScrollDistance = d);
+        MorphAndRestart(_artist, ref _isArtistActiveA, newText);
     }
 
-    private void RestartMarqueeFor(MarqueeTargets t, bool activeA, bool isTitle)
+    private void RestartMarqueeFor(MarqueeTargets t, bool activeA)
     {
         var activeText = activeA ? t.A.Text : t.B.Text;
         var activeTranslate = activeA ? t.A.Marquee : t.B.Marquee;
@@ -272,20 +268,16 @@ internal sealed class MarqueeController : IDisposable
         // The trailing fade padding extends a scroll, but is not text overflow.
         if (textWidth > containerWidth)
         {
-            if (isTitle) _titleScrollDistance = distance;
-            else _artistScrollDistance = distance;
             StartMarqueeAnimation(activeTranslate, distance);
         }
         else
         {
-            if (isTitle) _titleScrollDistance = 0;
-            else _artistScrollDistance = 0;
             activeTranslate.BeginAnimation(TranslateTransform.XProperty, null);
             activeTranslate.X = 0;
         }
     }
 
-    private void MorphAndRestart(MarqueeTargets t, ref bool activeA, string newText, Action<double> setDistance)
+    private void MorphAndRestart(MarqueeTargets t, ref bool activeA, string newText)
     {
         if (!AnimateChanges || AnimationConfig.ReduceMotion)
         {
@@ -301,7 +293,6 @@ internal sealed class MarqueeController : IDisposable
                 layer.Marquee.X = 0;
                 if (layer.Layer is FrameworkElement { Effect: BlurEffect blur }) Motion.Stop(blur, BlurEffect.RadiusProperty, 0);
             }
-            setDistance(0);
             return;
         }
         if (activeA)
@@ -328,12 +319,10 @@ internal sealed class MarqueeController : IDisposable
         if (textWidth > containerWidth)
         {
             double distance = textWidth - containerWidth + 15;
-            setDistance(distance);
             StartMarqueeAnimation(newActiveTranslate, distance);
         }
         else
         {
-            setDistance(0);
             newActiveTranslate.BeginAnimation(TranslateTransform.XProperty, null);
             newActiveTranslate.X = 0;
         }

@@ -65,7 +65,7 @@ internal static unsafe partial class TrayIconBridge
             {
                 if (!string.Equals(current, name, StringComparison.Ordinal)) return false;
                 Guid iid = IidIuiAutomationElement3;
-                if (Marshal.QueryInterface(element, ref iid, out nint element3) != 0 || element3 == 0) return true;
+                if (Marshal.QueryInterface(element, in iid, out nint element3) != 0 || element3 == 0) return true;
                 try
                 {
                     shown = Call0(element3, SlotShowContextMenu) == 0;
@@ -221,7 +221,7 @@ internal static unsafe partial class TrayIconBridge
         try
         {
             Guid iid = IidIuiAutomation;
-            if (Marshal.QueryInterface(unknown, ref iid, out uia) != 0) return;
+            if (Marshal.QueryInterface(unknown, in iid, out uia) != 0) return;
             if (CallOut(uia, SlotElementFromHandle, tray, out root) != 0 || root == 0) return;
             if (CallOut(uia, SlotCreateTrueCondition, out condition) != 0 || condition == 0) return;
             var findAll = (delegate* unmanaged[Stdcall]<nint, int, nint, nint*, int>)Slot(root, SlotFindAll);

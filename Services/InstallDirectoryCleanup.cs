@@ -3,8 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace VNotch.Services;
@@ -50,22 +50,55 @@ internal static partial class InstallDirectoryCleanup
         if (!File.Exists(manifest)) return [];
         if (new FileInfo(manifest).Length > 16 * 1024 * 1024) throw new IOException("Installation manifest is too large.");
         using var document = JsonDocument.Parse(File.ReadAllText(manifest));
+        var root = document.RootElement;
         // shortcut: paths-only manifests cannot prove ownership, retain legacy files until a verified upgrade.
-        if (document.RootElement.ValueKind == JsonValueKind.Array) return [];
-        var value = document.Deserialize<InstallManifest>() ?? throw new IOException("Invalid installation manifest.");
-        if (value.Version != 2 || value.Files == null || value.Files.Length > 100_000)
+        if (root.ValueKind == JsonValueKind.Array) return [];
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("Version", out var versionElement) ||
+            versionElement.ValueKind != JsonValueKind.Number ||
+            !versionElement.TryGetInt32(out int version) ||
+            version != 2 ||
+            !root.TryGetProperty("Files", out var filesElement) ||
+            filesElement.ValueKind != JsonValueKind.Array)
             throw new IOException("Invalid installation manifest.");
-        foreach (var file in value.Files)
+
+        int count = filesElement.GetArrayLength();
+        if (count > 100_000)
+            throw new IOException("Invalid installation manifest.");
+
+        var files = new InstalledFile[count];
+        int index = 0;
+        foreach (var item in filesElement.EnumerateArray())
         {
-            if (file == null || string.IsNullOrWhiteSpace(file.Path) || Path.IsPathRooted(file.Path) ||
-                file.Path.Split(['/', '\\']).Any(part => part is "" or "." or ".." || part.Contains(':')) ||
-                file.Sha256 == null || file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit) ||
-                file.Path.Equals(ManifestFileName, StringComparison.OrdinalIgnoreCase))
+            if (item.ValueKind != JsonValueKind.Object)
                 throw new IOException("Invalid installation manifest entry.");
-            SafeFileDeletion.ValidatePath(Path.Combine(directory, file.Path));
+            string? itemPath = item.TryGetProperty("Path", out var pathProp) && pathProp.ValueKind == JsonValueKind.String
+                ? pathProp.GetString()
+                : null;
+            string? itemSha = item.TryGetProperty("Sha256", out var shaProp) && shaProp.ValueKind == JsonValueKind.String
+                ? shaProp.GetString()
+                : null;
+            if (itemPath == null || itemSha == null ||
+                vn_install_cleanup_validate_manifest_entry(
+                    itemPath, itemPath.Length,
+                    itemSha, itemSha.Length,
+                    out byte entryValid) != 0 ||
+                entryValid == 0)
+                throw new IOException("Invalid installation manifest entry.");
+            SafeFileDeletion.ValidatePath(Path.Combine(directory, itemPath));
+            files[index++] = new InstalledFile(itemPath, itemSha);
         }
-        return value.Files;
+        return files;
     }
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_install_cleanup_validate_manifest_entry(
+        ReadOnlySpan<char> relPath,
+        int pathLen,
+        ReadOnlySpan<char> sha256,
+        int shaLen,
+        out byte outValid);
+
     [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_install_cleanup_has_valid_input_syntax(
         ReadOnlySpan<char> dirPtr,
@@ -98,6 +131,18 @@ internal static partial class InstallDirectoryCleanup
             private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
             [DllImport("kernel32.dll", SetLastError = true)]
             private static extern bool SetFileInformationByHandle(SafeFileHandle file, int kind, ref byte delete, uint size);
+            [StructLayout(LayoutKind.Sequential)]
+            private struct AttributeTag { public uint Attributes, Tag; }
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int kind, out AttributeTag info, uint size);
+            public static bool BlockedLink(string path) {
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0) return false;
+                using (var handle = CreateFile(path, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+                    AttributeTag tag;
+                    return handle.IsInvalid || !GetFileInformationByHandleEx(handle, 9, out tag, 8) ||
+                        tag.Tag <= 1 || (tag.Tag & 0x20000000) != 0;
+                }
+            }
             public static bool DeleteIfUnchanged(string path, string expected) {
                 using (var handle = CreateFile(path, 0x80010000, 1, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero)) {
                     if (handle.IsInvalid) {
@@ -122,13 +167,13 @@ internal static partial class InstallDirectoryCleanup
             if (-not [IO.Directory]::Exists($directory)) { exit 0 }
             $ancestor = [IO.DirectoryInfo]::new($directory)
             while ($null -ne $ancestor) {
-                if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }
+                if ([VNotchOwnedFile]::BlockedLink($ancestor.FullName)) { exit 1 }
                 $ancestor = $ancestor.Parent
             }
             try {
                 $manifest = [IO.Path]::Combine($directory, 'installed-files.json')
                 if (-not [IO.File]::Exists($manifest)) { exit 0 }
-                if (([IO.File]::GetAttributes($manifest) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }
+                if ([VNotchOwnedFile]::BlockedLink($manifest)) { exit 1 }
                 if ([IO.FileInfo]::new($manifest).Length -gt 16777216) { exit 1 }
                 $data = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($manifest))
                 if ($data -is [array] -or $data -is [string]) { exit 0 }
@@ -144,7 +189,7 @@ internal static partial class InstallDirectoryCleanup
                     if (-not $target.StartsWith($directory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { exit 1 }
                     $ancestor = [IO.FileInfo]::new($target)
                     while ($null -ne $ancestor) {
-                        if ($ancestor.Exists -and ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }
+                        if ($ancestor.Exists -and [VNotchOwnedFile]::BlockedLink($ancestor.FullName)) { exit 1 }
                         if ($ancestor -is [IO.FileInfo]) { $ancestor = $ancestor.Directory } else { $ancestor = $ancestor.Parent }
                     }
                     $targets.Add([pscustomobject]@{ Path = $target; Hash = $entry.Sha256 })
@@ -156,13 +201,13 @@ internal static partial class InstallDirectoryCleanup
                 foreach ($logName in @('vnotch-debug.log', 'vnotch-debug.log.old', 'vnotch-crash.log', 'vnotch-crash.log.old')) {
                     $logPath = [IO.Path]::Combine($directory, $logName)
                     if ([IO.File]::Exists($logPath)) {
-                        if (([IO.File]::GetAttributes($logPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }
+                        if ([VNotchOwnedFile]::BlockedLink($logPath)) { exit 1 }
                         [IO.File]::Delete($logPath)
                     }
                 }
                 foreach ($pattern in @('vnotch-debug.log*', 'vnotch-crash.log*')) {
                     foreach ($logPath in [IO.Directory]::GetFiles($directory, $pattern, [IO.SearchOption]::TopDirectoryOnly)) {
-                        if (([IO.File]::GetAttributes($logPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 1 }
+                        if ([VNotchOwnedFile]::BlockedLink($logPath)) { exit 1 }
                         [IO.File]::Delete($logPath)
                     }
                 }
@@ -203,7 +248,8 @@ internal static partial class InstallDirectoryCleanup
 
         for (var ancestor = new DirectoryInfo(fullPath); ancestor != null; ancestor = ancestor.Parent)
         {
-            if (ancestor.Exists && (ancestor.Attributes & FileAttributes.ReparsePoint) != 0)
+            if (ancestor.Exists && (ancestor.Attributes & FileAttributes.ReparsePoint) != 0 &&
+                SafeFileDeletion.HasBlockedReparsePoint(ancestor.FullName))
                 throw new ArgumentException("Cleanup cannot traverse directory links.", nameof(directory));
         }
         return fullPath;
@@ -283,6 +329,34 @@ internal static partial class InstallDirectoryCleanup
             {
                 deleter(path);
             }
+        }
+
+        var vnotchTempRoot = Path.Combine(root, "V-Notch");
+        if (!Directory.Exists(vnotchTempRoot)) return;
+
+        try
+        {
+            if ((new DirectoryInfo(vnotchTempRoot).Attributes & FileAttributes.ReparsePoint) != 0)
+                return;
+
+            foreach (var subDir in Directory.GetDirectories(vnotchTempRoot))
+            {
+                if (Path.GetFileName(subDir).EndsWith(".recovery", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                try
+                {
+                    SafeFileDeletion.DeleteDirectory(subDir);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Leave locked active updater folders untouched.
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort cleanup of stale temp subdirectories.
         }
     }
 

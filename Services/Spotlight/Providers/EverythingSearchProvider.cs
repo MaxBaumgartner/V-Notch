@@ -1,5 +1,6 @@
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Windows.Interop;
 using VNotch.Models;
 
@@ -31,13 +32,6 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
         out double outScore);
 
     [LibraryImport(NativeDll)]
-    private static partial int vn_everything_provider_parse_bounded_utf16_len(
-        IntPtr basePtr,
-        int offset,
-        int totalBytes,
-        out int outCharLen);
-
-    [LibraryImport(NativeDll)]
     private static partial int vn_everything_provider_read_reply_item_count(
         IntPtr listPtr,
         int byteCount,
@@ -66,6 +60,12 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
         int outCap,
         out int outBytes);
 
+    public FileSearchRole FileRole => FileSearchRole.AuthoritativeIndex;
+    public bool DeferSearch => true;
+    public void ConfigureExclusions(Func<string, bool>? isExcluded, Func<IReadOnlyList<string>>? excludedFolders)
+    {
+        IsExcluded = isExcluded;
+    }
     internal Func<string, bool>? IsExcluded { get; set; }
 
     private const string EverythingIpcWindowClass = "EVERYTHING_TASKBAR_NOTIFICATION";
@@ -80,7 +80,6 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
     private readonly SemaphoreSlim _queryLock = new(1, 1);
     private readonly object _replyGate = new();
     private HwndSource? _replyWindow;
-    private uint _queryId;
     private TaskCompletionSource<IReadOnlyList<(string Name, string Parent, bool IsFolder)>>? _pendingReply;
     private uint _pendingReplyId;
     private static readonly TimeSpan RetryCooldown = TimeSpan.FromSeconds(15);
@@ -160,11 +159,10 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
 
             var completion = new TaskCompletionSource<IReadOnlyList<(string, string, bool)>>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            uint id;
+            uint id = NextQueryNonce();
             lock (_replyGate)
             {
                 if (_disposed) return Array.Empty<SpotlightSearchItem>();
-                id = ++_queryId;
                 _pendingReply = completion;
                 _pendingReplyId = id;
             }
@@ -193,7 +191,10 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
             {
                 lock (_replyGate)
                 {
-                    if (ReferenceEquals(_pendingReply, completion)) _pendingReply = null;
+                    if (ReferenceEquals(_pendingReply, completion))
+                    {
+                        _pendingReply = null;
+                    }
                 }
             }
         }
@@ -311,10 +312,24 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
         }
     }
 
+    private static uint NextQueryNonce()
+    {
+        Span<byte> bytes = stackalloc byte[4];
+        uint nonce;
+        do
+        {
+            RandomNumberGenerator.Fill(bytes);
+            nonce = MemoryMarshal.Read<uint>(bytes);
+        } while (nonce == 0);
+        return nonce;
+    }
+
     private IntPtr ReplyWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg != WmCopyData || lParam == IntPtr.Zero) return IntPtr.Zero;
 
+        // Everything replies from its own worker window (or wParam 0), so the
+        // random per-query id in dwData is the only reliable reply check.
         TaskCompletionSource<IReadOnlyList<(string, string, bool)>>? completion;
         uint expectedId;
         lock (_replyGate)
@@ -371,13 +386,6 @@ internal sealed partial class EverythingSearchProvider : ISpotlightProvider, IDi
         }
 
         return rows;
-    }
-
-    private static unsafe string ReadBoundedUniString(IntPtr basePtr, int offset, int totalBytes)
-    {
-        if (vn_everything_provider_parse_bounded_utf16_len(basePtr, offset, totalBytes, out int charLen) != 0 || charLen <= 0)
-            return string.Empty;
-        return new string((char*)(basePtr + offset), 0, charLen);
     }
 
     private static bool SendQuery(

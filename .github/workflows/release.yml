@@ -68,8 +68,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     environment: code-signing
+    permissions:
+      contents: read
+      actions: read
     env:
       NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+      VNotchNativeArtifactPath: ${{ github.workspace }}/artifacts/native/VNotch.Native.dll
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +96,17 @@ jobs:
             Uninstall/packages.lock.json
 
       # actions/cache@v4; cache the publisher-verified portable archive only.
+      - name: Download native artifact from successful CI run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tested-native
+          path: artifacts/native
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Verify tested native artifact
+        shell: pwsh
+        run: ./Tools/Assert-NativeArtifact.ps1
+
       - name: Restore NSIS portable cache
         id: nsis-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -124,17 +139,12 @@ jobs:
           RELEASE_VERSION: ${{ needs.verify-validation.outputs.version }}
           WINDOWS_VERSION: ${{ needs.verify-validation.outputs.windows_version }}
           INFORMATIONAL_VERSION: ${{ needs.verify-validation.outputs.informational_version }}
-          IS_PRERELEASE: ${{ needs.verify-validation.outputs.prerelease }}
         run: |
           $ErrorActionPreference = 'Stop'
           $rawThumbprint = $env:VNOTCH_CODE_SIGNING_THUMBPRINT
           $cleanThumbprint = if ($rawThumbprint) { ($rawThumbprint -replace '\s','' -replace '[^\da-fA-F]','') } else { '' }
-          $hasCert = [bool]($env:VNOTCH_CODE_SIGNING_PFX_BASE64 -and $cleanThumbprint -match '^[a-fA-F0-9]{40}$')
-          $isPrerelease = $env:IS_PRERELEASE -eq 'true'
-          if (-not $hasCert -and -not $isPrerelease) {
-            # Stable releases reach every user through auto-update, so they must be signed.
-            Write-Host '::error title=Code signing required::Stable release requires VNOTCH_CODE_SIGNING_PFX_BASE64 and a 40-character VNOTCH_CODE_SIGNING_THUMBPRINT. Unsigned installers are only allowed for prerelease tags.'
-            exit 1
+          if (-not $env:VNOTCH_CODE_SIGNING_PFX_BASE64 -or $cleanThumbprint -notmatch '^[a-fA-F0-9]{40}$') {
+            throw 'Publishing an installer requires VNOTCH_CODE_SIGNING_PFX_BASE64 and a 40-character VNOTCH_CODE_SIGNING_THUMBPRINT in the code-signing environment.'
           }
 
           $certificateFile = Join-Path $env:RUNNER_TEMP 'vnotch-signing.pfx'
@@ -142,22 +152,16 @@ jobs:
           try {
             $buildArguments = @{
               NsisPath = $env:NSIS_MAKENSIS; LockedRestore = $true
+              TestedNativeArtifactDirectory = 'artifacts/native'
               ReleaseVersion = $env:RELEASE_VERSION; WindowsVersion = $env:WINDOWS_VERSION
               InformationalVersion = $env:INFORMATIONAL_VERSION
+              RequireAuthenticode = $true; CertificateThumbprint = $cleanThumbprint
             }
             if ('${{ matrix.variant }}' -eq 'self-contained') { $buildArguments.SelfContained = $true }
 
-            if ($hasCert) {
-              Write-Host "Authenticode certificate detected. Importing and signing installer..." -ForegroundColor Green
-              [IO.File]::WriteAllBytes($certificateFile, [Convert]::FromBase64String($env:VNOTCH_CODE_SIGNING_PFX_BASE64))
-              $password = ConvertTo-SecureString -String $env:VNOTCH_CODE_SIGNING_PASSWORD -AsPlainText -Force
-              $imported = @(Import-PfxCertificate -FilePath $certificateFile -CertStoreLocation Cert:\CurrentUser\My -Password $password)
-              $buildArguments.CertificateThumbprint = $cleanThumbprint
-              $buildArguments.RequireAuthenticode = $true
-            } else {
-              Write-Host "No Authenticode certificate configured. Building an unsigned prerelease installer." -ForegroundColor Yellow
-            }
-
+            [IO.File]::WriteAllBytes($certificateFile, [Convert]::FromBase64String($env:VNOTCH_CODE_SIGNING_PFX_BASE64))
+            $password = ConvertTo-SecureString -String $env:VNOTCH_CODE_SIGNING_PASSWORD -AsPlainText -Force
+            $imported = @(Import-PfxCertificate -FilePath $certificateFile -CertStoreLocation Cert:\CurrentUser\My -Password $password)
             ./scripts/b.ps1 @buildArguments
             if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
           } finally {
@@ -223,7 +227,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.verify-validation.outputs.version }}
         run: |
           foreach ($name in @('V-Notch-Setup.exe', 'V-Notch-Setup-SelfContained.exe')) {
-            ./scripts/Sign-UpdateManifest.ps1 -InstallerPath "signed-assets/$name" -Version $env:RELEASE_VERSION
+            ./scripts/Sign-UpdateManifest.ps1 -InstallerPath "signed-assets/$name" -Version $env:RELEASE_VERSION -RequireAuthenticode
           }
 
       - name: Verify signed release assets with the channel's updater
@@ -279,7 +283,7 @@ jobs:
           set -euo pipefail
           cat release-assets/*.sha256 > release-assets/checksums.txt
           python .github/scripts/release_version.py --notes "$RELEASE_VERSION" > release-notes.md
-          printf '\nRelease %s from commit `%s`.\n\n- `V-Notch-Setup.exe` (requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0))\n- `V-Notch-Setup-SelfContained.exe` (runtime bundled)\n- Signed update manifests and SHA256 checksums are attached.\n' "$RELEASE_VERSION" "$HEAD_SHA" >> release-notes.md
+          printf '\nRelease %s from commit `%s`.\n\n- `V-Notch-Setup.exe` (requires [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0))\n- `V-Notch-Setup-SelfContained.exe` (runtime bundled)\n- Signed update manifests and SHA256 checksums are attached.\n' "$RELEASE_VERSION" "$HEAD_SHA" >> release-notes.md
           if [ "$IS_PRERELEASE" = 'true' ]; then
             printf '\nBeta testing build. Enable pre-release updates in Settings to receive these builds.\nBuild: %s\n' "$INFORMATIONAL_VERSION" >> release-notes.md
             gh release create "$RELEASE_TAG" release-assets/* \

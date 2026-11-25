@@ -62,7 +62,6 @@ public partial class MainWindow
         }
 
         int generation = (int)transitionId;
-        _viewTransitionGeneration = generation;
         _isTimerView = true;
         _isSecondaryView = false;
         _isAudioView = false;
@@ -116,7 +115,6 @@ public partial class MainWindow
             ExpandedContent.Visibility = Visibility.Collapsed;
             ExpandedContent.RenderTransform = null;
             ExpandedContent.Effect = null;
-            if (expandedBlur != null) expandedBlur.Radius = 0;
         };
 
         ExpandedContent.BeginAnimation(OpacityProperty, fadeOut);
@@ -227,7 +225,6 @@ public partial class MainWindow
         }
 
         int generation = (int)transitionId;
-        _viewTransitionGeneration = generation;
         CountdownWidget.CancelEditing();
         _isTimerView = false;
         _isAnimating = true;
@@ -445,7 +442,6 @@ public partial class MainWindow
     private void AnimateCountdownCompletionToClockView(long? transitionId = null)
     {
         int generation = (int)(transitionId ?? _transitionCoordinator.ActiveTransitionId);
-        _viewTransitionGeneration = generation;
 
         if (_isAudioView)
         {
@@ -529,7 +525,7 @@ public partial class MainWindow
                 SessionId: generation,
                 FromView: _isExpanded ? VNotch.Models.NotchView.Media : VNotch.Models.NotchView.Compact,
                 TargetView: VNotch.Models.NotchView.Compact,
-                TargetShape: VNotch.Controllers.NotchShapeState.Collapsed,
+                TargetShape: VNotch.Models.NotchShapeState.Collapsed,
                 TargetWidth: targetWidth,
                 TargetHeight: targetHeight,
                 TargetCornerRadius: _cornerRadiusCollapsed,
@@ -802,7 +798,7 @@ public partial class MainWindow
     private void AnimateCountdownRestartToTimerView()
     {
         _transitionCoordinator.NextGeneration();
-        _transitionCoordinator.ForceState(VNotch.Models.NotchView.Timer, VNotch.Controllers.NotchShapeState.Expanded, "CountdownRestart");
+        _transitionCoordinator.ForceState(VNotch.Models.NotchView.Timer, VNotch.Models.NotchShapeState.Expanded, "CountdownRestart");
         long restartGen = _transitionCoordinator.ActiveTransitionId;
         _isAnimating = true;
         _isCountdownCompleteVisible = false;
@@ -924,7 +920,7 @@ public partial class MainWindow
         if (_isAnimating) return;
 
         _transitionCoordinator.NextGeneration();
-        _transitionCoordinator.ForceState(VNotch.Models.NotchView.Compact, VNotch.Controllers.NotchShapeState.Collapsed, "CountdownDismiss");
+        _transitionCoordinator.ForceState(VNotch.Models.NotchView.Compact, VNotch.Models.NotchShapeState.Collapsed, "CountdownDismiss");
         long transitionId = _transitionCoordinator.ActiveTransitionId;
         AnimateCountdownCompleteOverlayOut();
         _viewModel.Timer.Remaining = _countdownDuration;
@@ -934,7 +930,6 @@ public partial class MainWindow
 
     private void AnimateCountdownDismissCollapse(long transitionId)
     {
-        _viewTransitionGeneration = (int)transitionId;
         _isTimerView = false;
         _isSecondaryView = false;
 
@@ -950,7 +945,7 @@ public partial class MainWindow
             // Posted, not called: a spring with nowhere to go ends inside Motion.To, before the click has returned.
             if (transitionId != _transitionCoordinator.ActiveTransitionId) return;
             _transitionCoordinator.CompleteTransition(transitionId);
-            _transitionCoordinator.ForceState(VNotch.Models.NotchView.Compact, VNotch.Controllers.NotchShapeState.Collapsed, "CountdownDismissCompleted");
+            _transitionCoordinator.ForceState(VNotch.Models.NotchView.Compact, VNotch.Models.NotchShapeState.Collapsed, "CountdownDismissCompleted");
             if (!_isCountdownCompleteVisible) DismissCountdownCompletion();
             _isAnimating = false;
             NotchBorder.IsHitTestVisible = true;
@@ -968,12 +963,7 @@ public partial class MainWindow
             SecondaryContent.Visibility = Visibility.Collapsed;
             SecondaryContent.Opacity = 0;
             SecondaryContent.RenderTransform = null;
-            NavIconsPanel.BeginAnimation(OpacityProperty, null);
-            NavIconsPanel.Opacity = 0;
-            NavIconsPanel.Visibility = Visibility.Collapsed;
-            NavIconsBackground.BeginAnimation(OpacityProperty, null);
-            NavIconsBackground.Opacity = 0;
-            NavIconsBackground.Visibility = Visibility.Collapsed;
+            CollapseNavIconsImmediate();
             DisableKeyboardInput();
 
             if (_isMusicCompactMode)

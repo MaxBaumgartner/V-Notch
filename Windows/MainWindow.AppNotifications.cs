@@ -121,7 +121,7 @@ public partial class MainWindow
             }
             if (_settings.BannerRestore.Count != restoreCount)
                 _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
-            if (fresh.Count > 0) _activeSettingsWindow?.AppNotificationAppsChanged();
+            if (fresh.Count > 0) SettingsPreparation.Active?.AppNotificationAppsChanged();
             if (!canShow || latest == null) return;
 
             // Several at once: the newest speaks for all of them.

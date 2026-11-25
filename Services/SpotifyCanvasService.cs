@@ -122,32 +122,6 @@ public sealed partial class SpotifyCanvasService : IDisposable
         }
     }
 
-    public async Task<bool> ValidateSessionAsync(
-        string? spotifySpDc,
-        CancellationToken cancellationToken = default)
-    {
-        string? sessionCookie = NormalizeSessionCookie(spotifySpDc);
-        if (sessionCookie == null)
-            return false;
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(RequestTimeout);
-        try
-        {
-            return !string.IsNullOrEmpty(
-                await _tokens.GetAccessTokenAsync(sessionCookie, timeoutCts.Token).ConfigureAwait(false));
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-        catch (Exception ex)
-        {
-            RuntimeLog.Debug(LogCategory, () => $"Spotify session validation failed: {ex.Message}");
-            return false;
-        }
-    }
-
     public void ClearCache()
     {
         lock (_cacheLock) _cache.Clear();
@@ -217,11 +191,7 @@ public sealed partial class SpotifyCanvasService : IDisposable
 
     private static HttpClient CreateHttpClient()
     {
-        var handler = new NativeWinHttpHandler
-        {
-            AllowAutoRedirect = false
-        };
-        var privacyHandler = NetworkPrivacy.Handler(NetworkFeature.Canvas, handler);
+        var privacyHandler = NetworkPrivacy.Handler(NetworkFeature.Canvas, NetworkPrivacy.CreateHttpHandler());
         var client = new HttpClient(privacyHandler) { Timeout = RequestTimeout };
         client.DefaultRequestHeaders.UserAgent.ParseAdd(AppVersion.UserAgent);
         return client;

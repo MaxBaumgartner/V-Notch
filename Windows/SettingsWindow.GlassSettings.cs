@@ -539,12 +539,6 @@ public partial class SettingsWindow
         PushLivePreview();
     }
 
-    private void GlassConfigCheck_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isLoadingSettings) return;
-        PushLivePreview();
-    }
-
     private void GpuRefractionCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (_isLoadingSettings) return;
@@ -606,7 +600,7 @@ public partial class SettingsWindow
         PushLivePreview();
     }
 
-    private void ApplyLiquidGlassLocalization()
+    internal void ApplyLiquidGlassLocalization()
     {
         if (SkinLabel == null) return;
 
@@ -639,7 +633,7 @@ public partial class SettingsWindow
         GlassEdgeBendSlider.Label = Loc.Get("settings.glass.edgeBend");
         GlassChromSlider.Label = Loc.Get("settings.glass.chrom");
         GlassEdgeHighlightSlider.Label = Loc.Get("settings.glass.edgeHighlight");
-        GlassTouchLightSlider.Label = Loc.Get("settings.glass.touchLight") ?? "Touch Light";
+        GlassTouchLightSlider.Label = Loc.Get("settings.glass.touchLight");
         GlassSpecularSlider.Label = Loc.Get("settings.glass.specular");
         GlassFresnelSlider.Label = Loc.Get("settings.glass.fresnel");
         GlassDistortionSlider.Label = Loc.Get("settings.glass.distortion");

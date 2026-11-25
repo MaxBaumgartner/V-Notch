@@ -5,12 +5,13 @@ using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using LanguageDetection;
 
 namespace VNotch.Services.Translation;
+
+internal sealed record TranslationLanguageAnalysis(string Text, string? DetectedLanguage, double? Confidence, string? PassthroughLanguage);
 
 internal static partial class TranslationLanguages
 {
@@ -19,7 +20,7 @@ internal static partial class TranslationLanguages
         public override string ToString() => Name;
     }
 
-    internal static readonly string[] Codes = ("af am ar az ba be bg bn br bs ca ceb cs cy da de el en es et fa ff fi fr fy ga gd gl gu ha he hi hr ht hu hy id ig ilo is it ja jv ka kk km kn ko lb lg ln lo lt lv mg mk ml mn mr ms my ne nl no ns oc or pa pl ps pt ro ru sd si sk sl so sq sr ss su sv sw ta th tl tn tr uk ur uz vi wo xh yi yo zh zu").Split(' ');
+    internal static readonly string[] Codes = ("af am ar ast az ba be bg bn br bs ca ceb cs cy da de el en es et fa ff fi fr fy ga gd gl gu ha he hi hr ht hu hy id ig ilo is it ja jv ka kk km kn ko lb lg ln lo lt lv mg mk ml mn mr ms my ne nl no ns oc or pa pl ps pt ro ru sd si sk sl so sq sr ss su sv sw ta th tl tn tr uk ur uz vi wo xh yi yo zh zu").Split(' ');
     private static readonly FrozenSet<string> SupportedCodes = Codes.ToFrozenSet(StringComparer.Ordinal);
     private static readonly FrozenDictionary<string, string> DetectorCodeToSupported = BuildDetectorCodeMap();
 
@@ -36,7 +37,6 @@ internal static partial class TranslationLanguages
         return map.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
-    internal static string ModelTarget(string code) => code switch { "ns" => "nso", "tl" => "fil", _ => code };
     internal static string EnglishName(string code) => code switch
     {
         "ns" => "Northern Sotho",
@@ -66,6 +66,47 @@ internal static partial class TranslationLanguages
     });
     private static readonly SemaphoreSlim PassthroughGate = new(1, 1);
 
+    internal static async Task PrepareAsync(CancellationToken ct)
+    {
+        if (Detector.IsValueCreated) return;
+        await PassthroughGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(() => { ct.ThrowIfCancellationRequested(); _ = Detector.Value; }, ct).ConfigureAwait(false);
+        }
+        finally { PassthroughGate.Release(); }
+    }
+
+    internal static async Task<TranslationLanguageAnalysis> AnalyzeAsync(string text, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        string normalized = text.Normalize(NormalizationForm.FormC);
+        string? scriptHint = TranslationPhraseGlossary.Find(normalized)?.Source ?? DetectUnambiguousScript(normalized);
+        // Short sentences can be identified confidently too. Requiring 40 letters
+        // sent already-translated selections through model loading and inference.
+        if (!HasAtLeastLetters(normalized, 12))
+            return new(text, scriptHint, null, null);
+        await PassthroughGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() =>
+            {
+                ct.ThrowIfCancellationRequested();
+                string? hint = scriptHint;
+                var best = Detector.Value.DetectAll(normalized).MaxBy(value => value.Probability);
+                string? detected = FromDetectorCode(best?.Language);
+                hint ??= detected;
+                double? confidence = hint == detected ? best?.Probability : null;
+                string? confident = confidence >= 0.995 ? detected : null;
+                ct.ThrowIfCancellationRequested();
+                string? passthrough = confident != null
+                    ? DetectForPassthroughCore(normalized, ct, confident) : null;
+                return new TranslationLanguageAnalysis(text, hint, confidence, passthrough);
+            }, ct).ConfigureAwait(false);
+        }
+        finally { PassthroughGate.Release(); }
+    }
+
     internal static string? Detect(string text)
     {
         text = text.Normalize(NormalizationForm.FormC);
@@ -80,48 +121,62 @@ internal static partial class TranslationLanguages
     internal static string? DetectForPassthrough(string text)
     {
         text = text.Normalize(NormalizationForm.FormC);
-        if (!HasAtLeastLetters(text, 40)) return null;
+        if (!HasAtLeastLetters(text, 12)) return null;
         return DetectForPassthroughCore(text, default);
     }
 
-    internal static async ValueTask<string?> DetectForPassthroughAsync(string text, CancellationToken ct)
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnSubTextSlice
     {
-        ct.ThrowIfCancellationRequested();
-        text = text.Normalize(NormalizationForm.FormC);
-        if (!HasAtLeastLetters(text, 40)) return null;
-        await PassthroughGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            return await Task.Run(() => DetectForPassthroughCore(text, ct), ct).ConfigureAwait(false);
-        }
-        finally { PassthroughGate.Release(); }
+        public int offset;
+        public int length;
     }
 
-    private static string? DetectForPassthroughCore(string text, CancellationToken ct)
+    private static string? DetectForPassthroughCore(string text, CancellationToken ct, string? knownConfidentLanguage = null)
     {
         ct.ThrowIfCancellationRequested();
-        string? language = ConfidentLanguage(text);
+        string? language = knownConfidentLanguage ?? ConfidentLanguage(text);
         ct.ThrowIfCancellationRequested();
         if (language == null) return null;
-        foreach (string sentence in PassthroughSentences().Split(text))
+
+        ReadOnlySpan<char> textSpan = text.AsSpan();
+        Span<VnSubTextSlice> stackSlices = stackalloc VnSubTextSlice[16];
+        VnSubTextSlice[]? heapSlices = null;
+        int rc = vn_translation_lang_split_passthrough_sentences(textSpan, textSpan.Length, stackSlices, stackSlices.Length, out int count);
+        if (rc == -2 && count > stackSlices.Length)
+        {
+            heapSlices = new VnSubTextSlice[count];
+            rc = vn_translation_lang_split_passthrough_sentences(textSpan, textSpan.Length, heapSlices, heapSlices.Length, out count);
+        }
+        if (rc != 0 || count <= 0) return language;
+
+        ReadOnlySpan<VnSubTextSlice> slices = heapSlices != null ? heapSlices.AsSpan(0, count) : stackSlices[..count];
+        for (int i = 0; i < slices.Length; i++)
         {
             ct.ThrowIfCancellationRequested();
-            if (sentence.Length == text.Length) continue;
-            if (HasAtLeastLetters(sentence, 12) && ConfidentLanguage(sentence) != language)
+            VnSubTextSlice s = slices[i];
+            if (s.length == text.Length) continue;
+            ReadOnlySpan<char> sentence = textSpan.Slice(s.offset, s.length);
+            if (!HasAtLeastLettersSpan(sentence, 12)) continue;
+            string? sentenceLanguage = ConfidentLanguage(text.Substring(s.offset, s.length));
+            // Headings and short list items (e.g. "Project management") can be
+            // ambiguous in isolation. Use the confidently detected document as
+            // context, but still reject another language or uncertain full prose.
+            if (sentenceLanguage != null ? sentenceLanguage != language : HasAtLeastLettersSpan(sentence, 40))
                 return null;
         }
         return language;
     }
 
-    [GeneratedRegex(@"[\r\n。！？]+|(?<=[.!?])\s+")]
-    private static partial Regex PassthroughSentences();
+    private static bool HasAtLeastLetters(string text, int minimum) =>
+        string.IsNullOrEmpty(text) ? minimum <= 0 : HasAtLeastLettersSpan(text.AsSpan(), minimum);
 
-    private static unsafe bool HasAtLeastLetters(string text, int minimum)
+    private static unsafe bool HasAtLeastLettersSpan(ReadOnlySpan<char> span, int minimum)
     {
-        if (string.IsNullOrEmpty(text)) return minimum <= 0;
-        fixed (char* ptr = text)
+        if (span.IsEmpty) return minimum <= 0;
+        fixed (char* ptr = span)
         {
-            vn_translation_lang_has_at_least_letters(ptr, text.Length, minimum, out byte has);
+            vn_translation_lang_has_at_least_letters(ptr, span.Length, minimum, out byte has);
             return has != 0;
         }
     }
@@ -155,4 +210,12 @@ internal static partial class TranslationLanguages
     private static unsafe partial int vn_translation_lang_detect_unambiguous_script(
         char* text_ptr, int text_len,
         char* out_buf, int out_cap, out int out_len);
+
+    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_translation_lang_split_passthrough_sentences(
+        ReadOnlySpan<char> textPtr,
+        int textLen,
+        Span<VnSubTextSlice> outSlices,
+        int sliceCap,
+        out int outCount);
 }

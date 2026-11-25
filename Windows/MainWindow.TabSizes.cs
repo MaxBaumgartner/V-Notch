@@ -87,10 +87,12 @@ public partial class MainWindow
     private void SettleNotchToContent(FrameworkElement content, double target, Func<bool> stillOpen)
     {
         if (_shellDragActive) return;
+        bool attached = _shellAttachment.IsAttached;
+        if (attached && Math.Abs(_shellOpenHeight - target) < 0.5) return;
         var center = ReferenceEquals(content, PiContent) ? PiCenter : ReferenceEquals(content, SchoolContent) ? SchoolCenter :
             ReferenceEquals(content, RobloxContent) ? RobloxCenter :
             ReferenceEquals(content, TimerContent) ? ControlCenter : ClaudeCenter;
-        if (center.IsLayoutFollowing && !_shellAttachment.IsAttached)
+        if (center.IsLayoutFollowing && !attached)
         {
             Motion.Stop(content, HeightProperty, Math.Max(0, target - content.Margin.Top - content.Margin.Bottom));
             Motion.Stop(NotchBorder, HeightProperty, target);
@@ -107,10 +109,17 @@ public partial class MainWindow
         bool growing = target > current;
         if (growing) ResizeHostWindowHeight(target);
 
-        // Auto-sized content needs a finite initial value; subsequent changes retain the live spring.
-        if (!double.IsFinite(content.Height)) content.Height = Math.Max(0, current - chrome);
         var spring = ReferenceEquals(center, ClaudeCenter) ? Motion.Exit : Motion.Shift;
-        Motion.To(content, HeightProperty, Math.Max(0, target - chrome), spring);
+        if (attached)
+        {
+            // The layer follows the shell's spring. Keep its layout at the new destination size.
+            FitAttachedTab(content, target);
+        }
+        else
+        {
+            if (!double.IsFinite(content.Height)) content.Height = Math.Max(0, current - chrome);
+            Motion.To(content, HeightProperty, Math.Max(0, target - chrome), spring);
+        }
         void Arrived()
         {
             if (generation != _centerNotchHeightGeneration || !stillOpen()) return;
@@ -118,5 +127,12 @@ public partial class MainWindow
         }
         if (_notchShellPresenter?.RetargetHeight(target, Arrived) != true)
             Motion.To(NotchBorder, HeightProperty, target, spring, done: Arrived);
+    }
+
+    private void FitAttachedTab(FrameworkElement content, double height)
+    {
+        _shellOpenHeight = height;
+        Motion.Stop(content, HeightProperty, Math.Max(0, height - content.Margin.Top - content.Margin.Bottom));
+        _shellAttachment.SetOpenHeight(height);
     }
 }

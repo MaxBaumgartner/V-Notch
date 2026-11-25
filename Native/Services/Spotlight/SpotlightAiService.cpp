@@ -1,5 +1,7 @@
 #include "vnotch_common.h"
+#include "../../vnotch_json_view.h"
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 
 namespace vnotch::services
@@ -150,952 +152,468 @@ public:
             return VN_OK;
         }
 
-        size_t pos = 0;
-        SkipJsonWs(payload, pos);
-        if (pos >= payload.size() || payload[pos] != u'{')
+        if (payload.empty() || payload.size() > static_cast<size_t>(INT_MAX / 4))
         {
             return VN_OK;
         }
 
-        if (provider == u"Gemini")
+        try
         {
-            bool completed = false;
+            char utf8_stack[8192];
+            std::string utf8_heap;
+            std::string_view utf8_view;
+
+            const auto* wide_ptr = reinterpret_cast<const wchar_t*>(payload.data());
+            const int wide_len = static_cast<int>(payload.size());
+
+            if (payload.size() <= sizeof(utf8_stack) / 3)
+            {
+                const int utf8_len = WideCharToMultiByte(
+                    CP_UTF8, WC_ERR_INVALID_CHARS,
+                    wide_ptr, wide_len,
+                    utf8_stack, static_cast<int>(sizeof(utf8_stack)),
+                    nullptr, nullptr);
+                if (utf8_len <= 0)
+                {
+                    return VN_OK;
+                }
+                utf8_view = std::string_view(utf8_stack, static_cast<size_t>(utf8_len));
+            }
+            else
+            {
+                const int needed = WideCharToMultiByte(
+                    CP_UTF8, WC_ERR_INVALID_CHARS,
+                    wide_ptr, wide_len,
+                    nullptr, 0,
+                    nullptr, nullptr);
+                if (needed <= 0)
+                {
+                    return VN_OK;
+                }
+                utf8_heap.resize(static_cast<size_t>(needed));
+                const int written_utf8 = WideCharToMultiByte(
+                    CP_UTF8, WC_ERR_INVALID_CHARS,
+                    wide_ptr, wide_len,
+                    utf8_heap.data(), needed,
+                    nullptr, nullptr);
+                if (written_utf8 != needed)
+                {
+                    return VN_OK;
+                }
+                utf8_view = utf8_heap;
+            }
+
+            if (utf8_view.starts_with("\xEF\xBB\xBF"))
+            {
+                return VN_OK;
+            }
+
+            const vnotch::json::Value root = vnotch::json::parse(utf8_view);
+            if (!root.is('{'))
+            {
+                return VN_OK;
+            }
+
             int32_t written = 0;
-            if (!ParseGeminiRoot(payload, pos, out_delta_buf, delta_cap, written, completed))
+            bool completed = false;
+            bool ok = false;
+
+            if (provider == u"Gemini")
+            {
+                ok = ExtractGeminiRoot(root, out_delta_buf, delta_cap, written, completed);
+            }
+            else if (provider == u"Claude")
+            {
+                ok = ExtractClaudeRoot(root, out_delta_buf, delta_cap, written, completed);
+            }
+            else
+            {
+                ok = ExtractOpenAiRoot(root, out_delta_buf, delta_cap, written);
+            }
+
+            if (!ok)
             {
                 out_delta_len = 0;
                 return VN_OK;
             }
-            SkipJsonWs(payload, pos);
-            if (pos != payload.size())
-            {
-                out_delta_len = 0;
-                return VN_OK;
-            }
+
             out_delta_len = written;
             out_completed = completed ? 1u : 0u;
             out_status = 2;
             return VN_OK;
         }
-
-        if (provider == u"Claude")
+        catch (...)
         {
-            bool completed = false;
-            int32_t written = 0;
-            if (!ParseClaudeRoot(payload, pos, out_delta_buf, delta_cap, written, completed))
-            {
-                out_delta_len = 0;
-                return VN_OK;
-            }
-            SkipJsonWs(payload, pos);
-            if (pos != payload.size())
-            {
-                out_delta_len = 0;
-                return VN_OK;
-            }
-            out_delta_len = written;
-            out_completed = completed ? 1u : 0u;
-            out_status = 2;
-            return VN_OK;
-        }
-
-        {
-            int32_t written = 0;
-            if (!ParseOpenAiRoot(payload, pos, out_delta_buf, delta_cap, written))
-            {
-                out_delta_len = 0;
-                return VN_OK;
-            }
-            SkipJsonWs(payload, pos);
-            if (pos != payload.size())
-            {
-                out_delta_len = 0;
-                return VN_OK;
-            }
-            out_delta_len = written;
-            out_completed = 0u;
-            out_status = 2;
+            out_delta_len = 0;
+            out_status = 0;
+            out_completed = 0;
             return VN_OK;
         }
     }
 
 private:
-    static constexpr void SkipJsonWs(std::u16string_view sv, size_t& pos) noexcept
+    static bool KeyEquals(const vnotch::json::Value& key, std::string_view expected)
     {
-        while (pos < sv.size())
+        if (key.bytes.find('\\') == std::string_view::npos)
         {
-            char16_t ch = sv[pos];
-            if (ch == u' ' || ch == u'\t' || ch == u'\r' || ch == u'\n')
+            return key.bytes.size() == expected.size() + 2 &&
+                   key.bytes.substr(1, expected.size()) == expected;
+        }
+        const std::u16string decoded = key.text();
+        if (decoded.size() != expected.size())
+        {
+            return false;
+        }
+        for (size_t i = 0; i < expected.size(); ++i)
+        {
+            if (decoded[i] != static_cast<char16_t>(static_cast<unsigned char>(expected[i])))
             {
-                ++pos;
-            }
-            else
-            {
-                break;
+                return false;
             }
         }
-    }
-
-    static constexpr int32_t HexVal(char16_t ch) noexcept
-    {
-        if (ch >= u'0' && ch <= u'9') return ch - u'0';
-        if (ch >= u'a' && ch <= u'f') return 10 + (ch - u'a');
-        if (ch >= u'A' && ch <= u'F') return 10 + (ch - u'A');
-        return -1;
-    }
-
-    static constexpr bool ParseHex4(std::u16string_view sv, size_t& pos, uint16_t& out_val) noexcept
-    {
-        if (pos + 4 > sv.size()) return false;
-        uint32_t acc = 0;
-        for (int i = 0; i < 4; ++i)
-        {
-            int32_t hv = HexVal(sv[pos + static_cast<size_t>(i)]);
-            if (hv < 0) return false;
-            acc = (acc << 4) | static_cast<uint32_t>(hv);
-        }
-        pos += 4;
-        out_val = static_cast<uint16_t>(acc);
         return true;
     }
 
-    static constexpr bool ParseJsonString(
-        std::u16string_view sv,
-        size_t& pos,
+    static bool AppendJsonString(
+        const vnotch::json::Value& val,
         char16_t* out_buf,
         int32_t cap,
-        int32_t& io_len) noexcept
+        int32_t& io_written)
     {
-        if (pos >= sv.size() || sv[pos] != u'"') return false;
-        ++pos;
-
-        while (pos < sv.size())
-        {
-            char16_t ch = sv[pos++];
-            if (ch == u'"')
-            {
-                return true;
-            }
-            if (ch < 0x20u)
-            {
-                return false;
-            }
-            if (ch == u'\\')
-            {
-                if (pos >= sv.size()) return false;
-                char16_t esc = sv[pos++];
-                char16_t decoded = 0;
-                switch (esc)
-                {
-                case u'"': decoded = u'"'; break;
-                case u'\\': decoded = u'\\'; break;
-                case u'/': decoded = u'/'; break;
-                case u'b': decoded = u'\b'; break;
-                case u'f': decoded = u'\f'; break;
-                case u'n': decoded = u'\n'; break;
-                case u'r': decoded = u'\r'; break;
-                case u't': decoded = u'\t'; break;
-                case u'u':
-                {
-                    uint16_t u1 = 0;
-                    if (!ParseHex4(sv, pos, u1)) return false;
-                    if (u1 >= 0xD800u && u1 <= 0xDBFFu)
-                    {
-                        if (pos + 2 > sv.size() || sv[pos] != u'\\' || sv[pos + 1] != u'u')
-                            return false;
-                        pos += 2;
-                        uint16_t u2 = 0;
-                        if (!ParseHex4(sv, pos, u2) || u2 < 0xDC00u || u2 > 0xDFFFu)
-                            return false;
-                        if (out_buf != nullptr)
-                        {
-                            if (io_len + 2 > cap) return false;
-                            out_buf[io_len++] = static_cast<char16_t>(u1);
-                            out_buf[io_len++] = static_cast<char16_t>(u2);
-                        }
-                        continue;
-                    }
-                    if (u1 >= 0xDC00u && u1 <= 0xDFFFu)
-                    {
-                        return false;
-                    }
-                    decoded = static_cast<char16_t>(u1);
-                    break;
-                }
-                default:
-                    return false;
-                }
-                if (out_buf != nullptr)
-                {
-                    if (io_len >= cap) return false;
-                    out_buf[io_len++] = decoded;
-                }
-            }
-            else
-            {
-                if (out_buf != nullptr)
-                {
-                    if (io_len >= cap) return false;
-                    out_buf[io_len++] = ch;
-                }
-            }
-        }
-        return false;
-    }
-
-    static constexpr bool SkipJsonNumber(std::u16string_view sv, size_t& pos) noexcept
-    {
-        if (pos < sv.size() && sv[pos] == u'-') ++pos;
-        if (pos >= sv.size()) return false;
-        if (sv[pos] == u'0')
-        {
-            ++pos;
-        }
-        else if (sv[pos] >= u'1' && sv[pos] <= u'9')
-        {
-            while (pos < sv.size() && sv[pos] >= u'0' && sv[pos] <= u'9') ++pos;
-        }
-        else
+        if (!val.is('"'))
         {
             return false;
         }
-        if (pos < sv.size() && sv[pos] == u'.')
+        const std::u16string decoded = val.text();
+        if (decoded.empty())
         {
-            ++pos;
-            if (pos >= sv.size() || sv[pos] < u'0' || sv[pos] > u'9') return false;
-            while (pos < sv.size() && sv[pos] >= u'0' && sv[pos] <= u'9') ++pos;
+            return true;
         }
-        if (pos < sv.size() && (sv[pos] == u'e' || sv[pos] == u'E'))
+        if (out_buf == nullptr ||
+            static_cast<int64_t>(io_written) + static_cast<int64_t>(decoded.size()) > static_cast<int64_t>(cap))
         {
-            ++pos;
-            if (pos < sv.size() && (sv[pos] == u'+' || sv[pos] == u'-')) ++pos;
-            if (pos >= sv.size() || sv[pos] < u'0' || sv[pos] > u'9') return false;
-            while (pos < sv.size() && sv[pos] >= u'0' && sv[pos] <= u'9') ++pos;
+            return false;
+        }
+        std::char_traits<char16_t>::copy(out_buf + io_written, decoded.data(), decoded.size());
+        io_written += static_cast<int32_t>(decoded.size());
+        return true;
+    }
+
+    static bool ExtractOpenAiDelta(
+        const vnotch::json::Value& delta_obj,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written)
+    {
+        bool ok = true;
+        delta_obj.each([&](vnotch::json::Value dkey, vnotch::json::Value dval) {
+            if (!KeyEquals(dkey, "content") || dval.bytes == "null")
+            {
+                return true;
+            }
+            if (!AppendJsonString(dval, out_delta_buf, delta_cap, out_written))
+            {
+                ok = false;
+                return false;
+            }
+            return true;
+        });
+        return ok;
+    }
+
+    static bool ExtractOpenAiFirstChoice(
+        const vnotch::json::Value& choice,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written)
+    {
+        if (!choice.is('{')) return false;
+        bool ok = true;
+        choice.each([&](vnotch::json::Value ckey, vnotch::json::Value cval) {
+            if (!KeyEquals(ckey, "delta") || cval.bytes == "null")
+            {
+                return true;
+            }
+            if (!cval.is('{') || !ExtractOpenAiDelta(cval, out_delta_buf, delta_cap, out_written))
+            {
+                ok = false;
+                return false;
+            }
+            return true;
+        });
+        return ok;
+    }
+
+    static bool ExtractOpenAiRoot(
+        const vnotch::json::Value& root,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written)
+    {
+        bool ok = true;
+        root.each([&](vnotch::json::Value key, vnotch::json::Value val) {
+            if (KeyEquals(key, "error"))
+            {
+                ok = false;
+                return false;
+            }
+            if (KeyEquals(key, "usage"))
+            {
+                if (val.bytes != "null")
+                {
+                    ok = false;
+                    return false;
+                }
+                return true;
+            }
+            if (KeyEquals(key, "choices"))
+            {
+                if (!val.is('['))
+                {
+                    ok = false;
+                    return false;
+                }
+                int32_t idx = 0;
+                val.each([&](vnotch::json::Value, vnotch::json::Value choice) {
+                    if (idx++ > 0) return true;
+                    if (!ExtractOpenAiFirstChoice(choice, out_delta_buf, delta_cap, out_written))
+                    {
+                        ok = false;
+                        return false;
+                    }
+                    return true;
+                });
+                return ok;
+            }
+            return true;
+        });
+        return ok;
+    }
+
+    static bool ExtractClaudeDeltaObject(
+        const vnotch::json::Value& delta_obj,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written)
+    {
+        if (!delta_obj.is('{')) return false;
+        bool ok = true;
+        bool is_text_delta = false;
+        const int32_t delta_start = out_written;
+        delta_obj.each([&](vnotch::json::Value dkey, vnotch::json::Value dval) {
+            if (KeyEquals(dkey, "type"))
+            {
+                if (!dval.is('"'))
+                {
+                    ok = false;
+                    return false;
+                }
+                if (dval.text() == u"text_delta")
+                {
+                    is_text_delta = true;
+                }
+            }
+            else if (KeyEquals(dkey, "text"))
+            {
+                if (dval.bytes != "null" &&
+                    !AppendJsonString(dval, out_delta_buf, delta_cap, out_written))
+                {
+                    ok = false;
+                    return false;
+                }
+            }
+            return true;
+        });
+        if (!ok) return false;
+        if (!is_text_delta)
+        {
+            out_written = delta_start;
         }
         return true;
     }
 
-    static constexpr bool MatchLiteral(std::u16string_view sv, size_t& pos, std::u16string_view lit) noexcept
-    {
-        if (pos + lit.size() > sv.size()) return false;
-        if (sv.substr(pos, lit.size()) != lit) return false;
-        pos += lit.size();
-        return true;
-    }
-
-    static bool SkipJsonValue(std::u16string_view sv, size_t& pos, int depth = 0) noexcept
-    {
-        if (depth > 24) return false;
-        SkipJsonWs(sv, pos);
-        if (pos >= sv.size()) return false;
-
-        char16_t ch = sv[pos];
-        if (ch == u'"')
-        {
-            int32_t dummy = 0;
-            return ParseJsonString(sv, pos, nullptr, 0, dummy);
-        }
-        if (ch == u'{')
-        {
-            ++pos;
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u'}')
-            {
-                ++pos;
-                return true;
-            }
-            while (pos < sv.size())
-            {
-                SkipJsonWs(sv, pos);
-                int32_t dummy = 0;
-                if (!ParseJsonString(sv, pos, nullptr, 0, dummy)) return false;
-                SkipJsonWs(sv, pos);
-                if (pos >= sv.size() || sv[pos] != u':') return false;
-                ++pos;
-                if (!SkipJsonValue(sv, pos, depth + 1)) return false;
-                SkipJsonWs(sv, pos);
-                if (pos < sv.size() && sv[pos] == u',')
-                {
-                    ++pos;
-                    continue;
-                }
-                if (pos < sv.size() && sv[pos] == u'}')
-                {
-                    ++pos;
-                    return true;
-                }
-                return false;
-            }
-            return false;
-        }
-        if (ch == u'[')
-        {
-            ++pos;
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u']')
-            {
-                ++pos;
-                return true;
-            }
-            while (pos < sv.size())
-            {
-                if (!SkipJsonValue(sv, pos, depth + 1)) return false;
-                SkipJsonWs(sv, pos);
-                if (pos < sv.size() && sv[pos] == u',')
-                {
-                    ++pos;
-                    continue;
-                }
-                if (pos < sv.size() && sv[pos] == u']')
-                {
-                    ++pos;
-                    return true;
-                }
-                return false;
-            }
-            return false;
-        }
-        if (ch == u't') return MatchLiteral(sv, pos, u"true");
-        if (ch == u'f') return MatchLiteral(sv, pos, u"false");
-        if (ch == u'n') return MatchLiteral(sv, pos, u"null");
-        if (ch == u'-' || (ch >= u'0' && ch <= u'9')) return SkipJsonNumber(sv, pos);
-        return false;
-    }
-
-    static bool ParseOpenAiDeltaObject(
-        std::u16string_view sv,
-        size_t& pos,
-        char16_t* out_delta_buf,
-        int32_t delta_cap,
-        int32_t& out_written) noexcept
-    {
-        SkipJsonWs(sv, pos);
-        if (MatchLiteral(sv, pos, u"null")) return true;
-        if (pos >= sv.size() || sv[pos] != u'{') return false;
-        ++pos;
-        SkipJsonWs(sv, pos);
-        if (pos < sv.size() && sv[pos] == u'}')
-        {
-            ++pos;
-            return true;
-        }
-        while (pos < sv.size())
-        {
-            SkipJsonWs(sv, pos);
-            char16_t key_buf[64]{};
-            int32_t key_len = 0;
-            if (!ParseJsonString(sv, pos, key_buf, 64, key_len)) return false;
-            std::u16string_view key(key_buf, static_cast<size_t>(key_len));
-            SkipJsonWs(sv, pos);
-            if (pos >= sv.size() || sv[pos] != u':') return false;
-            ++pos;
-            SkipJsonWs(sv, pos);
-
-            if (key == u"content")
-            {
-                if (MatchLiteral(sv, pos, u"null"))
-                {
-                    // null content -> empty delta
-                }
-                else if (pos < sv.size() && sv[pos] == u'"')
-                {
-                    if (!ParseJsonString(sv, pos, out_delta_buf, delta_cap, out_written))
-                        return false;
-                }
-                else
-                {
-                    return false;
-                }
-            }
-            else
-            {
-                if (!SkipJsonValue(sv, pos, 2)) return false;
-            }
-
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u',')
-            {
-                ++pos;
-                continue;
-            }
-            if (pos < sv.size() && sv[pos] == u'}')
-            {
-                ++pos;
-                return true;
-            }
-            return false;
-        }
-        return false;
-    }
-
-    static bool ParseOpenAiChoicesArray(
-        std::u16string_view sv,
-        size_t& pos,
-        char16_t* out_delta_buf,
-        int32_t delta_cap,
-        int32_t& out_written) noexcept
-    {
-        SkipJsonWs(sv, pos);
-        if (pos >= sv.size() || sv[pos] != u'[') return false;
-        ++pos;
-        SkipJsonWs(sv, pos);
-        if (pos < sv.size() && sv[pos] == u']')
-        {
-            ++pos;
-            return true;
-        }
-
-        int32_t idx = 0;
-        while (pos < sv.size())
-        {
-            SkipJsonWs(sv, pos);
-            if (idx == 0)
-            {
-                if (pos >= sv.size() || sv[pos] != u'{') return false;
-                ++pos;
-                SkipJsonWs(sv, pos);
-                if (pos < sv.size() && sv[pos] == u'}')
-                {
-                    ++pos;
-                }
-                else
-                {
-                    while (pos < sv.size())
-                    {
-                        SkipJsonWs(sv, pos);
-                        char16_t key_buf[64]{};
-                        int32_t key_len = 0;
-                        if (!ParseJsonString(sv, pos, key_buf, 64, key_len)) return false;
-                        std::u16string_view key(key_buf, static_cast<size_t>(key_len));
-                        SkipJsonWs(sv, pos);
-                        if (pos >= sv.size() || sv[pos] != u':') return false;
-                        ++pos;
-                        if (key == u"delta")
-                        {
-                            if (!ParseOpenAiDeltaObject(sv, pos, out_delta_buf, delta_cap, out_written))
-                                return false;
-                        }
-                        else
-                        {
-                            if (!SkipJsonValue(sv, pos, 2)) return false;
-                        }
-                        SkipJsonWs(sv, pos);
-                        if (pos < sv.size() && sv[pos] == u',')
-                        {
-                            ++pos;
-                            continue;
-                        }
-                        if (pos < sv.size() && sv[pos] == u'}')
-                        {
-                            ++pos;
-                            break;
-                        }
-                        return false;
-                    }
-                }
-            }
-            else
-            {
-                if (!SkipJsonValue(sv, pos, 1)) return false;
-            }
-            ++idx;
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u',')
-            {
-                ++pos;
-                continue;
-            }
-            if (pos < sv.size() && sv[pos] == u']')
-            {
-                ++pos;
-                return true;
-            }
-            return false;
-        }
-        return false;
-    }
-
-    static bool ParseOpenAiRoot(
-        std::u16string_view sv,
-        size_t& pos,
-        char16_t* out_delta_buf,
-        int32_t delta_cap,
-        int32_t& out_written) noexcept
-    {
-        if (pos >= sv.size() || sv[pos] != u'{') return false;
-        ++pos;
-        SkipJsonWs(sv, pos);
-        if (pos < sv.size() && sv[pos] == u'}')
-        {
-            ++pos;
-            return true;
-        }
-        while (pos < sv.size())
-        {
-            SkipJsonWs(sv, pos);
-            char16_t key_buf[64]{};
-            int32_t key_len = 0;
-            if (!ParseJsonString(sv, pos, key_buf, 64, key_len)) return false;
-            std::u16string_view key(key_buf, static_cast<size_t>(key_len));
-            SkipJsonWs(sv, pos);
-            if (pos >= sv.size() || sv[pos] != u':') return false;
-            ++pos;
-            SkipJsonWs(sv, pos);
-
-            if (key == u"error")
-            {
-                return false;
-            }
-            if (key == u"usage")
-            {
-                if (!MatchLiteral(sv, pos, u"null"))
-                    return false;
-            }
-            else if (key == u"choices")
-            {
-                if (!ParseOpenAiChoicesArray(sv, pos, out_delta_buf, delta_cap, out_written))
-                    return false;
-            }
-            else
-            {
-                if (!SkipJsonValue(sv, pos, 1)) return false;
-            }
-
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u',')
-            {
-                ++pos;
-                continue;
-            }
-            if (pos < sv.size() && sv[pos] == u'}')
-            {
-                ++pos;
-                return true;
-            }
-            return false;
-        }
-        return false;
-    }
-
-    static bool ParseClaudeRoot(
-        std::u16string_view sv,
-        size_t& pos,
+    static bool ExtractClaudeRoot(
+        const vnotch::json::Value& root,
         char16_t* out_delta_buf,
         int32_t delta_cap,
         int32_t& out_written,
-        bool& out_completed) noexcept
+        bool& out_completed)
     {
-        if (pos >= sv.size() || sv[pos] != u'{') return false;
-        ++pos;
-        SkipJsonWs(sv, pos);
-        if (pos < sv.size() && sv[pos] == u'}')
-        {
-            ++pos;
-            return true;
-        }
-        while (pos < sv.size())
-        {
-            SkipJsonWs(sv, pos);
-            char16_t key_buf[64]{};
-            int32_t key_len = 0;
-            if (!ParseJsonString(sv, pos, key_buf, 64, key_len)) return false;
-            std::u16string_view key(key_buf, static_cast<size_t>(key_len));
-            SkipJsonWs(sv, pos);
-            if (pos >= sv.size() || sv[pos] != u':') return false;
-            ++pos;
-            SkipJsonWs(sv, pos);
-
-            if (key == u"error" || key == u"usage" || key == u"message")
+        bool ok = true;
+        root.each([&](vnotch::json::Value key, vnotch::json::Value val) {
+            if (KeyEquals(key, "error") || KeyEquals(key, "usage") || KeyEquals(key, "message"))
             {
+                ok = false;
                 return false;
             }
-            if (key == u"type")
+            if (KeyEquals(key, "type"))
             {
-                char16_t type_buf[64]{};
-                int32_t type_len = 0;
-                if (!ParseJsonString(sv, pos, type_buf, 64, type_len)) return false;
-                if (std::u16string_view(type_buf, static_cast<size_t>(type_len)) == u"message_stop")
+                if (!val.is('"'))
+                {
+                    ok = false;
+                    return false;
+                }
+                if (val.text() == u"message_stop")
+                {
+                    out_completed = true;
+                }
+                return true;
+            }
+            if (KeyEquals(key, "delta"))
+            {
+                if (!ExtractClaudeDeltaObject(val, out_delta_buf, delta_cap, out_written))
+                {
+                    ok = false;
+                    return false;
+                }
+            }
+            return true;
+        });
+        return ok;
+    }
+
+    static bool ExtractGeminiPart(
+        const vnotch::json::Value& part,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written)
+    {
+        if (!part.is('{')) return false;
+        const int32_t part_start = out_written;
+        bool ok = true;
+        bool is_thought = false;
+        part.each([&](vnotch::json::Value pkey, vnotch::json::Value pval) {
+            if (KeyEquals(pkey, "text"))
+            {
+                if (!AppendJsonString(pval, out_delta_buf, delta_cap, out_written))
+                {
+                    ok = false;
+                    return false;
+                }
+            }
+            else if (KeyEquals(pkey, "thought"))
+            {
+                if (pval.bytes == "true")
+                {
+                    is_thought = true;
+                }
+                else if (pval.bytes != "false" && pval.bytes != "null")
+                {
+                    ok = false;
+                    return false;
+                }
+            }
+            return true;
+        });
+        if (!ok) return false;
+        if (is_thought)
+        {
+            out_written = part_start;
+        }
+        return true;
+    }
+
+    static bool ExtractGeminiContent(
+        const vnotch::json::Value& content_obj,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written)
+    {
+        if (!content_obj.is('{')) return false;
+        bool ok = true;
+        content_obj.each([&](vnotch::json::Value ctkey, vnotch::json::Value ctval) {
+            if (!KeyEquals(ctkey, "parts")) return true;
+            if (!ctval.is('['))
+            {
+                ok = false;
+                return false;
+            }
+            ctval.each([&](vnotch::json::Value, vnotch::json::Value part) {
+                if (!ExtractGeminiPart(part, out_delta_buf, delta_cap, out_written))
+                {
+                    ok = false;
+                    return false;
+                }
+                return true;
+            });
+            return ok;
+        });
+        return ok;
+    }
+
+    static bool ExtractGeminiCandidate(
+        const vnotch::json::Value& cand,
+        int32_t cur_idx,
+        char16_t* out_delta_buf,
+        int32_t delta_cap,
+        int32_t& out_written,
+        bool& out_completed)
+    {
+        if (!cand.is('{')) return false;
+        bool ok = true;
+        cand.each([&](vnotch::json::Value ckey, vnotch::json::Value cval) {
+            if (KeyEquals(ckey, "finishReason"))
+            {
+                if (cval.bytes == "null") return true;
+                if (!cval.is('"'))
+                {
+                    ok = false;
+                    return false;
+                }
+                const auto reason = cval.text();
+                if (!reason.empty() && reason != u"FINISH_REASON_UNSPECIFIED")
                 {
                     out_completed = true;
                 }
             }
-            else if (key == u"delta")
+            else if (cur_idx == 0 && KeyEquals(ckey, "content"))
             {
-                if (pos >= sv.size() || sv[pos] != u'{') return false;
-                ++pos;
-                SkipJsonWs(sv, pos);
-                bool is_text_delta = false;
-                int32_t delta_start = out_written;
-                if (pos < sv.size() && sv[pos] == u'}')
+                if (!ExtractGeminiContent(cval, out_delta_buf, delta_cap, out_written))
                 {
-                    ++pos;
-                }
-                else
-                {
-                    while (pos < sv.size())
-                    {
-                        SkipJsonWs(sv, pos);
-                        char16_t dkey_buf[64]{};
-                        int32_t dkey_len = 0;
-                        if (!ParseJsonString(sv, pos, dkey_buf, 64, dkey_len)) return false;
-                        std::u16string_view dkey(dkey_buf, static_cast<size_t>(dkey_len));
-                        SkipJsonWs(sv, pos);
-                        if (pos >= sv.size() || sv[pos] != u':') return false;
-                        ++pos;
-                        SkipJsonWs(sv, pos);
-
-                        if (dkey == u"type")
-                        {
-                            char16_t dtype_buf[64]{};
-                            int32_t dtype_len = 0;
-                            if (!ParseJsonString(sv, pos, dtype_buf, 64, dtype_len)) return false;
-                            if (std::u16string_view(dtype_buf, static_cast<size_t>(dtype_len)) == u"text_delta")
-                            {
-                                is_text_delta = true;
-                            }
-                        }
-                        else if (dkey == u"text")
-                        {
-                            if (MatchLiteral(sv, pos, u"null"))
-                            {
-                            }
-                            else if (!ParseJsonString(sv, pos, out_delta_buf, delta_cap, out_written))
-                            {
-                                return false;
-                            }
-                        }
-                        else
-                        {
-                            if (!SkipJsonValue(sv, pos, 2)) return false;
-                        }
-
-                        SkipJsonWs(sv, pos);
-                        if (pos < sv.size() && sv[pos] == u',')
-                        {
-                            ++pos;
-                            continue;
-                        }
-                        if (pos < sv.size() && sv[pos] == u'}')
-                        {
-                            ++pos;
-                            break;
-                        }
-                        return false;
-                    }
-                }
-                if (!is_text_delta)
-                {
-                    out_written = delta_start;
-                }
-            }
-            else
-            {
-                if (!SkipJsonValue(sv, pos, 1)) return false;
-            }
-
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u',')
-            {
-                ++pos;
-                continue;
-            }
-            if (pos < sv.size() && sv[pos] == u'}')
-            {
-                ++pos;
-                return true;
-            }
-            return false;
-        }
-        return false;
-    }
-
-    static bool ParseGeminiPartsArray(
-        std::u16string_view sv,
-        size_t& pos,
-        char16_t* out_delta_buf,
-        int32_t delta_cap,
-        int32_t& out_written) noexcept
-    {
-        SkipJsonWs(sv, pos);
-        if (pos >= sv.size() || sv[pos] != u'[') return false;
-        ++pos;
-        SkipJsonWs(sv, pos);
-        if (pos < sv.size() && sv[pos] == u']')
-        {
-            ++pos;
-            return true;
-        }
-        while (pos < sv.size())
-        {
-            SkipJsonWs(sv, pos);
-            if (pos >= sv.size() || sv[pos] != u'{') return false;
-            ++pos;
-            SkipJsonWs(sv, pos);
-            int32_t part_start = out_written;
-            bool is_thought = false;
-            if (pos < sv.size() && sv[pos] == u'}')
-            {
-                ++pos;
-            }
-            else
-            {
-                while (pos < sv.size())
-                {
-                    SkipJsonWs(sv, pos);
-                    char16_t pkey_buf[64]{};
-                    int32_t pkey_len = 0;
-                    if (!ParseJsonString(sv, pos, pkey_buf, 64, pkey_len)) return false;
-                    std::u16string_view pkey(pkey_buf, static_cast<size_t>(pkey_len));
-                    SkipJsonWs(sv, pos);
-                    if (pos >= sv.size() || sv[pos] != u':') return false;
-                    ++pos;
-                    SkipJsonWs(sv, pos);
-
-                    if (pkey == u"text")
-                    {
-                        if (!ParseJsonString(sv, pos, out_delta_buf, delta_cap, out_written))
-                            return false;
-                    }
-                    else if (pkey == u"thought")
-                    {
-                        if (MatchLiteral(sv, pos, u"true"))
-                        {
-                            is_thought = true;
-                        }
-                        else if (!MatchLiteral(sv, pos, u"false") && !MatchLiteral(sv, pos, u"null"))
-                        {
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        if (!SkipJsonValue(sv, pos, 4)) return false;
-                    }
-
-                    SkipJsonWs(sv, pos);
-                    if (pos < sv.size() && sv[pos] == u',')
-                    {
-                        ++pos;
-                        continue;
-                    }
-                    if (pos < sv.size() && sv[pos] == u'}')
-                    {
-                        ++pos;
-                        break;
-                    }
+                    ok = false;
                     return false;
                 }
             }
-            if (is_thought)
-            {
-                out_written = part_start;
-            }
-
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u',')
-            {
-                ++pos;
-                continue;
-            }
-            if (pos < sv.size() && sv[pos] == u']')
-            {
-                ++pos;
-                return true;
-            }
-            return false;
-        }
-        return false;
+            return ok;
+        });
+        return ok;
     }
 
-    static bool ParseGeminiRoot(
-        std::u16string_view sv,
-        size_t& pos,
+    static bool ExtractGeminiRoot(
+        const vnotch::json::Value& root,
         char16_t* out_delta_buf,
         int32_t delta_cap,
         int32_t& out_written,
-        bool& out_completed) noexcept
+        bool& out_completed)
     {
-        if (pos >= sv.size() || sv[pos] != u'{') return false;
-        ++pos;
-        SkipJsonWs(sv, pos);
-        if (pos < sv.size() && sv[pos] == u'}')
-        {
-            ++pos;
-            return true;
-        }
-        while (pos < sv.size())
-        {
-            SkipJsonWs(sv, pos);
-            char16_t key_buf[64]{};
-            int32_t key_len = 0;
-            if (!ParseJsonString(sv, pos, key_buf, 64, key_len)) return false;
-            std::u16string_view key(key_buf, static_cast<size_t>(key_len));
-            SkipJsonWs(sv, pos);
-            if (pos >= sv.size() || sv[pos] != u':') return false;
-            ++pos;
-            SkipJsonWs(sv, pos);
-
-            if (key == u"error" || key == u"usageMetadata")
+        bool ok = true;
+        root.each([&](vnotch::json::Value key, vnotch::json::Value val) {
+            if (KeyEquals(key, "error") || KeyEquals(key, "usageMetadata"))
             {
+                ok = false;
                 return false;
             }
-            if (key == u"candidates")
+            if (KeyEquals(key, "candidates"))
             {
-                if (pos >= sv.size() || sv[pos] != u'[') return false;
-                ++pos;
-                SkipJsonWs(sv, pos);
-                if (pos < sv.size() && sv[pos] == u']')
+                if (!val.is('['))
                 {
-                    ++pos;
+                    ok = false;
+                    return false;
                 }
-                else
-                {
-                    int32_t c_idx = 0;
-                    while (pos < sv.size())
+                int32_t c_idx = 0;
+                val.each([&](vnotch::json::Value, vnotch::json::Value cand) {
+                    if (!ExtractGeminiCandidate(cand, c_idx++, out_delta_buf, delta_cap, out_written, out_completed))
                     {
-                        SkipJsonWs(sv, pos);
-                        if (pos >= sv.size() || sv[pos] != u'{') return false;
-                        ++pos;
-                        SkipJsonWs(sv, pos);
-                        if (pos < sv.size() && sv[pos] == u'}')
-                        {
-                            ++pos;
-                        }
-                        else
-                        {
-                            while (pos < sv.size())
-                            {
-                                SkipJsonWs(sv, pos);
-                                char16_t ckey_buf[64]{};
-                                int32_t ckey_len = 0;
-                                if (!ParseJsonString(sv, pos, ckey_buf, 64, ckey_len)) return false;
-                                std::u16string_view ckey(ckey_buf, static_cast<size_t>(ckey_len));
-                                SkipJsonWs(sv, pos);
-                                if (pos >= sv.size() || sv[pos] != u':') return false;
-                                ++pos;
-                                SkipJsonWs(sv, pos);
-
-                                if (ckey == u"finishReason")
-                                {
-                                    char16_t r_buf[64]{};
-                                    int32_t r_len = 0;
-                                    if (MatchLiteral(sv, pos, u"null"))
-                                    {
-                                    }
-                                    else if (ParseJsonString(sv, pos, r_buf, 64, r_len))
-                                    {
-                                        if (std::u16string_view(r_buf, static_cast<size_t>(r_len)) == u"STOP")
-                                        {
-                                            out_completed = true;
-                                        }
-                                    }
-                                    else
-                                    {
-                                        return false;
-                                    }
-                                }
-                                else if (ckey == u"content" && c_idx == 0)
-                                {
-                                    if (pos >= sv.size() || sv[pos] != u'{') return false;
-                                    ++pos;
-                                    SkipJsonWs(sv, pos);
-                                    if (pos < sv.size() && sv[pos] == u'}')
-                                    {
-                                        ++pos;
-                                    }
-                                    else
-                                    {
-                                        while (pos < sv.size())
-                                        {
-                                            SkipJsonWs(sv, pos);
-                                            char16_t ctkey_buf[64]{};
-                                            int32_t ctkey_len = 0;
-                                            if (!ParseJsonString(sv, pos, ctkey_buf, 64, ctkey_len)) return false;
-                                            std::u16string_view ctkey(ctkey_buf, static_cast<size_t>(ctkey_len));
-                                            SkipJsonWs(sv, pos);
-                                            if (pos >= sv.size() || sv[pos] != u':') return false;
-                                            ++pos;
-                                            SkipJsonWs(sv, pos);
-
-                                            if (ctkey == u"parts")
-                                            {
-                                                if (!ParseGeminiPartsArray(sv, pos, out_delta_buf, delta_cap, out_written))
-                                                    return false;
-                                            }
-                                            else
-                                            {
-                                                if (!SkipJsonValue(sv, pos, 3)) return false;
-                                            }
-
-                                            SkipJsonWs(sv, pos);
-                                            if (pos < sv.size() && sv[pos] == u',')
-                                            {
-                                                ++pos;
-                                                continue;
-                                            }
-                                            if (pos < sv.size() && sv[pos] == u'}')
-                                            {
-                                                ++pos;
-                                                break;
-                                            }
-                                            return false;
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    if (!SkipJsonValue(sv, pos, 2)) return false;
-                                }
-
-                                SkipJsonWs(sv, pos);
-                                if (pos < sv.size() && sv[pos] == u',')
-                                {
-                                    ++pos;
-                                    continue;
-                                }
-                                if (pos < sv.size() && sv[pos] == u'}')
-                                {
-                                    ++pos;
-                                    break;
-                                }
-                                return false;
-                            }
-                        }
-                        ++c_idx;
-                        SkipJsonWs(sv, pos);
-                        if (pos < sv.size() && sv[pos] == u',')
-                        {
-                            ++pos;
-                            continue;
-                        }
-                        if (pos < sv.size() && sv[pos] == u']')
-                        {
-                            ++pos;
-                            break;
-                        }
+                        ok = false;
                         return false;
                     }
-                }
+                    return true;
+                });
+                return ok;
             }
-            else
-            {
-                if (!SkipJsonValue(sv, pos, 1)) return false;
-            }
-
-            SkipJsonWs(sv, pos);
-            if (pos < sv.size() && sv[pos] == u',')
-            {
-                ++pos;
-                continue;
-            }
-            if (pos < sv.size() && sv[pos] == u'}')
-            {
-                ++pos;
-                return true;
-            }
-            return false;
-        }
-        return false;
+            return true;
+        });
+        return ok;
     }
 };
 

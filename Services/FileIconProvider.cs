@@ -52,6 +52,12 @@ internal static partial class FileIconProvider
         int maxCacheSize,
         out int outRemoveCount);
 
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_file_icon_can_probe_local_path(
+        ReadOnlySpan<char> path,
+        int len,
+        out byte outCanProbe);
+
     private sealed class CacheEntry
     {
         public ImageSource? Icon;
@@ -84,27 +90,13 @@ internal static partial class FileIconProvider
 
     // The Shell associates every .msc with a generic document icon. Each MMC
     // console declares its real artwork in its XML (<Icon Index File>).
-    private static bool CanProbeLocalFilesystemPath(string? path)
+    internal static bool CanProbeLocalFilesystemPath(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path))
+        if (string.IsNullOrEmpty(path))
             return false;
 
-        string trimmed = path.Trim();
-        if (trimmed.StartsWith(@"\\", StringComparison.Ordinal) ||
-            trimmed.StartsWith("//", StringComparison.Ordinal) ||
-            LocalPathPolicy.IsUncPath(trimmed))
-        {
-            return false;
-        }
-
-        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) && (!uri.IsFile || uri.IsUnc))
-            return false;
-
-        return Path.IsPathFullyQualified(trimmed) &&
-               trimmed.Length >= 3 &&
-               char.IsAsciiLetter(trimmed[0]) &&
-               trimmed[1] == ':' &&
-               (trimmed[2] == '\\' || trimmed[2] == '/');
+        ReadOnlySpan<char> span = path.AsSpan();
+        return vn_file_icon_can_probe_local_path(span, span.Length, out byte canProbe) == 0 && canProbe != 0;
     }
 
     internal static ImageSource? TryGetMscIcon(string mscPath, bool small = false)
@@ -347,7 +339,9 @@ internal static partial class FileIconProvider
     {
         try
         {
-            IntPtr hBitmap = Win32Interop.GetShellThumbnailBitmap(filePath, size, Win32Interop.SIIGBF_BIGGERSIZEOK);
+            // Ask the Shell to fit the requested box. BIGGERSIZEOK can hand back
+            // a much larger cached thumbnail that we would then retain in WPF.
+            IntPtr hBitmap = Win32Interop.GetShellThumbnailBitmap(filePath, size, 0);
             if (hBitmap == IntPtr.Zero) return null;
 
             try
@@ -372,10 +366,21 @@ internal static partial class FileIconProvider
     {
         try
         {
+            // Read only the dimensions before decoding. Limiting width alone
+            // lets a tall image retain thousands of rows for a tiny file icon.
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+            var frame = decoder.Frames[0];
+            int width = frame.PixelWidth, height = frame.PixelHeight;
+            stream.Position = 0;
             var bitmap = new BitmapImage();
             bitmap.BeginInit();
-            bitmap.UriSource = new Uri(filePath);
-            bitmap.DecodePixelWidth = 48;
+            bitmap.StreamSource = stream;
+            if (height > width)
+                bitmap.DecodePixelHeight = Math.Min(48, height);
+            else
+                bitmap.DecodePixelWidth = Math.Min(48, width);
             bitmap.CacheOption = BitmapCacheOption.OnLoad;
             bitmap.EndInit();
             bitmap.Freeze();

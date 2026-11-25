@@ -142,7 +142,7 @@ public:
         uint8_t* out_buf,
         int32_t out_cap,
         int32_t* out_bytes) noexcept {
-        if (!out_bytes) return VN_ERR_INVALID_ARG;
+        if (!out_bytes || query.size() > (INT32_MAX - kQueryHeaderBytes) / sizeof(char16_t) - 1) return VN_ERR_INVALID_ARG;
         const int32_t string_bytes = static_cast<int32_t>((query.size() + 1) * sizeof(char16_t));
         const int32_t total_bytes = kQueryHeaderBytes + string_bytes;
         *out_bytes = total_bytes;
@@ -209,17 +209,6 @@ VN_EXPORT int32_t vn_everything_provider_compute_final_score(
     double* out_score) noexcept {
     if (!out_score) return VN_E_INVALID_ARG;
     *out_score = vnotch::services::spotlight::providers::EverythingSearchProvider::ComputeFinalScore(ranker_score, title_len);
-    return VN_OK;
-}
-
-VN_EXPORT int32_t vn_everything_provider_parse_bounded_utf16_len(
-    const uint8_t* base_ptr,
-    int32_t offset,
-    int32_t total_bytes,
-    int32_t* out_char_len) noexcept {
-    if (!out_char_len) return VN_E_INVALID_ARG;
-    *out_char_len = vnotch::services::spotlight::providers::EverythingSearchProvider::ParseBoundedUtf16Length(
-        base_ptr, offset, total_bytes);
     return VN_OK;
 }
 

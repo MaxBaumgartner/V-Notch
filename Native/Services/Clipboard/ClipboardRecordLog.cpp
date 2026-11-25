@@ -1,5 +1,6 @@
 #include "../../vnotch_native.h"
 #include "../../vnotch_handle_registry.h"
+#include "ClipboardStartupContract.h"
 #include <bcrypt.h>
 #include <array>
 #include <memory>
@@ -36,18 +37,28 @@ struct DpapiBlob {
     DATA_BLOB value{};
     ~DpapiBlob() { if (value.pbData) { SecureZeroMemory(value.pbData, value.cbData); LocalFree(value.pbData); } }
 };
-struct Mapping {
-    Handle handle;
-    uint8_t* data = nullptr;
-    Mapping(HANDLE file, uint64_t size, bool write)
-        : handle(CreateFileMappingW(file, nullptr, write ? PAGE_READWRITE : PAGE_READONLY,
-            static_cast<DWORD>(size >> 32), static_cast<DWORD>(size), nullptr)) {
-        Require(static_cast<bool>(handle));
-        data = static_cast<uint8_t*>(MapViewOfFile(handle.value, write ? FILE_MAP_WRITE : FILE_MAP_READ, 0, 0, static_cast<SIZE_T>(size)));
-        Require(data != nullptr);
+void ReadExactAt(HANDLE file, uint64_t offset, uint8_t* dst, size_t count) {
+    LARGE_INTEGER pos{}; pos.QuadPart = static_cast<LONGLONG>(offset);
+    Require(SetFilePointerEx(file, pos, nullptr, FILE_BEGIN));
+    size_t total = 0;
+    while (total < count) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(count - total, 64u * 1024u * 1024u));
+        DWORD read = 0;
+        Require(ReadFile(file, dst + total, chunk, &read, nullptr) && read > 0);
+        total += read;
     }
-    ~Mapping() { if (data) UnmapViewOfFile(data); }
-};
+}
+void WriteExactAt(HANDLE file, uint64_t offset, const uint8_t* src, size_t count) {
+    LARGE_INTEGER pos{}; pos.QuadPart = static_cast<LONGLONG>(offset);
+    Require(SetFilePointerEx(file, pos, nullptr, FILE_BEGIN));
+    size_t total = 0;
+    while (total < count) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(count - total, 64u * 1024u * 1024u));
+        DWORD written = 0;
+        Require(WriteFile(file, src + total, chunk, &written, nullptr) && written > 0);
+        total += written;
+    }
+}
 
 #pragma pack(push, 1)
 struct Commit {
@@ -102,9 +113,9 @@ bool IsLegacyBytes(const uint8_t* bytes, size_t read) {
 bool IsLegacy(HANDLE file, uint64_t size) {
     Require(size > 0);
     std::array<uint8_t, 64> bytes{};
-    LARGE_INTEGER start{}; Require(SetFilePointerEx(file, start, nullptr, FILE_BEGIN));
-    DWORD read = 0; Require(ReadFile(file, bytes.data(), static_cast<DWORD>(std::min<uint64_t>(bytes.size(), size)), &read, nullptr));
-    return IsLegacyBytes(bytes.data(), read);
+    const size_t prefix = static_cast<size_t>(std::min<uint64_t>(bytes.size(), size));
+    ReadExactAt(file, 0, bytes.data(), prefix);
+    return IsLegacyBytes(bytes.data(), prefix);
 }
 Header ReadHeader(const uint8_t* data, uint64_t size) {
     Require(size >= kHeaderSize && size <= kMaxLogSize);
@@ -113,7 +124,6 @@ Header ReadHeader(const uint8_t* data, uint64_t size) {
     for (uint64_t i = 0; i < 2; ++i) std::memcpy(&header.commits[i], data + CommitOffset(i), sizeof(Commit));
     return header;
 }
-Header ReadHeader(const Mapping& map, uint64_t size) { return ReadHeader(map.data, size); }
 Commit Latest(const Header& header, uint64_t size) {
     Commit best{};
     for (const auto& candidate : header.commits) {
@@ -175,7 +185,7 @@ struct Context {
         return full;
     }
 
-    void EnsureKey(bool allow_create) {
+    void EnsureKey(bool allow_create, bool retry_empty = true) {
         if (key.value) return;
         const std::wstring path = root + L"\\.history-key.dpapi";
         Handle file;
@@ -209,9 +219,9 @@ struct Context {
             const uint64_t size = FileSize(file.value);
             if (size == 0) {
                 // A crash before DPAPI key publication cannot have committed an encrypted record.
-                Require(allow_create && !HasEncryptedRecords());
+                Require(retry_empty && allow_create && !HasEncryptedRecords());
                 file.Close(); Require(DeleteFileW(path.c_str()));
-                EnsureKey(true); return;
+                EnsureKey(true, false); return;
             }
             Require(size <= 65536);
             std::vector<uint8_t> bytes(static_cast<size_t>(size)); DWORD read = 0;
@@ -255,33 +265,34 @@ struct Context {
         plain.bytes.resize(record.length);
         Crypt(false, header, record, bytes + sizeof(Record), plain.bytes.data());
     }
-    void ReadRecord(const Mapping& map, const Header& header, const Commit& commit, SecretBuffer& plain) {
-        ReadRecordBytes(map.data + commit.offset, header, commit, plain);
-    }
     void Append(HANDLE file, Header header, const Commit& previous, const uint8_t* plain, int32_t length) {
         Require(previous.generation < UINT64_MAX);
         const uint64_t offset = previous.generation
             ? (previous.offset + previous.size + kPageSize - 1) & ~uint64_t{kPageSize - 1} : kHeaderSize;
         const uint64_t end = offset + sizeof(Record) + static_cast<uint32_t>(length);
-        const uint64_t mapped_size = (end + kPageSize - 1) & ~uint64_t{kPageSize - 1};
-        Require(mapped_size <= kMaxLogSize);
+        const uint64_t padded_size = (end + kPageSize - 1) & ~uint64_t{kPageSize - 1};
+        Require(padded_size <= kMaxLogSize);
         Record record{}; record.magic = kRecordMagic; record.length = length; record.generation = previous.generation + 1;
         Check(BCryptGenRandom(nullptr, record.nonce, sizeof(record.nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG));
         std::vector<uint8_t> cipher(static_cast<size_t>(length)); Crypt(true, header, record, plain, cipher.data());
-        Mapping map(file, mapped_size, true);
         if (!previous.generation) {
-            std::memset(map.data, 0, kHeaderSize);
-            std::memcpy(map.data, &header, offsetof(Header, commits));
+            std::array<uint8_t, kHeaderSize> header_pages{};
+            std::memcpy(header_pages.data(), &header, offsetof(Header, commits));
+            WriteExactAt(file, 0, header_pages.data(), header_pages.size());
         }
-        std::memcpy(map.data + offset, &record, sizeof(record));
-        std::memcpy(map.data + offset + sizeof(record), cipher.data(), cipher.size());
+        WriteExactAt(file, offset, reinterpret_cast<const uint8_t*>(&record), sizeof(record));
+        WriteExactAt(file, offset + sizeof(record), cipher.data(), cipher.size());
+        if (end < padded_size && FileSize(file) < padded_size) {
+            std::array<uint8_t, kPageSize> zero_pad{};
+            WriteExactAt(file, end, zero_pad.data(), static_cast<size_t>(padded_size - end));
+        }
         // Persist ciphertext before publishing its commit. The second slot preserves the prior commit during a torn write.
-        Require(FlushViewOfFile(map.data, static_cast<SIZE_T>(mapped_size)) && FlushFileBuffers(file));
+        Require(FlushFileBuffers(file));
         Commit next{record.generation, offset, static_cast<uint32_t>(sizeof(record) + cipher.size()), 0, 0, 0};
         next.checksum = Checksum(next);
         const uint32_t commit_offset = CommitOffset(next.generation & 1);
-        std::memcpy(map.data + commit_offset, &next, sizeof(next));
-        Require(FlushViewOfFile(map.data + commit_offset, kPageSize) && FlushFileBuffers(file));
+        WriteExactAt(file, commit_offset, reinterpret_cast<const uint8_t*>(&next), sizeof(next));
+        Require(FlushFileBuffers(file));
     }
     void Replace(const std::wstring& path, const uint8_t* plain, int32_t length) {
         std::array<uint8_t, 16> random{};
@@ -300,6 +311,53 @@ struct Context {
             Require(MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH));
         } catch (...) { DeleteFileW(temp.c_str()); throw; }
     }
+    void Migrate(const std::wstring& full) {
+        Handle file(CreateFileW(full.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        Require(static_cast<bool>(file)); const uint64_t size = FileSize(file.value);
+        if (!IsLegacy(file.value, size)) { encrypted_seen = true; return; }
+        Require(size <= kMaxPayload);
+        SecretBuffer plain; plain.bytes.resize(static_cast<size_t>(size));
+        ReadExactAt(file.value, 0, plain.bytes.data(), plain.bytes.size());
+        file.Close();
+        EnsureKey(true); Replace(full, plain.bytes.data(), static_cast<int32_t>(size));
+    }
+    int32_t Read(const std::wstring& full, uint8_t* output, int32_t capacity,
+                 int32_t* written, bool migrate_legacy = false) {
+        Handle file(CreateFileW(full.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_DELETE | (migrate_legacy ? 0 : FILE_SHARE_WRITE),
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!file && (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)) return 2;
+        Require(static_cast<bool>(file)); const uint64_t size = FileSize(file.value);
+        std::array<uint8_t, kHeaderSize> pages{};
+        const auto prefix_size = static_cast<size_t>(std::min<uint64_t>(size, pages.size()));
+        if (prefix_size > 0) ReadExactAt(file.value, 0, pages.data(), prefix_size);
+        if (IsLegacyBytes(pages.data(), prefix_size)) {
+            if (!migrate_legacy) return 1;
+            Require(size > 0 && size <= kMaxPayload);
+            SecretBuffer legacy; legacy.bytes.resize(static_cast<size_t>(size));
+            ReadExactAt(file.value, 0, legacy.bytes.data(), legacy.bytes.size());
+            file.Close();
+            EnsureKey(true); Replace(full, legacy.bytes.data(), static_cast<int32_t>(size));
+            *written = static_cast<int32_t>(size);
+            if (capacity < *written) return VN_ERR_BUFFER_TOO_SMALL;
+            std::copy(legacy.bytes.begin(), legacy.bytes.end(), output);
+            return VN_OK;
+        }
+        encrypted_seen = true;
+        const auto header = ReadHeader(pages.data(), size); const auto commit = Latest(header, size);
+        Require(commit.size > sizeof(Record) && commit.size - sizeof(Record) <= kMaxPayload);
+        *written = static_cast<int32_t>(commit.size - sizeof(Record));
+        if (capacity < *written) return VN_ERR_BUFFER_TOO_SMALL;
+        EnsureKey(false); SecretBuffer plain;
+        std::vector<uint8_t> large;
+        uint8_t* record = pages.data();
+        if (commit.size > pages.size()) { large.resize(commit.size); record = large.data(); }
+        ReadExactAt(file.value, commit.offset, record, commit.size);
+        ReadRecordBytes(record, header, commit, plain);
+        std::copy(plain.bytes.begin(), plain.bytes.end(), output); return VN_OK;
+    }
+
 };
 vnotch::HandleRegistry<Context> contexts;
 }
@@ -315,17 +373,7 @@ VN_EXPORT int32_t __stdcall vn_clipboard_record_migrate(int64_t handle, const wc
         auto context = contexts.Acquire(handle); if (!context) return VN_ERR_INVALID_ARG;
         std::lock_guard lock(context->gate);
         const auto full = context->Path(path, length);
-        Handle file(CreateFileW(full.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        Require(static_cast<bool>(file)); const uint64_t size = FileSize(file.value);
-        if (!IsLegacy(file.value, size)) { context->encrypted_seen = true; return VN_OK; }
-        Require(size <= kMaxPayload);
-        SecretBuffer plain; plain.bytes.resize(static_cast<size_t>(size));
-        LARGE_INTEGER start{}; Require(SetFilePointerEx(file.value, start, nullptr, FILE_BEGIN));
-        DWORD read = 0;
-        Require(ReadFile(file.value, plain.bytes.data(), static_cast<DWORD>(size), &read, nullptr) && read == size);
-        file.Close();
-        context->EnsureKey(true); context->Replace(full, plain.bytes.data(), static_cast<int32_t>(size));
+        context->Migrate(full);
         return VN_OK;
     } catch (...) { return VN_ERR_FAIL; }
 }
@@ -337,34 +385,7 @@ VN_EXPORT int32_t __stdcall vn_clipboard_record_read(int64_t handle, const wchar
         auto context = contexts.Acquire(handle); if (!context) return VN_ERR_INVALID_ARG;
         std::lock_guard lock(context->gate);
         const auto full = context->Path(path, length);
-        Handle file(CreateFileW(full.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!file && (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND)) return 2;
-        Require(static_cast<bool>(file)); const uint64_t size = FileSize(file.value);
-        // Read cached header pages once. Mapping/unmapping a tiny JSON document costs
-        // more than copying its ciphertext; retain mappings for large payloads only.
-        std::array<uint8_t, kHeaderSize> pages;
-        DWORD read = 0;
-        const auto prefix_size = static_cast<DWORD>(std::min<uint64_t>(size, pages.size()));
-        Require(ReadFile(file.value, pages.data(), prefix_size, &read, nullptr) && read == prefix_size);
-        if (IsLegacyBytes(pages.data(), read)) return 1;
-        context->encrypted_seen = true;
-        const auto header = ReadHeader(pages.data(), size); const auto commit = Latest(header, size);
-        Require(commit.size > sizeof(Record) && commit.size - sizeof(Record) <= kMaxPayload);
-        *written = static_cast<int32_t>(commit.size - sizeof(Record));
-        if (capacity < *written) return VN_ERR_BUFFER_TOO_SMALL;
-        context->EnsureKey(false); SecretBuffer plain;
-        if (commit.size <= 256 * 1024) {
-            std::vector<uint8_t> large;
-            uint8_t* record = pages.data();
-            if (commit.size > pages.size()) { large.resize(commit.size); record = large.data(); }
-            LARGE_INTEGER position{}; position.QuadPart = static_cast<LONGLONG>(commit.offset);
-            Require(SetFilePointerEx(file.value, position, nullptr, FILE_BEGIN));
-            Require(ReadFile(file.value, record, commit.size, &read, nullptr) && read == commit.size);
-            context->ReadRecordBytes(record, header, commit, plain);
-        } else {
-            Mapping map(file.value, size, false); context->ReadRecord(map, header, commit, plain);
-        }
-        std::copy(plain.bytes.begin(), plain.bytes.end(), output); return VN_OK;
+        return context->Read(full, output, capacity, written);
     } catch (...) { return VN_ERR_FAIL; }
 }
 VN_EXPORT int32_t __stdcall vn_clipboard_record_append(int64_t handle, const wchar_t* path, int32_t path_length,
@@ -386,12 +407,50 @@ VN_EXPORT int32_t __stdcall vn_clipboard_record_append(int64_t handle, const wch
         Require(size <= kMaxLogSize);
         Header header{}; Commit commit{};
         {
-            Mapping map(file.value, size, false); header = ReadHeader(map, size); commit = Latest(header, size);
-            SecretBuffer verified; context->ReadRecord(map, header, commit, verified);
+            std::array<uint8_t, kHeaderSize> pages{};
+            Require(size >= kHeaderSize);
+            ReadExactAt(file.value, 0, pages.data(), pages.size());
+            header = ReadHeader(pages.data(), size); commit = Latest(header, size);
+            Require(commit.size > sizeof(Record) && commit.size - sizeof(Record) <= kMaxPayload);
+            std::vector<uint8_t> large;
+            uint8_t* record = pages.data();
+            if (commit.size > pages.size()) { large.resize(commit.size); record = large.data(); }
+            ReadExactAt(file.value, commit.offset, record, commit.size);
+            SecretBuffer verified; context->ReadRecordBytes(record, header, commit, verified);
         }
         if (size > std::max<uint64_t>(256 * 1024, static_cast<uint64_t>(length) * 4 + kHeaderSize)) {
             file.Close(); context->Replace(full, plain, length);
         } else context->Append(file.value, header, commit, plain, length);
+        return VN_OK;
+    } catch (...) { return VN_ERR_FAIL; }
+}
+
+// Errors are isolated per item. No plaintext is retained beyond this call.
+VN_EXPORT int32_t __stdcall vn_clipboard_record_startup_batch(int64_t handle,
+    const wchar_t* directories, int32_t directory_chars, VnClipboardStartupItem* items,
+    int32_t count, uint8_t* payloads, int32_t capacity) noexcept {
+    if (!directories || directory_chars <= 0 || !items || count <= 0 || count > kClipboardStartupBatch ||
+        !payloads || capacity < count * kClipboardStartupStride) return VN_ERR_INVALID_ARG;
+    try {
+        auto context = contexts.Acquire(handle); if (!context) return VN_ERR_INVALID_ARG;
+        std::lock_guard lock(context->gate);
+        for (int32_t i = 0; i < count; ++i) {
+            auto& item = items[i];
+            item.status = VN_ERR_FAIL; item.payload_length = 0; item.migration_status = VN_OK;
+            if (item.directory_offset < 0 || item.directory_length <= 0 ||
+                item.directory_offset > directory_chars || item.directory_length > directory_chars - item.directory_offset) {
+                item.status = VN_ERR_INVALID_ARG; continue;
+            }
+            try {
+                const auto directory = context->Path(directories + item.directory_offset, item.directory_length);
+                try {
+                    item.status = context->Read(directory + L"\\entry.json", payloads + i * kClipboardStartupStride,
+                        kClipboardStartupStride, &item.payload_length, true);
+                } catch (...) { item.migration_status = VN_ERR_FAIL; }
+                try { context->Migrate(directory + L"\\content.json"); }
+                catch (...) { item.migration_status = VN_ERR_FAIL; }
+            } catch (...) { item.status = VN_ERR_FAIL; }
+        }
         return VN_OK;
     } catch (...) { return VN_ERR_FAIL; }
 }

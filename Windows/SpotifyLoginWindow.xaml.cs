@@ -82,22 +82,33 @@ public partial class SpotifyLoginWindow : Window
             regionBounds.CornerDiameter);
     }
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnRoundedWindowRegion
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+        public int CornerDiameter;
+    }
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_window_calc_rounded_region(
+        double widthDip,
+        double heightDip,
+        double marginDip,
+        double cornerRadiusDip,
+        double dpiScale,
+        out VnRoundedWindowRegion outRegion);
+
     internal static RoundedWindowRegion CalculateRoundedWindowRegion(
         double widthDip,
         double heightDip,
         double dpiScale)
     {
-        dpiScale = dpiScale > 0 && double.IsFinite(dpiScale) ? dpiScale : 1.0;
-
-        int left = (int)Math.Round(ShellMarginDip * dpiScale);
-        int top = left;
-        int right = Math.Max(left + 1,
-            (int)Math.Round((Math.Max(widthDip, ShellMarginDip * 2 + 1) - ShellMarginDip) * dpiScale));
-        int bottom = Math.Max(top + 1,
-            (int)Math.Round((Math.Max(heightDip, ShellMarginDip * 2 + 1) - ShellMarginDip) * dpiScale));
-        int cornerDiameter = Math.Max(1, (int)Math.Round(ShellCornerRadiusDip * 2 * dpiScale));
-
-        return new RoundedWindowRegion(left, top, right, bottom, cornerDiameter);
+        _ = vn_window_calc_rounded_region(
+            widthDip, heightDip, ShellMarginDip, ShellCornerRadiusDip, dpiScale, out var r);
+        return new RoundedWindowRegion(r.Left, r.Top, r.Right, r.Bottom, r.CornerDiameter);
     }
 
     internal readonly record struct RoundedWindowRegion(
@@ -107,15 +118,21 @@ public partial class SpotifyLoginWindow : Window
         int Bottom,
         int CornerDiameter);
 
-
     private CancellationTokenRegistration _privacyCancellation;
+    private bool _webViewDisposed;
 
     private async void SpotifyLoginWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= SpotifyLoginWindow_Loaded;
-        if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature)) { Close(); return; }
+        if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature)) { _isClosing = true; Close(); return; }
         _privacyCancellation = NetworkPrivacy.Current.Acquire(PrivacyFeature).Register(() =>
-            Dispatcher.BeginInvoke(() => { SpotifyWebView.Dispose(); Close(); }));
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (_webViewDisposed) return;
+                _isClosing = true;
+                DisposeWebViewOnce();
+                Close();
+            }));
         PlayEntranceAnimation();
         try
         {
@@ -128,9 +145,19 @@ public partial class SpotifyLoginWindow : Window
 
             CoreWebView2Environment environment =
                 await CoreWebView2Environment.CreateAsync(userDataFolder: _userDataFolder);
-            await SpotifyWebView.EnsureCoreWebView2Async(environment);
+            if (_webViewDisposed || _isClosing) return;
+            CoreWebView2ControllerOptions controllerOptions = environment.CreateCoreWebView2ControllerOptions();
+            controllerOptions.IsInPrivateModeEnabled = true;
+            await SpotifyWebView.EnsureCoreWebView2Async(environment, controllerOptions);
 
-            if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature)) { Close(); return; }
+            if (_webViewDisposed || _isClosing) return;
+            if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature))
+            {
+                _isClosing = true;
+                DisposeWebViewOnce();
+                Close();
+                return;
+            }
             SpotifyWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             SpotifyWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             SpotifyWebView.CoreWebView2.Settings.AreHostObjectsAllowed = false;
@@ -193,7 +220,7 @@ public partial class SpotifyLoginWindow : Window
 
     private async Task CheckForSpotifySessionAsync()
     {
-        if (_cookieCheckInProgress || SpotifyWebView.CoreWebView2 == null)
+        if (_webViewDisposed || _isClosing || _cookieCheckInProgress || SpotifyWebView.CoreWebView2 == null)
             return;
 
         _cookieCheckInProgress = true;
@@ -227,14 +254,12 @@ public partial class SpotifyLoginWindow : Window
         CloseWithAnimation(false);
     }
 
-    private void Window_Closed(object? sender, EventArgs e)
+    private void DisposeWebViewOnce()
     {
-        _privacyCancellation.Dispose();
+        if (_webViewDisposed) return;
+        _webViewDisposed = true;
         try
         {
-            _cookieTimer.Stop();
-            _cookieTimer.Tick -= CookieTimer_Tick;
-            _cookieTimer.Dispose();
             if (SpotifyWebView.CoreWebView2 != null)
             {
                 SpotifyWebView.CoreWebView2.NavigationCompleted -= CoreWebView2_NavigationCompleted;
@@ -255,31 +280,50 @@ public partial class SpotifyLoginWindow : Window
         {
             RuntimeLog.Warn(LogCategory, $"Error during WebView2 disposal: {ex.Message}");
         }
-
-        if (_userDataFolder != null)
-            DeleteTemporaryProfileAsync(_userDataFolder).SafeFireAndForget("SPOTIFY-LOGIN-CLEANUP");
-        _profileCleanupLease?.Dispose();
-        _profileCleanupLease = null;
     }
 
-    private static async Task DeleteTemporaryProfileAsync(string userDataFolder)
+    private void Window_Closed(object? sender, EventArgs e)
     {
-        for (int attempt = 0; attempt < 5; attempt++)
+        _isClosing = true;
+        _privacyCancellation.Dispose();
+        _cookieTimer.Stop();
+        _cookieTimer.Tick -= CookieTimer_Tick;
+        _cookieTimer.Dispose();
+        DisposeWebViewOnce();
+
+        IDisposable? cleanupLease = System.Threading.Interlocked.Exchange(ref _profileCleanupLease, null);
+        string? userDataFolder = System.Threading.Interlocked.Exchange(ref _userDataFolder, null);
+        if (userDataFolder != null)
+            DeleteTemporaryProfileAsync(userDataFolder, cleanupLease).SafeFireAndForget("SPOTIFY-LOGIN-CLEANUP");
+        else
+            cleanupLease?.Dispose();
+    }
+
+    private static async Task DeleteTemporaryProfileAsync(string userDataFolder, IDisposable? cleanupLease)
+    {
+        try
         {
-            try
+            for (int attempt = 0; attempt < 10; attempt++)
             {
-                if (Directory.Exists(userDataFolder))
-                    SafeFileDeletion.DeleteDirectory(userDataFolder);
-                return;
+                try
+                {
+                    if (Directory.Exists(userDataFolder))
+                        SafeFileDeletion.DeleteDirectory(userDataFolder);
+                    return;
+                }
+                catch (IOException)
+                {
+                    await Task.Delay(150).ConfigureAwait(false);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    await Task.Delay(150).ConfigureAwait(false);
+                }
             }
-            catch (IOException)
-            {
-                await Task.Delay(200);
-            }
-            catch (UnauthorizedAccessException)
-            {
-                await Task.Delay(200);
-            }
+        }
+        finally
+        {
+            cleanupLease?.Dispose();
         }
     }
 
@@ -287,7 +331,7 @@ public partial class SpotifyLoginWindow : Window
     {
         if (e.LeftButton == MouseButtonState.Pressed)
         {
-            DragMove();
+            this.TryDragMove();
         }
     }
 
@@ -303,7 +347,7 @@ public partial class SpotifyLoginWindow : Window
             return;
         }
 
-        DragMove();
+        this.TryDragMove();
     }
 
     private static bool IsInteractiveElement(DependencyObject? source)
@@ -318,7 +362,7 @@ public partial class SpotifyLoginWindow : Window
             {
                 return true;
             }
-            source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
+            source = WindowInteraction.Parent(source);
         }
         return false;
     }
@@ -355,6 +399,28 @@ public partial class SpotifyLoginWindow : Window
         _isClosing = true;
         _dialogResultToSet = result;
 
+        var fallback = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+        bool completed = false;
+        void Finish(object? sender, EventArgs args)
+        {
+            if (completed) return;
+            completed = true;
+            fallback.Stop();
+            if (_dialogResultToSet.HasValue)
+            {
+                try { DialogResult = _dialogResultToSet; return; }
+                catch (InvalidOperationException) { /* Modeless window. */ }
+            }
+            Close();
+        }
+        if (VNotch.Services.AnimationConfig.ReduceMotion)
+        {
+            Dispatcher.BeginInvoke(() => Finish(null, EventArgs.Empty));
+            return;
+        }
+        fallback.Tick += Finish;
+        fallback.Start();
+
         var easeIn = new ExponentialEase { EasingMode = EasingMode.EaseIn, Exponent = 6 };
         int fps = VNotch.Services.AnimationConfig.TargetFps;
         var duration = TimeSpan.FromMilliseconds(400);
@@ -362,30 +428,7 @@ public partial class SpotifyLoginWindow : Window
         var fade = new DoubleAnimation(MainShell.Opacity, 0.0, duration) { EasingFunction = easeIn };
         Timeline.SetDesiredFrameRate(fade, fps);
 
-        fade.Completed += (s, e) =>
-        {
-            RuntimeLog.Debug(LogCategory, () => "Exit animation completed. Setting DialogResult.");
-            try
-            {
-                if (_dialogResultToSet == true)
-                {
-                    DialogResult = true;
-                }
-                else if (_dialogResultToSet == false)
-                {
-                    DialogResult = false;
-                }
-                else
-                {
-                    Close();
-                }
-            }
-            catch (Exception ex)
-            {
-                RuntimeLog.Warn(LogCategory, $"Error during animated close: {ex.Message}");
-                Close();
-            }
-        };
+        fade.Completed += Finish;
 
         MainShell.BeginAnimation(OpacityProperty, fade);
 

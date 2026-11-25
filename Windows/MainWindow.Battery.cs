@@ -99,7 +99,7 @@ public partial class MainWindow
 
         SolidColorBrush fillBrush;
         SolidColorBrush percentBrush;
-        bool showLightning = false;
+        bool showLightning;
 
         if (battery.HasBattery && battery.Percentage >= 0 && battery.Percentage <= 20 && !battery.IsPowerConnected)
         {

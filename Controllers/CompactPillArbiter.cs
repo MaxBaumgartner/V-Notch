@@ -23,6 +23,7 @@ public sealed partial class CompactPillArbiter
     private int _activeToken = 0;
     private int _nextToken = 1;
     private long _revision;
+    internal event Action? Released;
 
     [LibraryImport("VNotch.Native.dll")]
     private static partial int vn_compact_pill_try_acquire(
@@ -95,6 +96,7 @@ public sealed partial class CompactPillArbiter
             _activeToken = 0;
             _revision++;
         }
+        Released?.Invoke();
     }
 
     public void ForceClear()

@@ -128,7 +128,8 @@ public partial class SettingsWindow
 
     protected override void OnClosed(EventArgs e)
     {
-        StopNavPillMotion();
+        _navPill.Settle();
+        NavHover.Settle();
         CompositionTarget.Rendering -= SmoothScroll_Tick;
         _isScrollAnimating = false;
         _livePreviewDebounce?.Dispose();

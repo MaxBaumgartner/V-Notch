@@ -363,7 +363,7 @@ public partial class ControlCenterView
     {
         if (icon is not BitmapSource bitmap) return null;
         Color c;
-        try { c = DynamicIslandColorExtractor.GetDominantColor(bitmap); }
+        try { c = DynamicIslandColorExtractor.GetDynamicIslandPalette(bitmap).Main; }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException) { return null; }
         double r = c.R / 255.0, g = c.G / 255.0, b = c.B / 255.0;
         double max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b)), delta = max - min;

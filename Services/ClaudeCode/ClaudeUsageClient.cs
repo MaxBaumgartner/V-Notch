@@ -59,7 +59,7 @@ internal sealed class ClaudeUsageClient : IDisposable
 
     private static string CredentialsPath => Path.Combine(ClaudeCodeSetup.ClaudeDirectory, ".credentials.json");
 
-    public ClaudeUsageClient() : this(new NativeWinHttpHandler(), CredentialsPath,
+    public ClaudeUsageClient() : this(NetworkPrivacy.CreateHttpHandler(allowAutoRedirect: true), CredentialsPath,
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json"),
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "claude", "versions")) { }
 

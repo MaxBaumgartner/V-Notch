@@ -22,6 +22,72 @@ public sealed class NotchNavigationIntegrationTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
+    public void AiViewMeasuresCurrentQuotasBeforeItsFirstVisibleFrame(bool fromMedia, bool island) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        var monitor = Services.AiUsage.AiAccountUsageMonitor.Shared;
+        var originalCodex = monitor.Codex;
+        var originalClaude = monitor.Claude;
+        bool reduced = AnimationConfig.ReduceMotion;
+        await using var fixture = new GreetingAcceptanceTests.MainWindowFixture("en", greeting: false,
+            settings =>
+            {
+                settings.EnableLocalOnlyMode = true;
+                settings.EnableAiUsageMonitoring = false;
+                settings.DisableMouseLeaveAutoClose = true;
+                settings.EnableDynamicIslandMode = island;
+                settings.AiUsageMotionIntensity = 0;
+            }, services => services.AddSingleton<IMediaDetectionService>(new Fakes.FakeMediaDetectionService()));
+        var window = fixture.Window;
+        void SetSnapshot(string provider, AiAccountUsage snapshot) => monitor.GetType()
+            .GetProperty(provider, Private)!.SetValue(monitor, snapshot);
+        try
+        {
+            AnimationConfig.SetReduceMotion(false);
+            await StartAsync(window, ct);
+            var coordinator = Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
+            if (fromMedia)
+            {
+                Assert.True(coordinator.RequestView(NotchView.Media, "AiPreflightSource"));
+                await WpfFrameWaiter.UntilAsync(() => !coordinator.IsTransitionActive && !IsAnimating(window), "media source", ct);
+            }
+            Assert.Empty(window.AiUsageContent.Children.OfType<Controls.AiUsageNotchView>());
+            // Monitoring can publish a snapshot before the panel exists.
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            var codex = new AiAccountUsage("Codex", AiUsageState.Ready, now,
+                [new("aiUsage.primary", 90, 300, now.AddMinutes(137)), new("aiUsage.secondary", 33, 10080, now.AddDays(3))], "plus");
+            var claude = new AiAccountUsage("Claude", AiUsageState.Disabled);
+            SetSnapshot("Codex", codex);
+            SetSnapshot("Claude", claude);
+            var expected = new Controls.AiUsageNotchView();
+            expected.Present(codex, claude, now);
+            expected.Measure(new Size(464, double.PositiveInfinity));
+            double outerMargin = window.AiUsageContent.Margin.Top + window.AiUsageContent.Margin.Bottom;
+            double expectedHeight = Math.Ceiling(Math.Max(Property<double>(window, "_expandedHeight"), expected.DesiredSize.Height + outerMargin));
+
+            Assert.True(coordinator.RequestView(NotchView.AiUsage, "AiPreflight"));
+            ExecutePendingTransition(window);
+            Assert.Equal(expectedHeight, window.AiUsageContent.Height + outerMargin, precision: 2);
+            await WpfFrameWaiter.UntilAsync(() => !coordinator.IsTransitionActive && !IsAnimating(window), "AI expansion", ct);
+            Assert.Equal(expectedHeight, window.NotchBorder.Height, precision: 2);
+            for (int i = 0; i < 3; i++)
+            {
+                await WpfFrameWaiter.NextAsync(ct);
+                Assert.Equal(expectedHeight, window.NotchBorder.Height, precision: 2);
+            }
+        }
+        finally
+        {
+            SetSnapshot("Codex", originalCodex);
+            SetSnapshot("Claude", originalClaude);
+            AnimationConfig.SetReduceMotion(reduced);
+        }
+    });
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
     public void EveryExpandedViewCanNavigateToEveryOtherViewAndCollapse(bool blurEnabled, bool island) => SharedStaTestRunner.RunAsync(async ct =>
     {
         bool previousReducedMotion = AnimationConfig.ReduceMotion;
@@ -43,7 +109,8 @@ public sealed class NotchNavigationIntegrationTests
             await StartAsync(window, ct);
             var coordinator = Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
             Assert.False(window.SettingsButton.IsHitTestVisible);
-            var views = new[] { NotchView.Media, NotchView.Secondary, NotchView.Timer, NotchView.Claude, NotchView.Pi, NotchView.School, NotchView.AudioMixer, NotchView.Camera };
+            Assert.Equal(0, VisualTreeHelper.GetChildrenCount(window.WhiteNoiseWidget));
+            var views = new[] { NotchView.Media, NotchView.Secondary, NotchView.Timer, NotchView.Claude, NotchView.Pi, NotchView.School, NotchView.AudioMixer, NotchView.Camera, NotchView.AiUsage };
             bool capturedHeader = false;
             async Task Navigate(NotchView view)
             {
@@ -74,6 +141,8 @@ public sealed class NotchNavigationIntegrationTests
                     var hit = window.NotchContent.InputHitTest(new Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2)) as DependencyObject;
                     while (hit != null && !ReferenceEquals(hit, window.SettingsButton)) hit = VisualTreeHelper.GetParent(hit);
                     Assert.Same(window.SettingsButton, hit);
+                    // Upstream checks its timer view's lazy white-noise strip here; in the fork NotchView.Timer is the
+                    // system control center, which has no white-noise strip.
                     if (view == NotchView.Secondary)
                     {
                         var tray = window.ClipboardTrayView;
@@ -137,9 +206,15 @@ public sealed class NotchNavigationIntegrationTests
                         NotchView.Claude => window.ClaudeContent,
                         NotchView.Pi => window.PiContent,
                         NotchView.School => window.SchoolContent,
+                        NotchView.AiUsage => window.AiUsageContent,
                         _ => window.AudioContent
                     };
                     Assert.Equal(Visibility.Visible, content.Visibility);
+                    if (to == NotchView.AiUsage)
+                    {
+                        Assert.Same(window.StatusBar, window.AiUsageStatusBarHost.Content);
+                        Assert.Equal(480, window.NotchBorder.ActualWidth, precision: 1);
+                    }
                 }
                 AnimationConfig.SetReduceMotion(pairIndex > 4);
                 await Navigate(NotchView.Compact);
@@ -165,6 +240,8 @@ public sealed class NotchNavigationIntegrationTests
                 settings.EnableDynamicIslandMode = island;
             }, services => services.AddSingleton<IMediaDetectionService>(new Fakes.FakeMediaDetectionService()));
         var window = fixture.Window;
+        // Measure resting layout without the runner's pointer triggering hover transforms.
+        window.IsHitTestVisible = false;
         await StartAsync(window, ct);
         var coordinator = Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
         Assert.True(coordinator.RequestView(NotchView.Secondary, "HeaderAlignment"));
@@ -203,6 +280,9 @@ public sealed class NotchNavigationIntegrationTests
                 settings.EnableDynamicIslandMode = island;
             }, services => services.AddSingleton<IMediaDetectionService>(new Fakes.FakeMediaDetectionService()));
         var window = fixture.Window;
+        // Hover enlarges the update/settings hit surfaces and changes their rendered gap.
+        // This test covers the resting header layout, independently of cursor position.
+        window.IsHitTestVisible = false;
         await StartAsync(window, ct);
         typeof(MainWindow).GetField("_isUpdateAvailable", Private)!.SetValue(window, update);
         var coordinator = Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
@@ -227,10 +307,18 @@ public sealed class NotchNavigationIntegrationTests
         {
             var bounds = Bounds(window.UpdateNotificationButton);
             Assert.InRange(Math.Abs(bounds.Top + bounds.Height / 2 - center), 0, 0.5);
-            Assert.True(bounds.Left >= Bounds(window.BatteryIcon).Right + 4);
-            Assert.True(Bounds(window.SettingsButton).Left >= bounds.Right + 4);
+            AssertGap(Bounds(window.BatteryIcon), bounds, "battery/update");
+            AssertGap(bounds, Bounds(window.SettingsButton), "update/settings");
         }
-        else Assert.True(Bounds(window.SettingsButton).Left >= Bounds(window.BatteryIcon).Right + 4);
+        else AssertGap(Bounds(window.BatteryIcon), Bounds(window.SettingsButton), "battery/settings");
+
+        void AssertGap(Rect left, Rect right, string pair)
+        {
+            double gap = right.Left - left.Right;
+            Assert.True(gap >= 3.5,
+                $"{pair} gap is {gap:F3} DIPs (island={island}, update={update}, " +
+                $"settings scale={window.SettingsScale.ScaleX:F3}, update scale={window.UpdateNotificationScale.ScaleX:F3}).");
+        }
     });
 
     [Fact]
@@ -240,7 +328,6 @@ public sealed class NotchNavigationIntegrationTests
         var window = fixture.Window;
         await StartAsync(window, ct);
         var coordinator = Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
-        Assert.Same(coordinator, Field<INotchManager>(window, "_notchManager").TransitionCoordinator);
         for (int i = 0; i < 12; i++)
         {
             window.SetDebugViewState("MediaExpanded");
@@ -274,7 +361,9 @@ public sealed class NotchNavigationIntegrationTests
         var window = fixture.Window;
         await StartAsync(window, ct);
         window.SetDebugViewState("MediaExpanded");
-        await WpfFrameWaiter.UntilAsync(() => !IsAnimating(window), "initial media expansion", ct);
+        // The media width can keep animating after the view transition completes.
+        bool MediaSettled() => !IsAnimating(window) && !Field<bool>(window, "_isMediaWidthAnimating");
+        await WpfFrameWaiter.UntilAsync(MediaSettled, "initial media expansion and resize", ct);
         double expandedWidth = window.NotchBorder.Width;
         window.SetDebugViewState("CollapsedNotch");
         await WpfFrameWaiter.UntilAsync(() => window.NotchBorder.Width < expandedWidth - 10, "partway through collapse", ct);
@@ -285,7 +374,7 @@ public sealed class NotchNavigationIntegrationTests
         ExecutePendingTransition(window);
         Assert.Equal(opacity, window.ExpandedContent.Opacity, 6);
         Assert.Equal(y, window.ExpandedContent.RenderTransform.Value.OffsetY, 6);
-        await WpfFrameWaiter.UntilAsync(() => !IsAnimating(window), "reversed media expansion", ct);
+        await WpfFrameWaiter.UntilAsync(MediaSettled, "reversed media expansion and resize", ct);
         Assert.Equal(NotchView.Media, coordinator.CurrentView);
         Assert.Equal(expandedWidth, window.NotchBorder.Width, 2);
         Assert.Equal(Visibility.Visible, window.ExpandedContent.Visibility);

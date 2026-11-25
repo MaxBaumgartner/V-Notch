@@ -4,7 +4,7 @@
 
 **Bản công bố trước:** 24 tháng 10 năm 2026
 
-**Phạm vi:** Mã nguồn hiện tại ngày 11 tháng 11 năm 2026 (v2.3.1); tính năng khả dụng phụ thuộc bản cài đặt.
+**Phạm vi:** Mã nguồn hiện tại ngày 16 tháng 11 năm 2026 (v2.4.0); tính năng khả dụng phụ thuộc bản cài đặt.
 
 **Nhà phát triển:** w0otdev & viper1aa  
 **Liên hệ:** [github.com/w0otdev/V-Notch/issues](https://github.com/w0otdev/V-Notch/issues)  
@@ -175,7 +175,7 @@ V-Notch không có máy chủ backend và không thực hiện analytics, teleme
 
 ### 4.1 Kiểm tra, Tải bản cập nhật & Xác minh tính toàn vẹn bản phát hành (GitHub)
 
-- **Điểm đến:** `https://api.github.com/repos/w0otdev/V-Notch/releases/latest`, `https://api.github.com/repos/w0otdev/V-Notch/releases` (khi kiểm tra bản thử nghiệm hoặc ghi chú phát hành), `https://github.com/w0otdev/V-Notch/releases.atom` (dự phòng khi REST API bị giới hạn tốc độ), và `https://api.github.com/repos/w0otdev/V-Notch/releases/tags/v{version}` (để xác minh mã băm tệp nhị phân của bản phát hành).
+- V-Notch dùng `https://github.com/w0otdev/V-Notch/releases.atom` để kiểm tra cập nhật và đọc ghi chú phát hành. Nếu nguồn này gặp lỗi, ứng dụng có thể đọc danh sách bản phát hành từ `https://api.github.com/repos/w0otdev/V-Notch/releases`. Việc xác minh mã băm của tệp phát hành sử dụng `https://api.github.com/repos/w0otdev/V-Notch/releases/tags/v{version}`.
 - **Tại sao:** Để phát hiện phiên bản V-Notch mới hơn và đối chiếu mã băm tệp nhị phân cục bộ với các tệp `.sha256` đã công bố trên bản phát hành.
 - **Dữ liệu gửi đi (kiểm tra cập nhật):** Header HTTP tiêu chuẩn, gồm `User-Agent: V-Notch-Updater` và header `If-None-Match` (ETag) có điều kiện để lưu cache. Tính năng này không gửi metadata media, thông tin đăng nhập hay nội dung tệp cục bộ. Như mọi yêu cầu HTTPS, dịch vụ từ xa có thể thấy thông tin kết nối như địa chỉ IP của bạn.
 - **Kiểm tra tính toàn vẹn bản phát hành ở chế độ nền (`AppIntegrityService`):** Khi `AutoCheckUpdates` được bật và `EnableLocalOnlyMode` đang tắt, V-Notch thực hiện truy vấn xác minh tính toàn vẹn bản phát hành ở chế độ nền tới `https://api.github.com/repos/w0otdev/V-Notch/releases/tags/v{version}` với `User-Agent: V-Notch-Integrity-Checker` nhằm đối chiếu mã băm tệp nhị phân cục bộ với các asset `.sha256` đã công bố trên `github.com`, `objects.githubusercontent.com`, và `release-assets.githubusercontent.com`. Khi `AutoCheckUpdates` bị tắt hoặc `EnableLocalOnlyMode` được bật, kiểm tra nền này không chạy.
@@ -274,6 +274,14 @@ Mở Spotlight, chọn AI làm chế độ mặc định hoặc nhập chữ mà
 Nhà cung cấp được chọn nhận nội dung gửi, thông tin xác thực, địa chỉ IP và metadata HTTP thông thường. Việc lưu giữ, huấn luyện, xử lý quốc tế và các quyền kiểm soát tài khoản phụ thuộc chính sách hiện hành, gói dịch vụ hoặc cài đặt tài khoản của họ. Mã hóa cục bộ không ngăn nhà cung cấp xử lý nội dung đã gửi. Trước khi gửi thông tin nhạy cảm, hãy xem [chính sách OpenAI](https://openai.com/policies/), [điều khoản Gemini API](https://ai.google.dev/gemini-api/terms), [điều khoản thương mại Anthropic](https://www.anthropic.com/legal/commercial-terms) và [chính sách quyền riêng tư DeepSeek](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.html).
 
 Thanh usage giữ số liệu do nhà cung cấp trả về trong bộ nhớ: token của yêu cầu gần nhất, quota tốc độ tại thời điểm phản hồi từ header OpenAI/Claude được hỗ trợ và số dư DeepSeek khi bạn yêu cầu tra cứu. Đây không phải tổng sử dụng tài khoản hay ngân sách tháng. Thông tin không có được ẩn; phản hồi bị ngắt có thể thiếu số liệu. Các số liệu này không được lưu vào lịch sử chat. Chế độ ngoại tuyến và tùy chọn Cho phép AI trực tuyến chặn cả tin nhắn AI chủ động và làm mới số dư.
+
+### 4.8.1 Theo dõi hạn mức tài khoản AI (Chủ động bật)
+
+Tính năng theo dõi hạn mức mặc định tắt và độc lập với hội thoại Spotlight. Khi bạn bật, V-Notch chạy một phiên chỉ đọc của Codex CLI đã cài để lấy hạn mức gói của tài khoản hiện đăng nhập qua giao thức app-server chính thức, tối đa một lần mỗi hai phút. Codex tự xử lý xác thực và gửi yêu cầu hạn mức đến dịch vụ OpenAI/Codex. V-Notch không sao chép thông tin xác thực, đọc cookie phiên, gửi lời nhắc hay tạo lượt AI. Nhãn tài khoản, gói và các chu kỳ hạn mức nhận được chỉ giữ trong bộ nhớ để hiển thị. Tắt theo dõi, bật chế độ chỉ cục bộ hoặc thu hồi quyền AI trực tuyến sẽ hủy việc cập nhật Codex.
+
+Kết nối Claude Code được cài riêng qua **Kết nối Claude Code**. Thao tác này thêm cầu nối thanh trạng thái của V-Notch vào cài đặt người dùng Claude khi chưa có thanh tùy chỉnh, đồng thời giữ bản sao lưu cài đặt trên máy. Cầu nối nhận dữ liệu thanh trạng thái theo tài liệu Claude Code nhưng chỉ lưu phần trăm hạn mức, thời điểm đặt lại và thời điểm ghi nhận vào `%LOCALAPPDATA%\V-Notch\ai-usage\claude.json`. Không lưu lời nhắc, thông tin xác thực, mã phiên hay đường dẫn bản ghi hội thoại. V-Notch đọc tệp cục bộ mỗi 30 giây khi bật theo dõi; thao tác này không cần mạng. Dữ liệu phản ánh phiên Claude Code báo cáo gần nhất và có thể cũ khi không sử dụng. Tắt theo dõi sẽ dừng đọc; **Gỡ cầu nối Claude** xóa cấu hình thanh trạng thái do V-Notch quản lý và mẫu đã lưu, giữ nguyên cấu hình tùy chỉnh thay thế. Khởi động lại Claude Code sau khi đổi cấu hình. Nếu tự tích hợp cầu nối vào tập lệnh riêng, bạn cần tự xóa lời gọi đó. Các bản sao lưu cài đặt vẫn nằm dưới quyền kiểm soát của bạn.
+
+Không có dữ liệu hạn mức nào được tải lên máy chủ V-Notch hay dịch vụ phân tích. Liên kết quản lý sử dụng mở trình duyệt theo quyền mở liên kết ngoài. Xem [hướng dẫn hạn mức AI](AI_ACCOUNT_USAGE.md) để biết cách thiết lập và gỡ kết nối.
 
 ### 4.9 Các bên thứ ba
 

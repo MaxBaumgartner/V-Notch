@@ -12,12 +12,12 @@ namespace vnotch::services
             u"login", u"settings", u"jobs", u"blog", u"developers", u"pages", u"playlists", u"stations", u"likes", u"messages",
             u"pro", u"for-artists", u"popular", u"tracks", u"explore", u"featured"
         };
-        
+
         static constexpr std::u16string_view SC_RESERVED_SLUGS[] = {
             u"sets", u"tracks", u"likes", u"reposts", u"spotlight", u"albums", u"following", u"followers",
             u"popular-tracks", u"recommended", u"comments", u"related", u"stats", u"stations"
         };
-        
+
         static inline bool sc_is_valid_candidate(std::u16string_view user, std::u16string_view slug) noexcept
         {
             if (is_null_or_whitespace(user) || is_null_or_whitespace(slug))
@@ -44,12 +44,12 @@ namespace vnotch::services
             }
             return true;
         }
-        
+
         static inline bool is_sc_url_stop(char16_t ch) noexcept
         {
             return ch == u'/' || ch == u'?' || ch == u'#' || is_unicode_whitespace(ch);
         }
-        
+
         static inline bool match_sc_bracket_noise(std::u16string_view inner) noexcept
         {
             std::u16string_view t = trim_u16(inner);
@@ -100,7 +100,7 @@ namespace vnotch::services
             }
             return false;
         }
-        
+
         static inline std::u16string sc_sanitize_search_text_impl(std::u16string_view value)
         {
             if (is_null_or_whitespace(value))
@@ -116,7 +116,7 @@ namespace vnotch::services
                 }
             }
             std::u16string_view sv = trim_u16(s);
-        
+
             std::u16string pass1;
             pass1.reserve(sv.size());
             size_t i = 0;
@@ -139,7 +139,7 @@ namespace vnotch::services
                 pass1.push_back(sv[i]);
                 ++i;
             }
-        
+
             for (char16_t& ch : pass1)
             {
                 if (ch == u'[' || ch == u']' || ch == u'(' || ch == u')' || ch == u'"' || ch == u'\'')
@@ -147,7 +147,7 @@ namespace vnotch::services
                     ch = u' ';
                 }
             }
-        
+
             std::u16string out;
             out.reserve(pass1.size());
             bool in_ws = false;
@@ -167,11 +167,11 @@ namespace vnotch::services
                     in_ws = false;
                 }
             }
-        
+
             std::u16string_view trimmed = trim_u16(out);
             return std::u16string(trimmed);
         }
-        
+
         static inline bool sc_has_meaningful_artist(std::u16string_view norm_artist) noexcept
         {
             return !norm_artist.empty() &&
@@ -179,7 +179,7 @@ namespace vnotch::services
                    !equals_ordinal(norm_artist, u"browser") &&
                    !equals_ordinal(norm_artist, u"unknown");
         }
-        
+
         static inline int32_t sc_score_title_match(std::u16string_view norm_title, std::u16string_view norm_slug) noexcept
         {
             if (norm_title.empty() || norm_slug.empty())
@@ -197,7 +197,7 @@ namespace vnotch::services
             {
                 return 5;
             }
-        
+
             int32_t score = 0;
             size_t i = 0;
             while (i < norm_title.size())
@@ -223,7 +223,7 @@ namespace vnotch::services
             }
             return score;
         }
-        
+
         static inline int32_t sc_score_artist_match(std::u16string_view norm_artist, std::u16string_view norm_user) noexcept
         {
             if (!sc_has_meaningful_artist(norm_artist) || norm_user.size() < 2)
@@ -254,7 +254,7 @@ namespace vnotch::services
 
         static int32_t vn_soundcloud_extract_track_url_impl(const char16_t* text_ptr, int32_t text_len,
     char16_t* out_buf, int32_t out_cap, int32_t* out_len,
-    uint8_t* out_found) noexcept
+    uint8_t* out_found)
         {
     if (out_len == nullptr || out_found == nullptr)
     {
@@ -348,7 +348,7 @@ namespace vnotch::services
 }
 
         static int32_t vn_soundcloud_sanitize_search_text_impl(const char16_t* val_ptr, int32_t val_len,
-    char16_t* out_buf, int32_t out_cap, int32_t* out_len) noexcept
+    char16_t* out_buf, int32_t out_cap, int32_t* out_len)
         {
     if (out_len == nullptr)
     {
@@ -362,7 +362,7 @@ namespace vnotch::services
     const char16_t* slug_ptr, int32_t slug_len,
     const char16_t* norm_title_ptr, int32_t norm_title_len,
     const char16_t* norm_artist_ptr, int32_t norm_artist_len,
-    int32_t* out_score) noexcept
+    int32_t* out_score)
         {
     if (out_score == nullptr)
     {
@@ -383,7 +383,7 @@ namespace vnotch::services
     const char16_t* cand_author_ptr, int32_t cand_author_len,
     int32_t cand_score,
     uint8_t strict_mode,
-    uint8_t* out_match) noexcept
+    uint8_t* out_match)
         {
     if (out_match == nullptr)
     {
@@ -456,7 +456,7 @@ namespace vnotch::services
 }
 
         static int32_t vn_soundcloud_normalize_artwork_url_impl(const char16_t* url_ptr, int32_t url_len,
-    char16_t* out_buf, int32_t out_cap, int32_t* out_len) noexcept
+    char16_t* out_buf, int32_t out_cap, int32_t* out_len)
         {
     if (out_len == nullptr)
     {
@@ -515,100 +515,5 @@ VN_EXPORT int32_t vn_soundcloud_normalize_artwork_url(const char16_t* url_ptr, i
     char16_t* out_buf, int32_t out_cap, int32_t* out_len) noexcept
 {
     try { return vnotch::services::SoundCloudMatching::vn_soundcloud_normalize_artwork_url_impl(url_ptr, url_len, out_buf, out_cap, out_len); } catch (...) { return VN_ERR_FAIL; }
-}
-
-VN_EXPORT int32_t vn_soundcloud_find_next_anchor_href(
-    const char16_t* html_ptr,
-    int32_t html_len,
-    int32_t start_pos,
-    int32_t* out_href_start,
-    int32_t* out_href_len,
-    int32_t* out_next_pos,
-    uint8_t* out_found) noexcept
-{
-    if (!out_href_start || !out_href_len || !out_next_pos || !out_found) return VN_ERR_INVALID_ARG;
-    *out_href_start = 0;
-    *out_href_len = 0;
-    *out_next_pos = html_len > 0 ? html_len : 0;
-    *out_found = 0u;
-    if (!html_ptr || html_len <= 0 || start_pos >= html_len) return VN_OK;
-
-    std::u16string_view html = vnotch::make_u16_view(html_ptr, html_len);
-    size_t i = static_cast<size_t>(start_pos < 0 ? 0 : start_pos);
-    while (i < html.size())
-    {
-        if (html[i] != u'<') { ++i; continue; }
-        std::u16string_view rem = html.substr(i);
-        if (vnotch::starts_with_ordinal(rem, u"<!--"))
-        {
-            size_t end_c = rem.find(u"-->", 4);
-            i = (end_c == std::u16string_view::npos) ? html.size() : (i + end_c + 3);
-            continue;
-        }
-        if (vnotch::starts_with_ignore_case(rem, u"<script") || vnotch::starts_with_ignore_case(rem, u"<style"))
-        {
-            std::u16string_view close_tag = vnotch::starts_with_ignore_case(rem, u"<script") ? u"</script" : u"</style";
-            i += 6;
-            while (i < html.size() && !vnotch::starts_with_ignore_case(html.substr(i), close_tag)) ++i;
-            while (i < html.size() && html[i] != u'>') ++i;
-            if (i < html.size()) ++i;
-            continue;
-        }
-        if (rem.size() >= 3 && (rem[1] == u'a' || rem[1] == u'A') && vnotch::is_unicode_whitespace(rem[2]))
-        {
-            size_t p = i + 2;
-            int32_t found_start = -1;
-            int32_t found_len = 0;
-            while (p < html.size() && html[p] != u'>')
-            {
-                while (p < html.size() && (vnotch::is_unicode_whitespace(html[p]) || html[p] == u'/')) ++p;
-                if (p >= html.size() || html[p] == u'>') break;
-                size_t name_start = p;
-                while (p < html.size() && !vnotch::is_unicode_whitespace(html[p]) && html[p] != u'=' && html[p] != u'>' && html[p] != u'/') ++p;
-                std::u16string_view attr_name = html.substr(name_start, p - name_start);
-                while (p < html.size() && vnotch::is_unicode_whitespace(html[p])) ++p;
-                if (p < html.size() && html[p] == u'=')
-                {
-                    ++p;
-                    while (p < html.size() && vnotch::is_unicode_whitespace(html[p])) ++p;
-                    size_t val_start = p;
-                    size_t val_end = p;
-                    if (p < html.size() && (html[p] == u'"' || html[p] == u'\''))
-                    {
-                        char16_t quote = html[p++];
-                        val_start = p;
-                        while (p < html.size() && html[p] != quote) ++p;
-                        val_end = p;
-                        if (p < html.size()) ++p;
-                    }
-                    else
-                    {
-                        val_start = p;
-                        while (p < html.size() && !vnotch::is_unicode_whitespace(html[p]) && html[p] != u'>') ++p;
-                        val_end = p;
-                    }
-                    if (vnotch::equals_ignore_case(attr_name, u"href") && found_start < 0)
-                    {
-                        found_start = static_cast<int32_t>(val_start);
-                        found_len = static_cast<int32_t>(val_end - val_start);
-                    }
-                }
-            }
-            if (p < html.size() && html[p] == u'>') ++p;
-            i = p;
-            if (found_start >= 0)
-            {
-                *out_href_start = found_start;
-                *out_href_len = found_len;
-                *out_next_pos = static_cast<int32_t>(i);
-                *out_found = 1u;
-                return VN_OK;
-            }
-            continue;
-        }
-        ++i;
-    }
-    *out_next_pos = static_cast<int32_t>(html.size());
-    return VN_OK;
 }
 

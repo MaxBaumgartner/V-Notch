@@ -21,7 +21,7 @@ internal sealed record UpstreamAhead(int Count, string Head, string CompareUrl);
 internal sealed partial class UpstreamWatch(UpstreamSource source, HttpMessageHandler? handler = null) : IDisposable
 {
     private const int MaxResponseBytes = 2 * 1024 * 1024;
-    private readonly HttpClient _http = new(handler ?? new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(10) };
+    private readonly HttpClient _http = new(handler ?? NetworkPrivacy.CreateHttpHandler(allowAutoRedirect: true)) { Timeout = TimeSpan.FromSeconds(10) };
 
     public UpstreamSource Source { get; } = source;
 

@@ -79,7 +79,9 @@ public partial class MainWindow
         if (enabled && (_codexRunning.Count > 0 || _codexFinished.Count > 0 || IsCodexJobPillShown)) _codexJobClock?.Start();
         else _codexJobClock?.Stop();
 
-        if (!enabled || !CanShowClaudeAttention || _isExpanded || _isMusicExpanded || _isAnimating || _isGreetingActive)
+        // A live Claude session owns the notch: Codex workers are its helpers and never cover it.
+        if (!enabled || !CanShowClaudeAttention || _isExpanded || _isMusicExpanded || _isAnimating || _isGreetingActive ||
+            _claudeLiveSession != null)
         {
             if (IsCodexJobPillShown) AnimateClaudeNotificationOut();
             return;

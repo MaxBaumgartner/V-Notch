@@ -22,7 +22,7 @@ public partial class MainWindow
 
     private void AnimateNotchHover(bool isHovered)
     {
-        if (_shellDragActive) return;
+        if (_shellDragActive || _askSheet != null) return;
         if (_isExpanded || _isAnimating || _isGreetingActive || _isVolumeIndicatorActive || _spotlightMorphSessionActive || _spotlightMorphOwnsNotchVisibility) return;
 
         if (!isHovered && _isGestureActive) return;
@@ -646,7 +646,8 @@ public partial class MainWindow
         bool animate = !_shellAttachment.IsAttached && !VNotch.Services.AnimationConfig.ReduceMotion && VNotch.Services.AnimationConfig.ClientAreaAnimation;
         bool chromeVisible = NavIconsPanel.Visibility == Visibility.Visible && NavIconsPanel.Opacity > 0.01;
         var targetView = _navigationVisualTarget ?? _transitionCoordinator.CurrentView;
-        bool showBattery = show && _settings.ShowBatteryIndicator;
+        bool showBattery = show && _settings.ShowBatteryIndicator
+            && targetView != VNotch.Models.NotchView.AiUsage;
         bool showBackground = show && targetView is VNotch.Models.NotchView.Secondary
             or VNotch.Models.NotchView.Timer or VNotch.Models.NotchView.AudioMixer
             or VNotch.Models.NotchView.Claude or VNotch.Models.NotchView.Pi
@@ -663,6 +664,7 @@ public partial class MainWindow
         NavIconsPanel.IsHitTestVisible = show;
         if (show)
         {
+            PlaceSharedStatusBar(targetView);
             bool movedSettingsHost = PlaceSharedSettingsButton(targetView);
             BatterySection.Visibility = showBattery ? Visibility.Visible : Visibility.Collapsed;
             NavIconsPanel.Visibility = Visibility.Visible;
@@ -738,6 +740,25 @@ public partial class MainWindow
             beginTime: updateDelay);
         RetargetChromeValue(UpdateNotificationButton, OpacityProperty, showUpdate ? 1 : 0, duration, animate,
             beginTime: updateDelay);
+    }
+
+    private void PlaceSharedStatusBar(VNotch.Models.NotchView targetView)
+    {
+        if (StatusBar == null || ExpandedStatusBarHost == null || AiUsageStatusBarHost == null) return;
+        bool inAiUsage = targetView == VNotch.Models.NotchView.AiUsage;
+        var desiredHost = inAiUsage ? AiUsageStatusBarHost : ExpandedStatusBarHost;
+        if (!ReferenceEquals(desiredHost.Content, StatusBar))
+        {
+            if (ReferenceEquals(ExpandedStatusBarHost.Content, StatusBar))
+                ExpandedStatusBarHost.Content = null;
+            if (ReferenceEquals(AiUsageStatusBarHost.Content, StatusBar))
+                AiUsageStatusBarHost.Content = null;
+            desiredHost.Content = StatusBar;
+        }
+        if (StatusBarTranslate != null)
+        {
+            StatusBarTranslate.Y = inAiUsage ? 0 : -ExpandedContentRestY;
+        }
     }
 
     private void RetargetChromeValue(IAnimatable target, DependencyProperty property,

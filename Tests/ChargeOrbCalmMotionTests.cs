@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 using VNotch.Models;
 using VNotch.Services;
 using Xunit;
@@ -13,25 +14,36 @@ public sealed class ChargeOrbCalmMotionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void ReversingTheOrbsRetractionRestoresTheSameChargingFace(bool full) => SharedStaTestRunner.RunAsync(async ct =>
+    public void ReversingTheOrbsRetractionRestoresTheSameChargingFace(bool full) => RunWithMotion(async ct =>
     {
         await using var fixture = Create();
         var window = fixture.Window;
+        Invoke(window, "DisposeDownloads");
         using var host = new RenderHost(window);
         await WpfFrameWaiter.UntilAsync(() => window.CollapsedContent.IsVisible, "resting notch", ct);
         Invoke(window, "UpdateChargeOrb", new BatteryInfo { Percentage = 48 });
         Invoke(window, "UpdateChargeOrb", new BatteryInfo { Percentage = 48, IsPluggedIn = true, IsCharging = true });
-        await WpfFrameWaiter.UntilAsync(() => window.ChargeCable.IsVisible && window.ChargeBolt.Opacity == 1, "charging face settles", ct);
+        var momentTimer = Get<DispatcherTimer>(window, "_chargeMomentTimer");
+        momentTimer.Stop();
+        await WpfFrameWaiter.UntilAsync(() => window.ChargeCable.IsVisible && window.ChargeBolt.Opacity == 1 &&
+            !Motion.IsRunning(window.BubbleSlide, TranslateTransform.XProperty), "charging face settles", ct);
+        Invoke(window, "EndChargeMoment");
+        Assert.Equal(LiveActivity.Charging, Get<LiveActivity>(window, "_bubbleWanted"));
         if (full)
         {
             Invoke(window, "UpdateChargeOrb", new BatteryInfo { Percentage = 100, IsPluggedIn = true });
-            await WpfFrameWaiter.UntilAsync(() => window.ChargeCheck.Opacity == 1, "full check arrives", ct);
+            momentTimer.Stop();
+            await WpfFrameWaiter.UntilAsync(() => window.ChargeCheck.Opacity == 1 &&
+                !window.ChargeCable.IsVisible, "full check settles", ct);
         }
         Invoke(window, "RetractBubbleForExpand");
-        await Task.Delay(100, ct);
+        // Reverse the started retraction before the dispatcher can complete it.
+        Assert.True(window.ActivityBubble.IsVisible);
+        Assert.True(Motion.IsRunning(window.BubbleSlide, TranslateTransform.XProperty));
         Invoke(window, "UpdateActivityBubble");
         await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.BubbleSlide, TranslateTransform.XProperty) &&
             !Motion.IsRunning(window.ChargeCableGrow, ScaleTransform.ScaleXProperty), "reversed orb and cable settle", ct);
+        Assert.True(window.ActivityBubble.IsVisible);
         if (full)
         {
             Assert.False(Get<bool>(window, "_chargeConnected"));
@@ -47,7 +59,7 @@ public sealed class ChargeOrbCalmMotionTests
     });
 
     [Fact]
-    public void FirstChargingFaceFitsTheOrbWithoutKeepingTheXamlInset() => SharedStaTestRunner.RunAsync(async ct =>
+    public void FirstChargingFaceFitsTheOrbWithoutKeepingTheXamlInset() => RunWithMotion(async ct =>
     {
         await using var fixture = Create();
         var window = fixture.Window;
@@ -64,7 +76,7 @@ public sealed class ChargeOrbCalmMotionTests
     });
 
     [Fact]
-    public void BatteryEventReplugWhileTheCableWithdrawsRestoresTheExistingFace() => SharedStaTestRunner.RunAsync(async ct =>
+    public void BatteryEventReplugWhileTheCableWithdrawsRestoresTheExistingFace() => RunWithMotion(async ct =>
     {
         await using var fixture = Create();
         var window = fixture.Window;
@@ -77,7 +89,7 @@ public sealed class ChargeOrbCalmMotionTests
         await WpfFrameWaiter.UntilAsync(() => window.ChargeCable.IsVisible && window.ChargeBolt.Opacity > .5,
             "charging face arrives", ct);
         Invoke(window, "UpdateChargeOrb", unplugged);
-        await Task.Delay(100, ct);
+        Assert.True(Motion.IsRunning(window.ChargeCableRightScale, ScaleTransform.ScaleXProperty));
         double position = window.ChargeCableRightScale.ScaleX;
         Invoke(window, "UpdateChargeOrb", plugged);
         Assert.Equal(position, window.ChargeCableRightScale.ScaleX, 3);
@@ -87,7 +99,7 @@ public sealed class ChargeOrbCalmMotionTests
     });
 
     [Fact]
-    public void ChargingRestsWithoutSweepsOrAJoltAndReplugReversesTheFullCheck() => SharedStaTestRunner.RunAsync(async ct =>
+    public void ChargingRestsWithoutSweepsOrAJoltAndReplugReversesTheFullCheck() => RunWithMotion(async ct =>
     {
         await using var fixture = Create();
         var window = fixture.Window;
@@ -100,7 +112,6 @@ public sealed class ChargeOrbCalmMotionTests
         Invoke(window, "PlayChargeArrival", true);
         await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(window.ChargeCableGrow, ScaleTransform.ScaleXProperty) &&
             window.ChargeBolt.Opacity == 1, "charging connection settles", ct);
-        await Task.Delay(600, ct);
         Assert.Equal(0, window.ChargeGlint.Opacity);
         Assert.Equal(0, window.ChargeCableGlint.Opacity);
         Assert.Equal(0, window.ChargeNotchGlow.Opacity);
@@ -109,13 +120,21 @@ public sealed class ChargeOrbCalmMotionTests
         Assert.False(window.NotchScale.HasAnimatedProperties);
         Assert.Equal(1, window.NotchScale.ScaleX);
         Invoke(window, "PlayChargeFull");
-        await Task.Delay(100, ct);
+        Assert.True(Motion.IsRunning(window.ChargeBoltBox, UIElement.OpacityProperty));
         double bolt = window.ChargeBoltBox.Opacity;
         Invoke(window, "PlayChargeArrival", true);
         Assert.Equal(bolt, window.ChargeBoltBox.Opacity, 3);
         await WpfFrameWaiter.UntilAsync(() => window.ChargeBoltBox.Opacity == 1 && window.ChargeCheck.Opacity == 0,
             "a new charge restores the bolt and dismisses the full check", ct);
         Assert.Equal(Visibility.Visible, window.ChargeCable.Visibility);
+    });
+
+    private static void RunWithMotion(Func<CancellationToken, Task> test) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool reduced = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try { await test(ct); }
+        finally { AnimationConfig.SetReduceMotion(reduced); }
     });
 
     internal sealed class RenderHost : IDisposable

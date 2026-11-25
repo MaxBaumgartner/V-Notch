@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace VNotch.Services.ControlCenter;
@@ -53,20 +52,13 @@ internal sealed class SystemStatsSampler : IDisposable
         }
         double? cpu = SampleCpu();
 
-        var memory = new Win32Interop.MEMORYSTATUSEX_METRICS { dwLength = (uint)Marshal.SizeOf<Win32Interop.MEMORYSTATUSEX_METRICS>() };
-        double total = 0, used = 0, load = 0;
-        if (Win32Interop.GlobalMemoryStatusEx(ref memory))
-        {
-            total = memory.ullTotalPhys / BytesPerGb;
-            used = (memory.ullTotalPhys - memory.ullAvailPhys) / BytesPerGb;
-            load = memory.dwMemoryLoad;
-        }
+        PerformanceDiagnosticService.SampleGlobalMemory(out ulong used, out ulong total, out _, out double load);
 
         var gpu = GpuMonitorService.Instance;
         double? gpuPercent = gpu.IsRunning ? gpu.GetGpuUsage().GlobalGpuPercent : null;
 
         var (down, up) = SampleNetwork();
-        return new SystemStats(cpu, load, used, total, gpuPercent, SamplePing(), down, up);
+        return new SystemStats(cpu, load, used / BytesPerGb, total / BytesPerGb, gpuPercent, SamplePing(), down, up);
     }
 
     private double? SampleCpu()

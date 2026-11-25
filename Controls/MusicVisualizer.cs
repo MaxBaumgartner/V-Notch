@@ -98,21 +98,19 @@ namespace VNotch.Controls
 
         private const int BarCount = 5;
         private const double MinHeightRatio = 0.08;
-        private const double BarWidthRatio = 0.10;
-        private const double BarSpacingRatio = 0.05;
-        private const double CornerRadiusRatio = 0.5;
         private const double CaptureRetryIntervalMs = 2500;
-        private const double MinHeightChangeThreshold = 0.0012;
-
         #endregion
 
         private readonly Stopwatch _stopwatch = new Stopwatch();
-        private double _lastTickSeconds;
+        private VNotch.Services.AnimationFrameClock _frameClock;
         private DateTime _lastCaptureRetryUtc = DateTime.MinValue;
         private bool _isRenderingActive;
         private bool _holdsCaptureLease;
+        internal bool IsRenderingActive => _isRenderingActive;
+        internal bool HoldsCaptureLease => _holdsCaptureLease;
 
         private readonly double[] _currentHeights = new double[BarCount];
+        internal ReadOnlySpan<double> CurrentHeights => _currentHeights;
         private readonly double[] _sortedHeights = new double[BarCount];
         private readonly double[] _drawHeights = new double[BarCount];
         private readonly double[] _smoothedHeights = new double[BarCount];
@@ -124,14 +122,18 @@ namespace VNotch.Controls
         private DpiScale? _cachedDpi;
         private double _currentOpacity = 0.2;
         private VisualizerState _state = VisualizerState.Idle;
+        internal VisualizerState State { get => _state; set => _state = value; }
         private const double PlaybackFeedbackSeconds = 1.5;
         private double _feedbackUntil;
         private double _iconMix;
+        internal double IconMix => _iconMix;
         private double _iconVelocity;
         private double _playMix;
         private double _playVelocity;
         private bool _copiedFeedback;
+        internal bool IsCopiedFeedbackActive => _copiedFeedback;
         private double _checkMix;
+        internal double CheckMix => _checkMix;
         private double _checkVelocity;
 
         public void SetCopiedFeedback(bool copied)
@@ -232,7 +234,7 @@ namespace VNotch.Controls
             if (_isRenderingActive) return;
             _isRenderingActive = true;
             if (!_stopwatch.IsRunning) _stopwatch.Start();
-            _lastTickSeconds = _stopwatch.Elapsed.TotalSeconds;
+            _frameClock.Reset(Stopwatch.GetTimestamp());
             CompositionTarget.Rendering += OnRendering;
         }
 
@@ -253,9 +255,7 @@ namespace VNotch.Controls
         private void OnRendering(object? sender, EventArgs e)
         {
             double totalSec = _stopwatch.Elapsed.TotalSeconds;
-            double dt = totalSec - _lastTickSeconds;
-            if (dt * 1000 + 0.1 < 1000d / FrameRate) return;
-            _lastTickSeconds = totalSec;
+            if (!_frameClock.TryAdvance(Stopwatch.GetTimestamp(), FrameRate, out double dt)) return;
 
             EnsureAudioCaptureStarted();
 
@@ -354,7 +354,7 @@ namespace VNotch.Controls
             }
         }
 
-        private bool UpdateAnimation(double dt, double totalSec)
+        internal bool UpdateAnimation(double dt, double totalSec)
         {
             string sid = TrackId ?? string.Empty;
             EnsureHashCache(sid);
@@ -400,7 +400,7 @@ namespace VNotch.Controls
         private static bool _captureUpdateRequested;
         private static bool _captureRestartRequested;
 
-        private static void RequestCaptureUpdate(bool restart = false)
+        internal static void RequestCaptureUpdate(bool restart = false)
         {
             lock (_captureRequestLock)
             {
@@ -478,7 +478,7 @@ namespace VNotch.Controls
         }
 
 #pragma warning disable S2696 // Multi-instance visualizers coordinate a single shared loopback audio capture lease
-        private void AcquireCaptureLease()
+        internal void AcquireCaptureLease()
         {
             // This instance flag is owned by the WPF dispatcher. The audio
             // callback only touches shared capture state. Do not wait behind
@@ -488,7 +488,7 @@ namespace VNotch.Controls
             System.Threading.Interlocked.Increment(ref _captureLeaseCount);
         }
 
-        private void ReleaseCaptureLease()
+        internal void ReleaseCaptureLease()
         {
             if (!_holdsCaptureLease) return;
             _holdsCaptureLease = false;
@@ -506,12 +506,15 @@ namespace VNotch.Controls
             var original = GetBarGradientBrush();
             _playbackMorphBrush ??= original.Clone();
             float mix = (float)Math.Clamp(_iconMix, 0, 1);
-            for (int i = 0; i < original.GradientStops.Count; i++)
+            var srcStops = original.GradientStops;
+            var dstStops = _playbackMorphBrush.GradientStops;
+            int stopCount = srcStops.Count;
+            for (int i = 0; i < stopCount; i++)
             {
-                Color color = original.GradientStops[i].Color;
+                Color color = srcStops[i].Color;
                 // Blend in linear light, following the same spring as the geometry.
                 // At rest this exactly matches each visualizer bar's original gradient.
-                _playbackMorphBrush.GradientStops[i].Color = Color.FromScRgb(
+                dstStops[i].Color = Color.FromScRgb(
                     color.ScA + (1 - color.ScA) * mix,
                     color.ScR + (1 - color.ScR) * mix,
                     color.ScG + (1 - color.ScG) * mix,
@@ -560,7 +563,9 @@ namespace VNotch.Controls
         private DrawingGroup? _barsDrawing;
         private DrawingGroup? _morphDrawing;
         private StreamGeometry? _morphGeometry;
+        private GeometryDrawing? _morphGeometryDrawing;
         private readonly RectangleGeometry[] _barGeometries = new RectangleGeometry[BarCount];
+        private readonly GeometryDrawing[] _barDrawings = new GeometryDrawing[BarCount];
         private readonly Dictionary<Rect, object> _boxedBarBounds = new();
         private (double Width, double Height, double DpiX, double DpiY) _barBoundsLayout;
         private Brush? _retainedBarBrush, _retainedMorphBrush;
@@ -574,10 +579,14 @@ namespace VNotch.Controls
             _morphGeometry = new StreamGeometry { FillRule = FillRule.Nonzero };
             for (int i = 0; i < BarCount; i++)
             {
-                _barGeometries[i] = new RectangleGeometry();
-                _barsDrawing.Children.Add(new GeometryDrawing(null, null, _barGeometries[i]));
+                var geometry = new RectangleGeometry();
+                var drawing = new GeometryDrawing(null, null, geometry);
+                _barGeometries[i] = geometry;
+                _barDrawings[i] = drawing;
+                _barsDrawing.Children.Add(drawing);
             }
-            _morphDrawing.Children.Add(new GeometryDrawing(null, null, _morphGeometry));
+            _morphGeometryDrawing = new GeometryDrawing(null, null, _morphGeometry);
+            _morphDrawing.Children.Add(_morphGeometryDrawing);
             _frameDrawing.Children.Add(_morphDrawing);
             _frameDrawing.Children.Add(_barsDrawing);
         }
@@ -650,20 +659,20 @@ namespace VNotch.Controls
 
             if (width < 1 || height < 1 || ActiveBrush == null)
             {
-                _frameDrawing!.Opacity = 0;
+                if (_frameDrawing!.Opacity != 0) _frameDrawing.Opacity = 0;
                 return false;
             }
 
             DpiScale dpi = frame.Dpi;
-            _frameDrawing!.Opacity = frame.Opacity;
-            _morphDrawing!.Opacity = frame.MorphOpacity;
-            _barsDrawing!.Opacity = frame.BarsOpacity;
+            SetDrawingOpacity(_frameDrawing!, frame.Opacity);
+            SetDrawingOpacity(_morphDrawing!, frame.MorphOpacity);
+            SetDrawingOpacity(_barsDrawing!, frame.BarsOpacity);
 
             if (frame.MorphOpacity > 0)
             {
                 var morphBrush = GetPlaybackMorphBrush();
                 if (!ReferenceEquals(_retainedMorphBrush, morphBrush))
-                    ((GeometryDrawing)_morphDrawing.Children[0]).Brush = _retainedMorphBrush = morphBrush;
+                    _morphGeometryDrawing!.Brush = _retainedMorphBrush = morphBrush;
                 UpdatePlaybackMorph(width, height, barRects);
             }
             if (frame.MorphOpacity >= 1)
@@ -694,7 +703,7 @@ namespace VNotch.Controls
                 }
                 if (Math.Abs(geometry.RadiusX - frame.Radius) > 1e-6) geometry.RadiusX = frame.Radius;
                 if (Math.Abs(geometry.RadiusY - frame.Radius) > 1e-6) geometry.RadiusY = frame.Radius;
-                if (brushChanged) ((GeometryDrawing)_barsDrawing.Children[i]).Brush = gradientBrush;
+                if (brushChanged) _barDrawings[i].Brush = gradientBrush;
             }
             _hasRenderedBars = frame.MorphOpacity == 0;
             _renderedWidth = width;
@@ -705,11 +714,19 @@ namespace VNotch.Controls
             return true;
         }
 
+        private static void SetDrawingOpacity(DrawingGroup group, double opacity)
+        {
+            if (Math.Abs(group.Opacity - opacity) > 1e-6)
+                group.Opacity = opacity;
+        }
+
         #region Audio Loopback Capture
 
         private static VNotch.Services.NativeLoopbackCapture? _capture;
         private static DateTime _captureStartedUtc;
         private static readonly object _lockObj = new object();
+        internal static int CaptureLeaseCount => Volatile.Read(ref _captureLeaseCount);
+        internal static object AudioStateLock => _lockObj;
         private static int _captureLeaseCount;
         private static string _audioDeviceId = string.Empty;
         private const int FftLength = 512;
@@ -718,6 +735,7 @@ namespace VNotch.Controls
 
         private static readonly float[] _fftInputBuffer = new float[FftLength];
         private static int _fftInputPos = 0;
+        internal static int FftInputPosition => _fftInputPos;
         private static readonly VNotch.Services.SpectrumComplex[] _fftData = new VNotch.Services.SpectrumComplex[FftLength];
         private static readonly VNotch.Services.VisualizerSpectrumBands _spectrumBands = new(FftLength);
 
@@ -727,12 +745,16 @@ namespace VNotch.Controls
         private static int _rmsSampleCount;
         private static int _rmsWindowSamples = 882;
         private static float _latestRmsNormalized;
+        internal static float LatestRmsNormalized => _latestRmsNormalized;
         private static int _sampleRate = 44100;
 
         private static readonly object _outputLock = new object();
         private static readonly float[] _publishedTargets = new float[BarCount];
+        internal static float[] PublishedTargets => _publishedTargets;
         private static float _publishedBeatAccent;
+        internal static float PublishedBeatAccent => _publishedBeatAccent;
         private static long _publishedFrameTicks;
+        internal static long PublishedFrameTicks { get => _publishedFrameTicks; set => _publishedFrameTicks = value; }
 
         static MusicVisualizer()
         {
@@ -847,7 +869,7 @@ namespace VNotch.Controls
 
         }
 
-        private static void ResetAudioState()
+        internal static void ResetAudioState()
         {
             Array.Clear(_fftInputBuffer, 0, _fftInputBuffer.Length);
             Array.Clear(_displayTargets, 0, _displayTargets.Length);
@@ -941,7 +963,7 @@ namespace VNotch.Controls
             }
         }
 
-        private float[] GetLatestDisplayLevels(out bool hasFreshAudio, out double beatAccent)
+        internal float[] GetLatestDisplayLevels(out bool hasFreshAudio, out double beatAccent)
         {
             lock (_outputLock)
             {

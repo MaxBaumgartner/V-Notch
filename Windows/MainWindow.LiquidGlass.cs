@@ -78,14 +78,12 @@ public partial class MainWindow
                 NotchBackground.Opacity = 1;
                 ExpandedContent.Background = (System.Windows.Media.Brush)FindResource("NotchGradient");
                 RestoreNotchShadowDefaults();
-                UseNotchShadowEffect(false);
                 UpdateEarVisibility();
                 return;
             }
 
             if (needsInitialFrame)
                 GlassBackdropHost.Opacity = 0;
-            UseNotchShadowEffect(true);
             GlassMaterialClipHost.Visibility = Visibility.Visible;
             GlassBackdropHost.Visibility = Visibility.Visible;
             GlassTintOverlay.Visibility = Visibility.Visible;
@@ -167,19 +165,8 @@ public partial class MainWindow
             NotchBackground.Opacity = 1;
             ExpandedContent.Background = (System.Windows.Media.Brush)FindResource("NotchGradient");
             RestoreNotchShadowDefaults();
-            UseNotchShadowEffect(false);
             UpdateEarVisibility();
         }
-    }
-
-    /// <summary>
-    /// Liquid Glass tunes a real DropShadowEffect per frame. The plain notch paints the same shadow instead,
-    /// because the effect re-blurs on every frame the notch changes size.
-    /// </summary>
-    private void UseNotchShadowEffect(bool effect)
-    {
-        NotchShadowWrapper.Effect = effect ? (System.Windows.Media.Effects.Effect)FindResource("NotchShadow") : null;
-        NotchSoftShadow.Visibility = effect ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void ApplyLiquidGlassConfig()
@@ -329,6 +316,11 @@ public partial class MainWindow
             }
 
             _liquidGlass.EnableNativeRefraction();
+            // This window shifts presented frames back (AlignGpuBackdropToLiveNotch),
+            // so it can take the animation edge bleed that hides late-frame gaps.
+            _liquidGlass.GpuEdgeBleedPx = GpuEdgeBleedPx;
+            _liquidGlass.GpuFramePresented -= AlignGpuBackdropToLiveNotch;
+            _liquidGlass.GpuFramePresented += AlignGpuBackdropToLiveNotch;
             VNotch.Services.RuntimeLog.Log("LIQUIDGLASS",
                 $"GPU refraction enabled; target={Math.Clamp(_settings.LiquidGlass?.TargetFps ?? 60, 30, LiquidGlassController.MaxTargetFps)} FPS; ultimateGpu={useUltimateGpu}");
             _gpuRefractionConfigured = true;
@@ -409,6 +401,13 @@ public partial class MainWindow
 
         _glassInteractionController?.Dispose();
         _glassInteractionController = null;
+
+        if (_liquidGlass != null)
+        {
+            _liquidGlass.GpuFramePresented -= AlignGpuBackdropToLiveNotch;
+            _liquidGlass.GpuEdgeBleedPx = 0;
+        }
+        ResetGpuBackdropAlignment();
 
         if (GlassBackdropImage != null)
         {
@@ -621,7 +620,35 @@ public partial class MainWindow
             fx.HighlightStrength = cfg.TouchLight;
         }
         lg.UpdateGpuLens(fx, screenLeft, screenTop);
+        AlignGpuBackdropToLiveNotch();
     }
+
+    // Physical px of plain backdrop drawn around the lens while animating. Covers
+    // the gap between a late frame's shape and the live notch clip.
+    private const int GpuEdgeBleedPx = 64;
+
+    // Screen-lock the presented native frame to the live notch (see
+    // LiquidGlassController.AlignPresentedFrame).
+    private void AlignGpuBackdropToLiveNotch()
+    {
+        var lg = _liquidGlass;
+        if (lg == null) return;
+        if (!UseGpuRefraction)
+        {
+            lg.ResetPresentedFrameAlignment();
+            return;
+        }
+        var (notchW, notchH, dpiScale, screenLeft, screenTop) = GetOrComputeFrameMetrics();
+        double scaleX = NotchScale?.ScaleX ?? 1.0;
+        double scaleY = NotchScale?.ScaleY ?? 1.0;
+        if (!double.IsFinite(scaleX) || scaleX <= 0) scaleX = 1.0;
+        if (!double.IsFinite(scaleY) || scaleY <= 0) scaleY = 1.0;
+        // Same units as the lens snapshot (UpdateShaderGeometryPerFrame: notch * dpi).
+        lg.AlignPresentedFrame(screenLeft, screenTop, notchW * dpiScale, notchH * dpiScale,
+            dpiScale * scaleX, dpiScale * scaleY);
+    }
+
+    private void ResetGpuBackdropAlignment() => _liquidGlass?.ResetPresentedFrameAlignment();
 
     private void ApplyGpuBlur(double blurAmount)
     {
@@ -1134,15 +1161,6 @@ public partial class MainWindow
 
     private static bool IsSystemTransparencyEnabled() => LiquidGlassSurfaceBinder.ReadSystemTransparencySetting();
 
-    public void UpdateGlassMediaTint(Color dominantColor)
-    {
-        // Feature disabled per user request: Do not tint liquid glass based on media thumbnail.
-    }
-
-    public void ClearGlassMediaTint()
-    {
-        // Feature disabled: Do not tint liquid glass based on media thumbnail.
-    }
 #pragma warning disable S1144 // Invoked via reflection in MainWindowGlassPresentationTests
     private void UpdateDynamicGlassTint()
     {
@@ -1192,8 +1210,7 @@ public partial class MainWindow
             }
         }
 
-        if (_liquidGlass.ShouldThrottleFrameUpdate(ref _lastGlassFrameUpdateTick, force: initialFrameJustArrived,
-            renderingTime: (e as RenderingEventArgs)?.RenderingTime))
+        if (_liquidGlass.ShouldThrottleFrameUpdate(ref _lastGlassFrameUpdateTick, force: initialFrameJustArrived))
         {
             return;
         }

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -33,11 +34,16 @@ public partial class NotchSettings : IJsonOnDeserialized
 
     public string AccentColor { get; set; } = "default";
 
-    public int Width { get; set; } = 230;
-    public int DynamicIslandWidth { get; set; } = 220;
-    public int DynamicIslandHeight { get; set; } = 40;
-    public int Height { get; set; } = 34;
-    public int CornerRadius { get; set; } = 8;
+    private int _width = 230;
+    public int Width { get => _width; set => _width = ClampInt(value, 1, 8192); }
+    private int _dynamicIslandWidth = 220;
+    public int DynamicIslandWidth { get => _dynamicIslandWidth; set => _dynamicIslandWidth = ClampInt(value, 1, 8192); }
+    private int _dynamicIslandHeight = 40;
+    public int DynamicIslandHeight { get => _dynamicIslandHeight; set => _dynamicIslandHeight = ClampInt(value, 1, 8192); }
+    private int _height = 34;
+    public int Height { get => _height; set => _height = ClampInt(value, 1, 8192); }
+    private int _cornerRadius = 8;
+    public int CornerRadius { get => _cornerRadius; set => _cornerRadius = ClampInt(value, 0, 4096); }
     public double Opacity { get; set; } = 1.0;
     public double MediaBlurBrightnessBoost { get; set; } = 2.0;
     public double MediaBlurDarkOverlay { get; set; } = 0.0;
@@ -47,6 +53,8 @@ public partial class NotchSettings : IJsonOnDeserialized
     public int AnimationFps { get; set; } = 240;
     public bool AutoAnimationFps { get; set; } = true;
 
+    public bool AllowNotchDragging { get; set; }
+    public NotchPosition? CustomNotchPosition { get; set; }
     public int MonitorIndex { get; set; } = 0;
     public string MonitorDeviceId { get; set; } = "";
 
@@ -59,7 +67,7 @@ public partial class NotchSettings : IJsonOnDeserialized
     public int ClipboardCaptureDelay { get => _clipboardCaptureDelay; set => _clipboardCaptureDelay = ClampInt(value, 100, 2000); }
     public string ClipboardHotkey { get; set; } = "";
 
-    public string TranslationModelId { get; set; } = "qwen3-4b-instruct-2507-q4km-v1";
+    public string TranslationModelId { get; set; } = "small100-int8-v1";
     public bool EnableLiveTranslation { get; set; } = false;
     public bool TranslationIgnoreFullscreen { get; set; } = true;
     public string TranslationExcludedApps { get; set; } = "cs2;csgo;VALORANT-Win64-Shipping;GenshinImpact";
@@ -96,7 +104,6 @@ public partial class NotchSettings : IJsonOnDeserialized
     public int TranslationTopK { get => _translationTopK; set => _translationTopK = ClampInt(value, 1, 100); }
     private int _translationTimeoutSeconds = 90;
     public int TranslationTimeoutSeconds { get => _translationTimeoutSeconds; set => _translationTimeoutSeconds = ClampInt(value, 15, 600); }
-
 
     public string CameraDeviceId { get; set; } = "";
     public string VisualizerAudioDeviceId { get; set; } = "";
@@ -176,7 +183,6 @@ public partial class NotchSettings : IJsonOnDeserialized
     public string SpotlightDeepSeekApiKey { get; set; } = "";
     public string SpotlightDeepSeekModel { get; set; } = "";
 
-
     public bool EnableSpotifyLyrics { get; set; } = true;
     public string LyricsProviderPriority { get; set; } = VNotch.Services.LyricsProviderOrder.Default;
 
@@ -191,9 +197,6 @@ public partial class NotchSettings : IJsonOnDeserialized
     public bool EnableYouTubeSubtitles { get; set; } = true;
     public bool IgnoreYouTubeAutoSubtitles { get; set; } = true;
 
-
-
-
     public bool EnableWeather { get; set; } = false;
     public string ManualCity { get; set; } = string.Empty;
 
@@ -207,7 +210,11 @@ public partial class NotchSettings : IJsonOnDeserialized
     public string Language { get; set; } = "en";
 
     public string ExpandedWidget { get; set; } = "clock";
-    public string NavTabOrder { get; set; } = "Media,Secondary,Timer,Claude,Pi,School,AudioMixer,Camera";
+    public bool EnableAiUsageMonitoring { get; set; } = false;
+    public bool TrackCodexUsage { get; set; } = true;
+    public bool TrackClaudeUsage { get; set; } = true;
+    public string CodexUsageExecutable { get; set; } = "";
+    public string NavTabOrder { get; set; } = "Media,Secondary,Timer,Claude,Pi,School,AudioMixer,Camera,AiUsage";
     public string VisibleNavTabs { get; set; } = "Media,Secondary,Timer,Claude,Pi,School,AudioMixer,Camera";
     // Windows notifications mirrored as a pill in the closed notch; apps listed here ("|"-separated app ids) stay out.
     public bool ShowAppNotifications { get; set; } = true;
@@ -234,6 +241,7 @@ public partial class NotchSettings : IJsonOnDeserialized
     // A short Windows sound when a Claude Code turn ends or a session waits for the user; never over fullscreen.
     public bool PlayClaudeSounds { get; set; } = true;
     public bool ShowCodexJobsInNotch { get; set; } = true;
+    public bool ShowScriptJobsInNotch { get; set; } = true;
     // Low-allowance pills already shown ("source|window|threshold|reset minute"), so a restart does not repeat them.
     public System.Collections.Generic.List<string> AllowanceAlertsSent { get; set; } = new();
     // With nothing live the closed notch rests slim and shows the time and the weather.
@@ -250,7 +258,6 @@ public partial class NotchSettings : IJsonOnDeserialized
     public string ProcessPriority { get; set; } = "Normal";
     public int GpuPreference { get; set; } = 0;
 
-    public bool HasSeenSpotlightIntro { get; set; } = false;
     public bool HasSeenCpp26Notice { get; set; } = false;
 
     public bool EnableLocalOnlyMode { get; set; } = false;
@@ -360,16 +367,27 @@ public partial class NotchSettings : IJsonOnDeserialized
         clone.LiquidGlassCustom = LiquidGlassCustom?.Clone();
         clone.BannerRestore = new(BannerRestore ?? new(), StringComparer.OrdinalIgnoreCase);
         clone.AllowanceAlertsSent = new(AllowanceAlertsSent ?? new());
-        if (ExtensionData != null)
-            clone.ExtensionData = new(ExtensionData, StringComparer.Ordinal);
+        clone.ExtensionData = ExtensionData != null
+            ? new Dictionary<string, JsonElement>(ExtensionData, StringComparer.Ordinal)
+            : null;
         return clone;
     }
 
-    internal static bool ExtensionDataEquals(Dictionary<string, JsonElement>? left, Dictionary<string, JsonElement>? right)
+    internal static bool ExtensionDataEquals(
+        Dictionary<string, JsonElement>? left,
+        Dictionary<string, JsonElement>? right)
     {
-        if ((left?.Count ?? 0) != (right?.Count ?? 0)) return false;
-        return left == null || left.All(entry => right != null && right.TryGetValue(entry.Key, out var value)
-            && entry.Value.GetRawText() == value.GetRawText());
+        int leftCount = left?.Count ?? 0;
+        int rightCount = right?.Count ?? 0;
+        if (leftCount != rightCount) return false;
+        if (leftCount == 0) return true;
+        foreach (var (key, leftVal) in left!)
+        {
+            if (!right!.TryGetValue(key, out var rightVal)) return false;
+            if (!string.Equals(leftVal.GetRawText(), rightVal.GetRawText(), StringComparison.Ordinal))
+                return false;
+        }
+        return true;
     }
 
     public bool ValueEquals(NotchSettings? other)
@@ -397,7 +415,7 @@ public partial class NotchSettings : IJsonOnDeserialized
         if (LiquidGlassCustom != null && other.LiquidGlassCustom != null && !LiquidGlassCustom.ValueEquals(other.LiquidGlassCustom))
             return false;
 
-        return true;
+        return ExtensionDataEquals(ExtensionData, other.ExtensionData);
     }
 }
 
@@ -503,7 +521,7 @@ public partial class LiquidGlassConfig
     {
         var clone = (LiquidGlassConfig)MemberwiseClone();
         if (ExtensionData != null)
-            clone.ExtensionData = new(ExtensionData, StringComparer.Ordinal);
+            clone.ExtensionData = new Dictionary<string, JsonElement>(ExtensionData, StringComparer.Ordinal);
         return clone;
     }
 
@@ -551,7 +569,7 @@ public partial class LiquidGlassConfig
 
         var left = ToNative();
         var right = other.ToNative();
-        return vn_liquid_glass_config_equals(ref left, ref right, out byte equal) == 0 && equal != 0
-            && NotchSettings.ExtensionDataEquals(ExtensionData, other.ExtensionData);
+        return vn_liquid_glass_config_equals(ref left, ref right, out byte equal) == 0 && equal != 0 &&
+            NotchSettings.ExtensionDataEquals(ExtensionData, other.ExtensionData);
     }
 }

@@ -29,11 +29,18 @@ public sealed class BluetoothNotificationController : IDisposable
     }
 
     private readonly object _stateGate = new();
+    private readonly Func<double, Action, IDisposable> _scheduleDismiss;
     private bool _isVisible;
-    private bool _currentConnected = true;
-    private System.Timers.Timer? _dismissTimer;
+    private IDisposable? _dismissTimer;
     private long _dismissGeneration;
     private bool _disposed;
+
+    public BluetoothNotificationController() : this(ScheduleDismiss) { }
+
+    internal BluetoothNotificationController(Func<double, Action, IDisposable> scheduleDismiss)
+    {
+        _scheduleDismiss = scheduleDismiss ?? throw new ArgumentNullException(nameof(scheduleDismiss));
+    }
 
     public bool IsVisible
     {
@@ -44,18 +51,35 @@ public sealed class BluetoothNotificationController : IDisposable
         }
     }
 
-    public bool CurrentConnected
-    {
-        get
-        {
-            lock (_stateGate)
-                return _currentConnected;
-        }
-    }
-
     public event Action<BluetoothDeviceInfo, bool>? ShowRequested;
 
     public event Action? DismissRequested;
+
+    private readonly Queue<Action> _notifications = new();
+    private bool _delivering;
+
+    // Queue under the state lock so show/dismiss retain their order even when
+    // a subscriber re-enters. Exactly one caller drains outside the lock.
+    private bool QueueNotification(Action notify)
+    {
+        _notifications.Enqueue(notify);
+        if (_delivering) return false;
+        return _delivering = true;
+    }
+
+    private void DeliverNotifications()
+    {
+        while (true)
+        {
+            Action? notify;
+            lock (_stateGate)
+            {
+                if (!_notifications.TryDequeue(out notify)) { _delivering = false; return; }
+            }
+            try { notify(); }
+            catch (Exception ex) { VNotch.Services.RuntimeLog.Warn("BLUETOOTH", ex.Message); }
+        }
+    }
 
     public double AutoDismissMs { get; set; } = 3000;
 
@@ -65,17 +89,16 @@ public sealed class BluetoothNotificationController : IDisposable
         if (!isNotchVisible || isAnimating || isExpanded || isMusicExpanded)
             return false;
 
+        bool deliver;
         lock (_stateGate)
         {
             if (_disposed) return false;
-            _currentConnected = connected;
             _isVisible = true;
             StartDismissTimerLocked();
 
-            // Keep event ordering serialized with the timer callback: a stale
-            // dismiss must never be queued after this newer show request.
-            ShowRequested?.Invoke(device, connected);
+            deliver = QueueNotification(() => ShowRequested?.Invoke(device, connected));
         }
+        if (deliver) DeliverNotifications();
 
         return true;
     }
@@ -86,18 +109,6 @@ public sealed class BluetoothNotificationController : IDisposable
         {
             _isVisible = false;
             StopDismissTimerLocked();
-        }
-    }
-
-    public void ForceDismiss()
-    {
-        lock (_stateGate)
-        {
-            if (!_isVisible) return;
-
-            StopDismissTimerLocked();
-            _isVisible = false;
-            DismissRequested?.Invoke();
         }
     }
 
@@ -120,14 +131,10 @@ public sealed class BluetoothNotificationController : IDisposable
         StopDismissTimerLocked();
 
         long generation = ++_dismissGeneration;
-        var timer = new System.Timers.Timer(AutoDismissMs)
+        IDisposable? timer = null;
+        timer = _scheduleDismiss(AutoDismissMs, () =>
         {
-            AutoReset = false
-        };
-        _dismissTimer = timer;
-
-        timer.Elapsed += (s, e) =>
-        {
+            bool deliver;
             lock (_stateGate)
             {
                 if (_disposed ||
@@ -141,11 +148,20 @@ public sealed class BluetoothNotificationController : IDisposable
                 _dismissTimer = null;
                 ++_dismissGeneration;
                 _isVisible = false;
-                timer.Dispose();
-                DismissRequested?.Invoke();
+                deliver = QueueNotification(() => DismissRequested?.Invoke());
             }
-        };
+            timer!.Dispose();
+            if (deliver) DeliverNotifications();
+        });
+        _dismissTimer = timer;
+    }
+
+    private static IDisposable ScheduleDismiss(double intervalMs, Action callback)
+    {
+        var timer = new System.Timers.Timer(intervalMs) { AutoReset = false };
+        timer.Elapsed += (_, _) => callback();
         timer.Start();
+        return timer;
     }
 
     private void StopDismissTimerLocked()
@@ -153,7 +169,6 @@ public sealed class BluetoothNotificationController : IDisposable
         ++_dismissGeneration;
         var timer = _dismissTimer;
         _dismissTimer = null;
-        timer?.Stop();
         timer?.Dispose();
     }
 

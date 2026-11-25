@@ -17,8 +17,23 @@ namespace VNotch.Controllers;
 public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
 {
     private readonly Dispatcher _dispatcher;
+    private readonly Lazy<Task<Dispatcher>> _clipboardReader = new(StartClipboardReader);
+
+    private static Task<Dispatcher> StartClipboardReader()
+    {
+        var ready = new TaskCompletionSource<Dispatcher>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            ready.SetResult(Dispatcher.CurrentDispatcher);
+            Dispatcher.Run();
+        }) { Name = "VNotch clipboard reader", IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return ready.Task;
+    }
     private readonly Func<byte[], Task<BitmapSource>> _decodeOriginalImage;
     internal const int MaxPendingCaptures = 8;
+    private static readonly SemaphoreSlim ImageEncodingGate = new(1, 1);
     private readonly SemaphoreSlim _captureSlots = new(MaxPendingCaptures, MaxPendingCaptures);
     private readonly Channel<Task<ClipboardCapture>> _captures = Channel.CreateBounded<Task<ClipboardCapture>>(
         new BoundedChannelOptions(MaxPendingCaptures) { SingleReader = true, SingleWriter = true });
@@ -183,56 +198,14 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
                 if (_disposed || IsPaused || _isWritingClipboard || sequence == _ownSequence || GetClipboardSequenceNumber() != sequence) return;
                 try
                 {
-                    var data = System.Windows.Clipboard.GetDataObject();
-                    if (data == null || ShouldIgnoreClipboardData(data)) return;
-                    string[] paths = data.GetDataPresent(DataFormats.FileDrop)
-                        ? data.GetData(DataFormats.FileDrop) as string[] ?? []
-                        : [];
-                    bool isScreenshotTempFile = paths.Length == 1 && IsTemporaryScreenshotPath(paths[0]);
-                    BitmapSource? image = (paths.Length == 0 || isScreenshotTempFile) && data.GetDataPresent(DataFormats.Bitmap)
-                        ? data.GetData(DataFormats.Bitmap) as BitmapSource
-                        : null;
-                    if (isScreenshotTempFile && image != null)
-                    {
-                        paths = [];
-                    }
-                    // Filter the original payload type; disabled file/image captures must not
-                    // fall through into an incidental text representation of the same copy.
-                    if (paths.Length > 0 && !_captureFiles || image != null && !_captureImages) return;
-                    string text = _captureText
-                        ? (data.GetDataPresent(DataFormats.UnicodeText) ? data.GetData(DataFormats.UnicodeText) as string : null)
-                            ?? (data.GetDataPresent(DataFormats.Text) ? data.GetData(DataFormats.Text) as string : null)
-                            ?? ""
-                        : "";
-                    if (text.Length > MaxTextCaptureChars) { Report("clipboard.readError"); return; }
-                    if (image != null)
-                    {
-                        if ((long)image.PixelWidth * image.PixelHeight > 32_000_000) { Report("clipboard.readError"); return; }
-                        image = image.Clone();
-                        image.Freeze();
-                    }
-                    string html = "";
-                    string rtf = "";
-                    if (_captureText && text.Length <= MaxRichTextCaptureChars)
-                    {
-                        if (data.GetDataPresent(DataFormats.Html) && data.GetData(DataFormats.Html) is string rawHtml && rawHtml.Length <= MaxRichTextCaptureChars)
-                            html = rawHtml;
-                        if (data.GetDataPresent(DataFormats.Rtf) && data.GetData(DataFormats.Rtf) is string rawRtf && rawRtf.Length <= MaxRichTextCaptureChars)
-                            rtf = rawRtf;
-                    }
-                    var source = ClipboardSource();
-                    var capture = new ClipboardCapture
-                    {
-                        Text = text,
-                        Html = html,
-                        Rtf = rtf,
-                        FilePaths = paths,
-                        SourceApp = source.Name,
-                        SourceExecutable = source.Executable
-                    };
-                    if (GetClipboardSequenceNumber() != sequence) return;
-                    if (paths.Length != 0 || image != null || text.Length != 0 || capture.Html.Length != 0 || capture.Rtf.Length != 0)
-                        queued = _captures.Writer.TryWrite(image == null ? Task.FromResult(capture) : EncodeImageAsync(capture, image));
+                    var policy = (_captureText, _captureImages, _captureFiles);
+                    var reader = await _clipboardReader.Value;
+                    var snapshot = await reader.InvokeAsync(() =>
+                        ReadSnapshot(sequence, policy._captureText, policy._captureImages, policy._captureFiles));
+                    if (snapshot is not { } result || _disposed || IsPaused || _isWritingClipboard ||
+                        sequence == _ownSequence || policy != (_captureText, _captureImages, _captureFiles)) return;
+                    queued = _captures.Writer.TryWrite(result.Image == null
+                        ? Task.FromResult(result.Capture) : EncodeImageAsync(result.Capture, result.Image));
                     return;
                 }
                 catch (ExternalException) when (retry < ClipboardRetry.RetryCount)
@@ -251,14 +224,89 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         finally { if (!queued) _captureSlots.Release(); }
     }
 
-    private static Task<ClipboardCapture> EncodeImageAsync(ClipboardCapture capture, BitmapSource image) => Task.Run(() =>
+    private (ClipboardCapture Capture, BitmapSource? Image)? ReadSnapshot(uint sequence, bool textEnabled, bool imagesEnabled, bool filesEnabled)
     {
-        using var stream = new MemoryStream();
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(image));
-        encoder.Save(stream);
-        return capture with { ImagePng = stream.ToArray(), ImagePixelFingerprint = ClipboardHistoryStore.FingerprintPixels(image) };
-    });
+        if (GetClipboardSequenceNumber() != sequence || !(textEnabled || imagesEnabled || filesEnabled)) return null;
+        var data = System.Windows.Clipboard.GetDataObject();
+        if (data == null || ShouldIgnoreClipboardData(data)) return null;
+        bool hasFiles = data.GetDataPresent(DataFormats.FileDrop);
+        if (hasFiles && !filesEnabled && !imagesEnabled) return null;
+        string[] paths = hasFiles
+            ? data.GetData(DataFormats.FileDrop) as string[] ?? []
+            : [];
+        bool isScreenshotTempFile = paths.Length == 1 && IsTemporaryScreenshotPath(paths[0]);
+        bool hasImage = (paths.Length == 0 || isScreenshotTempFile) && data.GetDataPresent(DataFormats.Bitmap);
+        if (hasImage && !imagesEnabled) return null;
+        BitmapSource? image = hasImage ? data.GetData(DataFormats.Bitmap) as BitmapSource : null;
+        if (isScreenshotTempFile && image != null)
+        {
+            paths = [];
+        }
+        // Filter the original payload type; disabled file/image captures must not
+        // fall through into an incidental text representation of the same copy.
+        if (paths.Length > 0 && !filesEnabled) return null;
+        string text = textEnabled
+            ? (data.GetDataPresent(DataFormats.UnicodeText) ? data.GetData(DataFormats.UnicodeText) as string : null)
+                ?? (data.GetDataPresent(DataFormats.Text) ? data.GetData(DataFormats.Text) as string : null)
+                ?? ""
+            : "";
+        if (text.Length > MaxTextCaptureChars) { Report("clipboard.readError"); return null; }
+        if (image != null)
+        {
+            if ((long)image.PixelWidth * image.PixelHeight > 32_000_000) { Report("clipboard.readError"); return null; }
+            if (!image.IsFrozen) { image = image.Clone(); image.Freeze(); }
+        }
+        string html = "";
+        string rtf = "";
+        if (textEnabled && text.Length <= MaxRichTextCaptureChars)
+        {
+            if (data.GetDataPresent(DataFormats.Html) && data.GetData(DataFormats.Html) is string rawHtml && rawHtml.Length <= MaxRichTextCaptureChars)
+                html = rawHtml;
+            if (data.GetDataPresent(DataFormats.Rtf) && data.GetData(DataFormats.Rtf) is string rawRtf && rawRtf.Length <= MaxRichTextCaptureChars)
+                rtf = rawRtf;
+        }
+        var source = ClipboardSource();
+        var capture = new ClipboardCapture
+        {
+            Text = text,
+            Html = html,
+            Rtf = rtf,
+            FilePaths = paths,
+            SourceApp = source.Name,
+            SourceExecutable = source.Executable
+        };
+        if (GetClipboardSequenceNumber() != sequence ||
+            (paths.Length == 0 && image == null && text.Length == 0 && html.Length == 0 && rtf.Length == 0)) return null;
+        return (capture, image);
+    }
+
+    internal static async Task<ClipboardCapture> EncodeImageAsync(ClipboardCapture capture, BitmapSource image)
+    {
+        // Keep capture order and every admitted snapshot, but avoid overlapping
+        // full-size WIC encoders and their temporary output buffers.
+        await ImageEncodingGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() =>
+            {
+                byte[] png;
+                using (var stream = new NativeBufferStream())
+                {
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(image));
+                    encoder.Save(stream);
+                    png = stream.ReadBuffered(static bytes => bytes.ToArray());
+                }
+                // Release encoded scratch before fingerprinting allocates pixels.
+                return capture with
+                {
+                    ImagePng = png,
+                    ImagePixelFingerprint = ClipboardHistoryStore.FingerprintPixels(image)
+                };
+            }).ConfigureAwait(false);
+        }
+        finally { ImageEncodingGate.Release(); }
+    }
 
     internal async Task ImportDropAsync(System.Windows.IDataObject data, string? category = null)
     {
@@ -365,7 +413,7 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
                 SetTextFormats(data, content);
             }
             var current = Store.GetEntry(entry.Id) ?? throw new InvalidOperationException("Clipboard item is unavailable.");
-            await WriteClipboardAsync(data, entry.IsPersonal || current.IsPersonal, exported);
+            await WriteClipboardAsync(data, entry.IsPersonal || current.IsPersonal, exported, entry.IsSensitive || current.IsSensitive);
             // _clipboardExportPaths is set inside WriteClipboardAsync under _clipboardWriteGate.
             written = true;
         }
@@ -394,10 +442,12 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         var texts = new List<string>();
         ClipboardContent? singleText = null;
         bool personal = false;
+        bool sensitive = false;
         foreach (var entry in entries)
         {
             var current = Store.GetEntry(entry.Id) ?? throw new KeyNotFoundException("Clipboard item is unavailable.");
-            personal |= current.IsPersonal;
+            personal |= entry.IsPersonal | current.IsPersonal;
+            sensitive |= entry.IsSensitive | current.IsSensitive;
             if (entry.Kind is ClipboardKind.File or ClipboardKind.Image)
                 paths.AddRange(await Store.ExportFilesAsync(entry.Id));
             else
@@ -408,11 +458,14 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
             }
             var latest = Store.GetEntry(entry.Id) ?? throw new KeyNotFoundException("Clipboard item is unavailable.");
             personal |= latest.IsPersonal;
+            sensitive |= latest.IsSensitive;
         }
         var data = new DataObject();
         if (paths.Count > 0) { var files = new StringCollection(); files.AddRange(paths.ToArray()); data.SetFileDropList(files); }
         if (singleText != null) SetTextFormats(data, singleText);
         else if (texts.Count > 0) data.SetData(DataFormats.UnicodeText, string.Join(Environment.NewLine + Environment.NewLine, texts));
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (personal || sensitive) SetPrivacyClipboardMarkers(data);
         return (data, personal);
     }
 
@@ -422,6 +475,13 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         data.SetData(DataFormats.UnicodeText, content.Text ?? string.Empty);
         if (!string.IsNullOrEmpty(content.Html)) data.SetData(DataFormats.Html, content.Html);
         if (!string.IsNullOrEmpty(content.Rtf)) data.SetData(DataFormats.Rtf, content.Rtf);
+    }
+
+    internal static void SetPrivacyClipboardMarkers(DataObject data)
+    {
+        data.SetData("ExcludeClipboardContentFromMonitorProcessing", new MemoryStream([1, 0, 0, 0]));
+        data.SetData("CanIncludeInClipboardHistory", new MemoryStream(new byte[4]));
+        data.SetData("CanUploadToCloudClipboard", new MemoryStream(new byte[4]));
     }
 
     public async Task CopyManyAsync(IReadOnlyList<ClipboardEntry> entries)
@@ -440,12 +500,13 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         finally { if (!written) await Store.ReleasePersonalExportsAsync(paths); }
     }
 
-    private async Task WriteClipboardAsync(DataObject data, bool personal, string[]? newExports = null)
+    private async Task WriteClipboardAsync(DataObject data, bool personal, string[]? newExports = null, bool sensitive = false)
     {
-        if (personal) data.SetData("ExcludeClipboardContentFromMonitorProcessing", new MemoryStream([1, 0, 0, 0]));
+        if (personal || sensitive) SetPrivacyClipboardMarkers(data);
         await _clipboardWriteGate.WaitAsync();
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _isWritingClipboard = true;
             await ClipboardRetry.RunAsync(() =>
             {
@@ -469,8 +530,6 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
         }
     }
 
-    public Task DragAsync(FrameworkElement source, ClipboardEntry entry) => DragManyAsync(source, [entry]);
-
     public async Task DragManyAsync(FrameworkElement source, IReadOnlyList<ClipboardEntry> entries)
     {
         if (IsDragging || entries.Count == 0) return;
@@ -484,7 +543,7 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
             data.SetData(EntryDragFormat, true);
             bool personal = selection.Personal;
             if (_disposed || personal && !Store.IsPersonalUnlocked) return;
-            if (personal) data.SetData("ExcludeClipboardContentFromMonitorProcessing", new MemoryStream([1, 0, 0, 0]));
+            if (personal) SetPrivacyClipboardMarkers(data);
             DragDrop.DoDragDrop(source, data, DragDropEffects.Copy);
         }
         finally
@@ -659,11 +718,17 @@ public sealed class ClipboardHistoryController : IDisposable, IAsyncDisposable
 
     private async Task DrainAsync()
     {
+        if (_clipboardReader.IsValueCreated)
+        {
+            var reader = await _clipboardReader.Value.ConfigureAwait(false);
+            reader.BeginInvokeShutdown(DispatcherPriority.Send);
+        }
         try { await _consumer.ConfigureAwait(false); }
         finally
         {
-            _clipboardWriteGate.Dispose();
-            await Store.DisposeAsync().ConfigureAwait(false);
+            await _clipboardWriteGate.WaitAsync().ConfigureAwait(false);
+            try { await Store.DisposeAsync().ConfigureAwait(false); }
+            finally { _clipboardWriteGate.Release(); }
         }
     }
 }

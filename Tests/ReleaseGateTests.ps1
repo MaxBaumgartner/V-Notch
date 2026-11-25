@@ -147,7 +147,17 @@ try {
     Remove-Item -LiteralPath (Join-Path $modelDirectory 'yolo11n.onnx')
     [IO.File]::WriteAllBytes((Join-Path $modelDirectory 'yolox_nano.onnx'), [byte[]](0, 1, 2))
     Expect-Failure { & $modelScript -RootDirectory $modelRoot } 'checksum or length'
-    Expect-Failure { & (Join-Path $repository 'scripts/b.ps1') -RequireAuthenticode } 'thumbprint is required'
+    $buildScript = Join-Path $repository 'scripts/b.ps1'
+    $savedThumbprint = $env:VNOTCH_CODE_SIGNING_THUMBPRINT
+    try {
+        $env:VNOTCH_CODE_SIGNING_THUMBPRINT = $null
+        Expect-Failure { & $buildScript -RequireAuthenticode } 'thumbprint is required'
+        $env:VNOTCH_CODE_SIGNING_THUMBPRINT = '00 ' * 20
+        Expect-Failure { & $buildScript } 'configured release certificate was not found'
+        Expect-Failure { & $buildScript -CertificateThumbprint 'invalid' } '40 hexadecimal characters'
+    } finally {
+        $env:VNOTCH_CODE_SIGNING_THUMBPRINT = $savedThumbprint
+    }
 
     $signDirectory = Join-Path $temporary 'manifest-signing'
     New-Item -ItemType Directory -Path $signDirectory | Out-Null
@@ -217,6 +227,7 @@ try {
         throw 'Concatenated .sha256 sidecars must produce 1 line per installer in checksums.txt.'
     }
 
+    & (Join-Path $repository 'Tests/DesktopGateTests.ps1')
     & (Join-Path $repository 'Tests/DevRunnerTests.ps1')
     Write-Host 'Release gates passed: coverage boundaries, merged suites/assemblies, duplicate reports, XML safety, model allowlist/hash/license, required signing, manifest checksums, dev runner process scope.'
 } finally {

@@ -1,7 +1,7 @@
 # Build V-Notch Installer
 # This script builds the Release version and creates the NSIS installer
 #
-# By default it produces a framework-dependent build (needs .NET 8 Desktop Runtime).
+# By default it produces a framework-dependent build (needs .NET 10 Desktop Runtime).
 # Use -SelfContained to bundle the runtime so the app runs on a clean machine
 # without installing .NET separately (larger installer).
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'CertificatePassword')]
@@ -12,7 +12,8 @@ param(
     [string]$ReleaseVersion = '',
     [string]$WindowsVersion = '',
     [string]$InformationalVersion = '',
-    # Optional code-signing certificate. In CI, pass these from protected secrets.
+    [string]$TestedNativeArtifactDirectory = '',
+    # Optional locally. The GitHub release workflow requires a pinned signer.
     [string]$CertificatePath = '',
     [string]$CertificatePassword = '',
     [string]$CertificateThumbprint = '',
@@ -39,11 +40,33 @@ $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
 $repoRoot = Split-Path $scriptDir -Parent
 
+# Use the pinned publisher for a plain ./b. An explicit PFX selects its own signer.
+if (-not $PSBoundParameters.ContainsKey('CertificateThumbprint') -and -not $CertificatePath) {
+    $CertificateThumbprint = $env:VNOTCH_CODE_SIGNING_THUMBPRINT
+}
+if ($CertificateThumbprint) {
+    $CertificateThumbprint = $CertificateThumbprint -replace '\s', ''
+    if ($CertificateThumbprint -notmatch '^[0-9A-Fa-f]{40}$') {
+        throw 'The release certificate thumbprint must contain 40 hexadecimal characters.'
+    }
+    if (-not (Test-Path -LiteralPath "Cert:\CurrentUser\My\$CertificateThumbprint")) {
+        throw 'The configured release certificate was not found in the current user Personal store (Cert:\CurrentUser\My).'
+    }
+}
+if ($RequireAuthenticode -and -not $CertificateThumbprint) {
+    throw 'A trusted certificate thumbprint is required for a public release.'
+}
+
 # Capture the conditional output as an array: a single string splats into
 # individual characters when passed to a native command such as dotnet.
 $restoreArguments = @(if ($LockedRestore) { '-p:RestoreLockedMode=true' })
-if ($RequireAuthenticode -and -not $CertificateThumbprint) {
-    throw 'A trusted certificate thumbprint is required for a public release.'
+$nativeArguments = @()
+if ($TestedNativeArtifactDirectory) {
+    & (Join-Path $repoRoot 'Tools/Assert-NativeArtifact.ps1') -ArtifactDirectory $TestedNativeArtifactDirectory
+    $nativeBinary = [IO.Path]::GetFullPath((Join-Path $TestedNativeArtifactDirectory 'VNotch.Native.dll'))
+    $nativeArguments = @('-p:SkipNativeCompile=true', "-p:VNotchNativeArtifactPath=$nativeBinary")
+    # The tested artifact contains the main DLL. Stage the pinned Lite runtime separately.
+    & (Join-Path $scriptDir 'Build-TranslationRuntime.ps1') -Root $repoRoot
 }
 
 # Runtime Unicode Box-Drawing & Status Glyphs (7-bit ASCII source safe for PS 5.1 & PS 7)
@@ -118,7 +141,7 @@ $versionArguments = @(
     "-p:PackageManifestVersion=$installerVersion"
 )
 
-$modeText  = if ($SelfContained) { "Self-Contained (win-x64)" } else { "Framework-Dependent (.NET 8)" }
+$modeText  = if ($SelfContained) { "Self-Contained (win-x64)" } else { "Framework-Dependent (.NET 10)" }
 $modeColor = if ($SelfContained) { "Magenta" } else { "Green" }
 
 Write-Host ""
@@ -149,11 +172,11 @@ Write-TreeSpacer
 Write-TreeStep "2/4" "Publish V-Notch & Uninstaller"
 $pubSw = [System.Diagnostics.Stopwatch]::StartNew()
 if ($SelfContained) {
-    # Self-contained: bundles the .NET runtime, runs without installing .NET 8.
-    $pubOut = Invoke-CapturedNative { & dotnet publish .\V-Notch.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -p:DebugType=none -p:DebugSymbols=false -nologo -v:q -o $publishDir @restoreArguments @versionArguments }
+    # Self-contained: bundles the .NET runtime, runs without installing .NET 10.
+    $pubOut = Invoke-CapturedNative { & dotnet publish .\V-Notch.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -p:DebugType=none -p:DebugSymbols=false -nologo -v:q -o $publishDir @restoreArguments @versionArguments @nativeArguments }
 } else {
-    # Framework-dependent single file - requires .NET 8 runtime.
-    $pubOut = Invoke-CapturedNative { & dotnet publish .\V-Notch.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -p:DebugType=none -p:DebugSymbols=false -nologo -v:q -o $publishDir @restoreArguments @versionArguments }
+    # Framework-dependent single file - requires .NET 10 runtime.
+    $pubOut = Invoke-CapturedNative { & dotnet publish .\V-Notch.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false -p:DebugType=none -p:DebugSymbols=false -nologo -v:q -o $publishDir @restoreArguments @versionArguments @nativeArguments }
 }
 if ($LASTEXITCODE -ne 0) {
     foreach ($l in @($pubOut | ForEach-Object { "$_" } | Where-Object { $_.Trim() })) {
@@ -171,6 +194,9 @@ if ($exeVersion -ne $installerVersion -or $publishedVersion.ProductVersion -cne 
 }
 if (-not (Test-Path -LiteralPath "$publishDir\VNotch.Native.dll")) {
     throw 'Published VNotch.Native.dll is missing from the release output directory.'
+}
+if ($TestedNativeArtifactDirectory) {
+    & (Join-Path $repoRoot 'Tools/Assert-NativeArtifact.ps1') -ArtifactDirectory $TestedNativeArtifactDirectory -BinaryPath "$publishDir\VNotch.Native.dll"
 }
 $appExeHash = (Get-FileHash -Algorithm SHA256 "$publishDir\V-Notch.exe").Hash.ToLowerInvariant()
 Set-Content -Path "$publishDir\V-Notch.exe.sha256" -Value "$appExeHash  V-Notch.exe"
@@ -221,6 +247,10 @@ if (-not $NsisPath) {
     if (-not (Test-Path -LiteralPath $NsisPath)) {
         $NsisPath = "C:\Program Files\NSIS\makensis.exe"
     }
+    if (-not (Test-Path -LiteralPath $NsisPath)) {
+        $nsisCache = Join-Path $repoRoot '.cache/nsis'
+        $NsisPath = & (Join-Path $scriptDir 'Initialize-Nsis.ps1') -CacheDirectory $nsisCache -DestinationDirectory (Join-Path $nsisCache 'portable')
+    }
 }
 
 if (-not (Test-Path $NsisPath)) {
@@ -234,13 +264,50 @@ if (-not (Test-Path "installers")) {
     New-Item -ItemType Directory -Path "installers" | Out-Null
 }
 
-# Read the UTF-8 source explicitly; ANSI decoding turns the copyright sign into mojibake.
-if ($SelfContained) {
-    $nsisOut = Invoke-CapturedNative { & $NsisPath "/V2" "/INPUTCHARSET" "UTF8" "/DSELF_CONTAINED" "/DAPP_VERSION_FULL=$installerVersion" "/DAPP_VERSION=$ReleaseVersion" "V-Notch-Setup.nsi" }
-} else {
-    $nsisOut = Invoke-CapturedNative { & $NsisPath "/V2" "/INPUTCHARSET" "UTF8" "/DAPP_VERSION_FULL=$installerVersion" "/DAPP_VERSION=$ReleaseVersion" "V-Notch-Setup.nsi" }
+$nsisArguments = @('/V2', '/INPUTCHARSET', 'UTF8', "/DAPP_VERSION_FULL=$installerVersion", "/DAPP_VERSION=$ReleaseVersion")
+if ($SelfContained) { $nsisArguments += '/DSELF_CONTAINED' }
+
+# The BCJ2 filter and solid LZMA2 compress the native code with a 16 MiB
+# dictionary. The console extraction module also works on offline Windows 10.
+$programFilesRoot = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$sevenZipDir = Join-Path $programFilesRoot '7-Zip'
+$sevenZip = Join-Path $sevenZipDir '7z.exe'
+$extractor = Join-Path $sevenZipDir '7zCon.sfx'
+$license = Join-Path $sevenZipDir 'License.txt'
+$packedPayload = $null
+try {
+    if ((Test-Path -LiteralPath $sevenZip) -and (Test-Path -LiteralPath $extractor) -and (Test-Path -LiteralPath $license)) {
+        $packedPayload = Join-Path ([IO.Path]::GetTempPath()) ("vnotch-payload-{0}.exe" -f [guid]::NewGuid())
+        Copy-Item -LiteralPath $license -Destination (Join-Path $publishDir 'licenses/7-Zip.txt')
+        Push-Location $publishDir
+        try {
+            & $sevenZip a -t7z "-sfx$extractor" -mx=9 -mf=BCJ2 -m0=LZMA2:d=16m -ms=on -mmt=2 -bso0 $packedPayload '.\*'
+            if ($LASTEXITCODE -ne 0) { throw '7-Zip payload compression failed.' }
+        } finally {
+            Pop-Location
+        }
+        if ($CertificateThumbprint) {
+            & (Join-Path $scriptDir 'Sign-ReleaseBinary.ps1') -Path $packedPayload -CertificateThumbprint $CertificateThumbprint
+        } elseif ($CertificatePath) {
+            & $signtool.Source sign /fd SHA256 /f $CertificatePath /p $CertificatePassword /tr "http://timestamp.digicert.com" /td SHA256 $packedPayload
+            if ($LASTEXITCODE -ne 0) { throw 'Authenticode signing of the extraction module failed.' }
+        }
+        $nsisArguments += "/DPACKED_PAYLOAD=$packedPayload"
+    } else {
+        Write-TreeItem 'Using NSIS compression. Install 7-Zip for a smaller setup executable.'
+    }
+    # A new installer invalidates the previous update metadata even if signing fails.
+    foreach ($sidecar in 'installers\V-Notch-Setup.exe.manifest.sig', 'installers\V-Notch-Setup.exe.manifest.json') {
+        if (Test-Path -LiteralPath $sidecar) { Remove-Item -LiteralPath $sidecar }
+    }
+    $nsisOut = Invoke-CapturedNative { & $NsisPath @nsisArguments 'V-Notch-Setup.nsi' }
+    $nsisExitCode = $LASTEXITCODE
+} finally {
+    if ($packedPayload -and (Test-Path -LiteralPath $packedPayload)) {
+        Remove-Item -LiteralPath $packedPayload -Force
+    }
 }
-if ($LASTEXITCODE -ne 0) {
+if ($nsisExitCode -ne 0) {
     foreach ($l in @($nsisOut | ForEach-Object { "$_" } | Where-Object { $_.Trim() })) {
         Write-TreeItem $l.Trim() -State "Error"
     }
@@ -248,7 +315,8 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  $gBotLeft$lineRule`n" -ForegroundColor DarkCyan
     exit 1
 }
-Write-TreeItem "Built installers\V-Notch-Setup.exe." -State "Success"
+$installerMiB = (Get-Item -LiteralPath 'installers\V-Notch-Setup.exe').Length / 1MB
+Write-TreeItem ("Built installers\V-Notch-Setup.exe ({0:N2} MiB)." -f $installerMiB) -State "Success"
 
 # Step 4: Signing & Checksums
 Write-TreeSpacer
@@ -264,7 +332,10 @@ if ($CertificateThumbprint) {
     if ($LASTEXITCODE -ne 0) { Write-TreeItem "Authenticode signing failed!" -State "Error"; exit 1 }
     Write-TreeItem "Installer Authenticode signature applied." -State "Success"
 } else {
-    Write-TreeItem "No Authenticode certificate (optional)." -State "Info"
+    Write-TreeItem "Built without Authenticode. Windows Smart App Control may block VNotch.Native.dll." -State "Warn"
+}
+if ($CertificateThumbprint -or $CertificatePath) {
+    & (Join-Path $scriptDir 'Assert-InstallerSignatures.ps1') -InstallerPath 'installers\V-Notch-Setup.exe' -CertificateThumbprint $CertificateThumbprint
 }
 
 $checksum = $null
@@ -295,29 +366,21 @@ $foundKey = $privateKeyCandidates | Where-Object { $_ -and (Test-Path $_) } | Se
 
 if ($foundKey -or $env:VNOTCH_UPDATE_SIGNING_KEY_PEM -or $env:VNOTCH_UPDATE_SIGNING_PRIVATE_KEY_PEM) {
     $signScript = Join-Path $scriptDir "Sign-UpdateManifest.ps1"
-    $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    $keyArg = if ($foundKey) { "-PrivateKeyPath '$foundKey'" } else { "" }
     try {
-        if ($PSVersionTable.PSVersion.Major -ge 7) {
-            $signParams = @{
-                InstallerPath = "installers\V-Notch-Setup.exe"
-                Version = $ReleaseVersion
-            }
-            if ($foundKey) { $signParams["PrivateKeyPath"] = $foundKey }
-            & $signScript @signParams | Out-Null
-        } elseif ($pwshCmd) {
-            & $pwshCmd.Source -NoProfile -ExecutionPolicy Bypass -Command "& '$signScript' -InstallerPath 'installers\V-Notch-Setup.exe' -Version '$ReleaseVersion' $keyArg" | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                throw "Sign-UpdateManifest.ps1 failed with exit code $LASTEXITCODE."
-            }
-        } else {
-            throw "PowerShell 7 (pwsh) is required to sign the ECDSA update manifest when VNOTCH_UPDATE_SIGNING_PRIVATE_KEY_PEM is set."
+        $signParams = @{
+            InstallerPath = "installers\V-Notch-Setup.exe"
+            Version = $ReleaseVersion
+            RequireAuthenticode = $RequireAuthenticode
         }
+        if ($foundKey) { $signParams["PrivateKeyPath"] = $foundKey }
+        & $signScript @signParams | Out-Null
         Write-TreeItem "Signed ECDSA update manifest." -State "Success"
     } catch {
         Write-TreeItem "Could not sign update manifest: $_" -State "Error"
         throw
     }
+} else {
+    Write-TreeItem "Update manifest skipped (no update-signing key configured)." -State "Info"
 }
 
 if ($env:GITHUB_ACTIONS -ne 'true') {

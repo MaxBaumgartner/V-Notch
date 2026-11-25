@@ -241,13 +241,20 @@ public partial class ControlCenterView
         AutomationProperties.SetName(_accountClose, Say("Nur Claude anzeigen", "Show Claude only"));
 
         _accountTitle.Text = session?.Name ?? "Claude";
-        _accountStatus.Text = session?.Status == ClaudeSessionStatus.Working
-            ? Say("Claude arbeitet", "Claude is working") : session == null ? Loc.Get("control.claude.idle") : StateWord(session);
-        _accountStatusDot.Background = session?.Status switch
+        bool sameSession = session != null && session.Id == _faceSessionId;
+        var previous = session == null || sameSession ? null : _claudeShownSessions.GetValueOrDefault(session.Id);
+        _faceSessionId = session?.Id;
+        if (previous != null)
         {
-            ClaudeSessionStatus.Working => AccountClay, ClaudeSessionStatus.Waiting => AccountSand,
-            ClaudeSessionStatus.Done => AccountSage, _ => AccountNeutral
-        };
+            SetDetailText(_accountStatus, AccountStatusText(previous), rollUp: true, animate: false);
+            _faceStatusTint.Set(AccountStatusColor(previous.Status), animate: false);
+        }
+        bool animateStatus = sameSession || previous != null;
+        if (!DetailTexts.TryGetValue(_accountStatus, out _))
+            SetDetailText(_accountStatus, AccountStatusText(session), rollUp: true, animate: false);
+        else ApplyClaudeText(_accountStatus, AccountStatusText(session), animateStatus && !_accountsOpen);
+        _accountStatusDot.Background = _faceStatusTint.Brush;
+        _faceStatusTint.Set(AccountStatusColor(session?.Status), animateStatus && IsVisible && !_accountsOpen);
         _accountTurnStarted = session?.Status is ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting ? session.TurnStartedUtc : null;
         _accountCount.Text = $"+{_codexAccounts.Count}";
         if (_inlineClaudeGrant == null || !_resetStates.ContainsKey("claude:" + _inlineClaudeGrant))
@@ -260,6 +267,15 @@ public partial class ControlCenterView
         PaintClaudeNotchButton();
         GatherClaudeLightSoon();
     }
+
+    private static string AccountStatusText(ClaudeSession? session) => session?.Status == ClaudeSessionStatus.Working
+        ? Say("Claude arbeitet", "Claude is working") : session == null ? Loc.Get("control.claude.idle") : StateWord(session);
+
+    private static Color AccountStatusColor(ClaudeSessionStatus? status) => ((SolidColorBrush)(status switch
+    {
+        ClaudeSessionStatus.Working => AccountClay, ClaudeSessionStatus.Waiting => AccountSand,
+        ClaudeSessionStatus.Done => AccountSage, _ => AccountNeutral
+    })).Color;
 
     private void PaintAccountRows(ClaudeLimits? limits, DateTimeOffset now)
     {
@@ -317,11 +333,11 @@ public partial class ControlCenterView
     {
         var meters = key == "claude" && !_accountsOpen ? _claudeFrontMeters : row.Meters;
         if (key != "claude" && !_accountsOpen) return;
-        SetMeter(meters[0], key + ":5h", hour, color);
-        SetMeter(meters[1], key + ":week", week, color);
+        SetMeter(meters[0], hour, color);
+        SetMeter(meters[1], week, color);
         // Keep both layouts ready for the gesture without counting the hidden layout as another observation.
         var hidden = key == "claude" ? (_accountsOpen ? _claudeFrontMeters : row.Meters) : [];
-        if (hidden.Length != 0)
+        if (hidden.Length != 0 && IsVisible)
         {
             hidden[0].Update(hour, color, false);
             hidden[1].Update(week, color, false);
@@ -330,11 +346,10 @@ public partial class ControlCenterView
         meters[1].SetClock(now, weekly: true);
     }
 
-    private void SetMeter(AccountMeter meter, string key, ClaudeLimitWindow? value, Brush fill)
+    private void SetMeter(AccountMeter meter, ClaudeLimitWindow? value, Brush fill)
     {
         if (!IsVisible) return;
-        bool changed = Seen.Changed("accounts:" + key, value?.UsedPercent.ToString("R", CultureInfo.InvariantCulture) ?? "");
-        meter.Update(value, fill, changed && AnimateAccounts);
+        meter.Update(value, fill, AnimateAccounts);
     }
 
     private void PaintNextAccount(DateTimeOffset now, double rowHeight)
@@ -382,7 +397,6 @@ public partial class ControlCenterView
     private void ForgetAccountRow(CodexAccount account)
     {
         string prefix = AccountProvider(account) + ":";
-        Seen.ForgetAll("accounts:" + prefix);
         foreach (string key in _resetStates.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToArray())
             _resetStates.Remove(key);
         if (!_accountRowBySlot.Remove(account, out var row)) return;
@@ -405,6 +419,7 @@ public partial class ControlCenterView
         var to = open ? _claudeAccountRow.Meters : _claudeFrontMeters;
         var previous = move ? from.Select(m => m.BoundsIn(_claudeFace)).ToArray() : [];
         _accountsOpen = open;
+        if (open) _faceStatusTint.Stop();
         if (!open) StopCodexJobMotion();
         DisarmAccountCredits();
         if (!open)
@@ -478,15 +493,18 @@ public partial class ControlCenterView
         row.SetCountdown(confirm && _accountsOpen && IsVisible ? state!.Until : null, AnimateAccounts);
     }
 
-    private void StopClaudeFaceMotion()
+    private readonly ClaudeStatusTint _faceStatusTint = new(((SolidColorBrush)AccountNeutral).Color);
+    private string? _faceSessionId;
+
+    private void StopClaudeFaceMotion(bool rememberValues = false)
     {
         if (_claudeFace == null) return;
         Motion.Stop(_accountFront, OpacityProperty, 1);
         Motion.Stop(_accountBack, OpacityProperty, 1);
         Motion.Stop(_nextAccountShift, TranslateTransform.YProperty);
-        foreach (var meter in _claudeFrontMeters) meter.Stop();
-        _claudeAccountRow.Stop();
-        foreach (var row in _accountRowBySlot.Values) row.Stop();
+        foreach (var meter in _claudeFrontMeters) meter.Stop(rememberValues && !_accountsOpen);
+        _claudeAccountRow.Stop(rememberValues && _accountsOpen);
+        foreach (var row in _accountRowBySlot.Values) row.Stop(rememberValues && _accountsOpen);
         StopCodexJobMotion();
     }
 
@@ -644,10 +662,10 @@ public partial class ControlCenterView
             _deadline = null;
         }
 
-        public void Stop()
+        public void Stop(bool rememberValues = false)
         {
             StopCountdown();
-            foreach (var meter in Meters) meter.Stop();
+            foreach (var meter in Meters) meter.Stop(rememberValues);
         }
     }
 
@@ -656,13 +674,15 @@ public partial class ControlCenterView
         public Grid Host { get; } = new();
         public TextBlock Label { get; } = AccountText("", 12, AccountLabel);
         public ScaleTransform Grow { get; } = new(0, 1);
-        public WeatherTween Number { get; } = new();
+        public RollingNumber Number { get; }
         private readonly TextBlock _clock, _readout;
         private readonly Run _digits = new("–"), _unit;
         private readonly Border _fill;
         private readonly ScaleTransform _scale = new(1, 1);
         private readonly TranslateTransform _shift = new();
         private ClaudeLimitWindow? _window;
+        private (double Fill, double Number)? _lastVisibleValue;
+        private long? _clockBucket;
 
         public AccountMeter(bool compact)
         {
@@ -676,7 +696,7 @@ public partial class ControlCenterView
             _unit = new Run { FontSize = compact ? 10 : 15.5 };
             _readout.Inlines.Add(_digits);
             _readout.Inlines.Add(_unit);
-            Number.Step = value => _digits.Text = value.ToString("0", CultureInfo.CurrentCulture);
+            Number = new RollingNumber(value => _digits.Text = value.ToString("0", CultureInfo.CurrentCulture));
 
             double radius = compact ? 1.5 : 2;
             _fill = new Border { CornerRadius = new CornerRadius(radius), RenderTransform = Grow };
@@ -701,14 +721,18 @@ public partial class ControlCenterView
         {
             _fill.Background = fill;
             double? previous = _window?.UsedPercent;
+            var lastVisibleValue = _lastVisibleValue;
+            _lastVisibleValue = null;
             _window = window;
             if (previous == window?.UsedPercent) return;
             double used = window?.UsedPercent ?? 0;
             _unit.Text = window == null ? "" : "\u200A%";
             if (animate && previous.HasValue && window != null && Math.Abs(previous.Value - used) > .01)
             {
+                if (lastVisibleValue is { } shown)
+                    Motion.Stop(Grow, ScaleTransform.ScaleXProperty, shown.Fill);
                 Motion.To(Grow, ScaleTransform.ScaleXProperty, used / 100, Motion.Glide);
-                Number.To(used);
+                Number.To(used, from: lastVisibleValue?.Number);
             }
             else StopValue();
         }
@@ -716,12 +740,20 @@ public partial class ControlCenterView
         public void SetClock(DateTimeOffset now, bool weekly, DateTimeOffset? blocked = null)
         {
             _clock.Foreground = blocked != null ? AccountRose : AccountLabel;
+            string text;
+            long? bucket = null;
             if (blocked is { } until)
-                _clock.Text = Say("Voll bis ", "Full until ") + until.ToLocalTime().ToString("HH:mm", AccountCulture);
+                text = Say("Voll bis ", "Full until ") + until.ToLocalTime().ToString("HH:mm", AccountCulture);
             else if (_window?.ResetsAt is { } reset && reset > now)
-                _clock.Text = weekly ? reset.ToLocalTime().ToString("ddd HH:mm", AccountCulture) :
+            {
+                bucket = weekly ? reset.ToUnixTimeSeconds() / 60 : (long)Math.Ceiling((reset - now).TotalMinutes);
+                text = weekly ? reset.ToLocalTime().ToString("ddd HH:mm", AccountCulture) :
                     Loc.Get("control.claude.resetsIn", AccountDuration(reset - now));
-            else _clock.Text = _window == null ? Say("Nicht verfügbar", "Unavailable") : Say("Kein aktiver Zeitraum", "No active window");
+            }
+            else text = _window == null ? Say("Nicht verfügbar", "Unavailable") : Say("Kein aktiver Zeitraum", "No active window");
+            if (!DetailTexts.TryGetValue(_clock, out var state) || state.Target != text)
+                SetDetailText(_clock, text, rollUp: true, animate: bucket.HasValue && _clockBucket.HasValue && bucket != _clockBucket);
+            _clockBucket = bucket;
         }
 
         private static string AccountDuration(TimeSpan left)
@@ -753,14 +785,16 @@ public partial class ControlCenterView
         {
             double value = _window?.UsedPercent ?? 0;
             Motion.Stop(Grow, ScaleTransform.ScaleXProperty, value / 100);
-            Number.Stop(value);
+            Number.To(value, 0);
             _digits.Text = _window == null ? "–" : value.ToString("0", CultureInfo.CurrentCulture);
         }
 
-        public void Stop()
+        public void Stop(bool rememberValue = false)
         {
+            if (rememberValue && _window != null) _lastVisibleValue = (Grow.ScaleX, Number.Value);
             StopMorph();
             StopValue();
+            if (DetailTexts.TryGetValue(_clock, out var state)) SettleDetailText(_clock, state);
         }
     }
 }

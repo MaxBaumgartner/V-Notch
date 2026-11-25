@@ -60,7 +60,7 @@ public partial class MainWindow
     private void HomeIconButton_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
-        if ((_isCameraView || _isClaudeView || _isPiView || _isSchoolView || _isRobloxView) && !_isAnimating) { SwitchToPrimaryView(); return; }
+        if ((_isCameraView || _isAiUsageView || _isClaudeView || _isPiView || _isSchoolView || _isRobloxView) && !_isAnimating) { SwitchToPrimaryView(); return; }
         if (_isAudioView && !_isAnimating)
         {
             SwitchFromAudioToPrimaryView();
@@ -82,6 +82,20 @@ public partial class MainWindow
         if (!_isSecondaryView && !_isAnimating)
         {
             SwitchToSecondaryView();
+        }
+    }
+
+    private void AiUsageIconButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        SwitchToAiUsageView();
+    }
+
+    internal void SwitchToAiUsageView()
+    {
+        if (!_isAiUsageView && !_isAnimating)
+        {
+            _transitionCoordinator.RequestView(NotchView.AiUsage, "SwitchToAiUsageView");
         }
     }
 
@@ -134,7 +148,8 @@ public partial class MainWindow
 
 
         NotchView fallbackView = NotchView.Media;
-        if (_isCameraView) fallbackView = NotchView.Camera;
+        if (_isAiUsageView) fallbackView = NotchView.AiUsage;
+        else if (_isCameraView) fallbackView = NotchView.Camera;
         else if (_isClaudeView) fallbackView = NotchView.Claude;
         else if (_isPiView) fallbackView = NotchView.Pi;
         else if (_isSchoolView) fallbackView = NotchView.School;
@@ -154,6 +169,7 @@ public partial class MainWindow
         if (_navDragItem != PiIconButton) AnimateNavIconOpacity(PiIconButton, target == NotchView.Pi ? 1 : 0.45, animate);
         if (_navDragItem != SchoolIconButton) AnimateNavIconOpacity(SchoolIconButton, target == NotchView.School ? 1 : 0.45, animate);
         if (_navDragItem != RobloxIconButton) AnimateNavIconOpacity(RobloxIconButton, target == NotchView.Roblox ? 1 : 0.45, animate);
+        if (_navDragItem != AiUsageIconButton) AnimateNavIconOpacity(AiUsageIconButton, target == NotchView.AiUsage ? 1 : 0.45, animate);
 
         // Only update opacity on items not currently being dragged by the user
         if (_navDragItem != HomeIconButton) AnimateNavIconOpacity(HomeIconButton, homeTarget, animate);

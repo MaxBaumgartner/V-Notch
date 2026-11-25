@@ -10,25 +10,6 @@ namespace vnotch::services
     class YouTubeMetadataParsing final
     {
     public:
-        static int32_t vn_youtube_looks_like_quota_exceeded_impl(const char16_t* body_ptr, int32_t body_len, uint8_t* out_exceeded) noexcept
-        {
-    if (out_exceeded == nullptr)
-    {
-        return VN_ERR_INVALID_ARG;
-    }
-    std::u16string_view sv = make_u16_view(body_ptr, body_len);
-    if (is_null_or_whitespace(sv))
-    {
-        *out_exceeded = 0u;
-        return VN_OK;
-    }
-    bool ex = contains_ordinal(sv, u"quotaExceeded") ||
-              contains_ordinal(sv, u"dailyLimitExceeded") ||
-              contains_ordinal(sv, u"rateLimitExceeded");
-    *out_exceeded = ex ? 1u : 0u;
-    return VN_OK;
-}
-
         static int32_t vn_youtube_parse_iso8601_duration_ticks_impl(const char16_t* iso_ptr, int32_t iso_len, int64_t* out_ticks) noexcept
         {
     if (out_ticks == nullptr)
@@ -107,11 +88,6 @@ namespace vnotch::services
     };
 } // namespace vnotch::services
 
-VN_EXPORT int32_t vn_youtube_looks_like_quota_exceeded(const char16_t* body_ptr, int32_t body_len, uint8_t* out_exceeded) noexcept
-{
-    return vnotch::services::YouTubeMetadataParsing::vn_youtube_looks_like_quota_exceeded_impl(body_ptr, body_len, out_exceeded);
-}
-
 VN_EXPORT int32_t vn_youtube_parse_iso8601_duration_ticks(const char16_t* iso_ptr, int32_t iso_len, int64_t* out_ticks) noexcept
 {
     return vnotch::services::YouTubeMetadataParsing::vn_youtube_parse_iso8601_duration_ticks_impl(iso_ptr, iso_len, out_ticks);
@@ -120,8 +96,8 @@ VN_EXPORT int32_t vn_youtube_parse_iso8601_duration_ticks(const char16_t* iso_pt
 VN_EXPORT int32_t vn_youtube_title_matches(const char16_t*, int32_t, const char16_t*, int32_t, uint8_t*) noexcept;
 VN_EXPORT int32_t vn_youtube_subtitle_determine_is_auto_generated(const char16_t*, int32_t, const char16_t*, int32_t,
     const char16_t*, int32_t, const char16_t*, int32_t, uint8_t, uint8_t, uint8_t*) noexcept;
-VN_EXPORT int32_t vn_youtube_subtitle_normalize_cue_text(const char16_t*, int32_t, uint8_t, char16_t*, int32_t, int32_t*) noexcept;
-VN_EXPORT int32_t vn_youtube_subtitle_clamp_timestamp_ticks(int64_t, double, uint8_t, int64_t*, uint8_t*) noexcept;
+extern "C" int32_t __stdcall vn_youtube_subtitle_normalize_cue_text(const char16_t*, int32_t, uint8_t, char16_t*, int32_t, int32_t*) noexcept;
+extern "C" int32_t __stdcall vn_youtube_subtitle_clamp_timestamp_ticks(int64_t, double, uint8_t, int64_t*, uint8_t*) noexcept;
 
 namespace {
 using Json = vnotch::json::Value;
@@ -268,12 +244,12 @@ VN_EXPORT int32_t vn_youtube_parse_utf8(const uint8_t* bytes, int32_t length, in
                 const auto index = renderer.get("defaultAudioTrackIndex");
                 const int64_t selected_index = !index.bytes.empty() && index.bytes[0] >= '0' && index.bytes[0] <= '9' ? index.integer() : -1;
                 Json selected;
-                int64_t count = 0;
+                int64_t track_count = 0;
                 tracks.each([&](Json, Json track) {
-                    if (count++ == selected_index) selected = track;
+                    if (track_count++ == selected_index) selected = track;
                     return true;
                 });
-                if (selected_index < 0 && count == 1) selected = tracks.first();
+                if (selected_index < 0 && track_count == 1) selected = tracks.first();
                 language = selected.get("languageCode").text();
                 if (language.empty()) language = selected.get("audioTrackId").text();
             }
@@ -283,9 +259,10 @@ VN_EXPORT int32_t vn_youtube_parse_utf8(const uint8_t* bytes, int32_t length, in
         else if (kind == 5) captions(root, *result);
         else if (kind == 6) json3(root, *result);
         else metadata(root, kind, {expected ? expected : u"", static_cast<size_t>(expected_length)}, *result);
-        *rows = result->rows.data(); *count = static_cast<int32_t>(result->rows.size());
-        *characters = result->characters.data(); *has_collection = result->has_collection ? 1 : 0;
+        auto* published = result.get();
         *handle = responses.Add(std::move(result));
+        *rows = published->rows.data(); *count = static_cast<int32_t>(published->rows.size());
+        *characters = published->characters.data(); *has_collection = published->has_collection ? 1 : 0;
         return VN_OK;
     } catch (...) { return VN_ERR_FAIL; }
 }

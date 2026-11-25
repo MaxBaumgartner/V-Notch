@@ -11,6 +11,13 @@ namespace VNotch.Tests;
 [Collection("Localization")]
 public sealed class TrayMotionTests
 {
+    private static Task AnimateLayerAsync(FrameworkElement layer, bool entering, bool fresh)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ClipboardTray.AnimateLayer(layer, entering, 0, fresh, 40, 6d, () => completion.TrySetResult());
+        return completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public void SettledLayerEntranceReturnsOpacityToItsBaseState() => SharedStaTestRunner.RunAsync(async () =>
     {
@@ -20,13 +27,80 @@ public sealed class TrayMotionTests
         {
             window.Show();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            typeof(ClipboardTray).GetMethod("AnimateLayer", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
-                .Invoke(null, [layer, true, 0, false, 40, 6d, null]);
-            await Task.Delay(240);
+            var entrance = AnimateLayerAsync(layer, true, false);
+            await entrance;
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             Assert.Equal(1, layer.Opacity);
             layer.Opacity = .5;
             Assert.Equal(.5, layer.Opacity);
+        }
+        finally { window.Close(); }
+    });
+
+    private static async Task WaitForSearchEntranceAsync(ClipboardTray tray, bool animate)
+    {
+        var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        tray.BeginEntrance(() => settled.TrySetResult(), animate);
+        await settled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WpfFrameWaiter.NextAsync();
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void SearchDimmingFollowsEnabledStateAfterEntranceAndExit(bool reducedMotion, bool animate) => SharedStaTestRunner.RunAsync(async () =>
+    {
+        bool previous = VNotch.Services.AnimationConfig.ReduceMotion;
+        VNotch.Services.AnimationConfig.SetReduceMotion(reducedMotion);
+        using var tray = new ClipboardTray();
+        var window = new BackgroundWindow { Content = tray, Width = 800, Height = 400 };
+        try
+        {
+            window.Show();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            var search = (FrameworkElement)tray.FindName("SearchSurface");
+            search.IsEnabled = false;
+            await WaitForSearchEntranceAsync(tray, animate);
+            Assert.Equal(.45, search.Opacity);
+            search.IsEnabled = true;
+            Assert.Equal(1, search.Opacity);
+            tray.BeginExit();
+            search.IsEnabled = false;
+            await WaitForSearchEntranceAsync(tray, animate);
+            Assert.Equal(.45, search.Opacity);
+            search.IsEnabled = true;
+            Assert.Equal(1, search.Opacity);
+        }
+        finally { window.Close(); VNotch.Services.AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void LayerMotionPreservesOpacityBindingThroughAFullExit() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        var state = new Border { Opacity = .45 };
+        var layer = new Border();
+        layer.SetBinding(UIElement.OpacityProperty, new Binding(nameof(UIElement.Opacity)) { Source = state });
+        var window = new BackgroundWindow { Content = layer, Width = 100, Height = 100 };
+        try
+        {
+            window.Show();
+            var freshEntrance = AnimateLayerAsync(layer, true, true);
+            state.Opacity = 1;
+            await freshEntrance;
+            await WpfFrameWaiter.NextAsync();
+            Assert.Equal(1, layer.Opacity);
+            Assert.True(BindingOperations.IsDataBound(layer, UIElement.OpacityProperty));
+            var exit = AnimateLayerAsync(layer, false, false);
+            await exit;
+            await WpfFrameWaiter.NextAsync();
+            Assert.Equal(0, layer.Opacity);
+            state.Opacity = .45;
+            var entrance = AnimateLayerAsync(layer, true, false);
+            await entrance;
+            await WpfFrameWaiter.NextAsync();
+            Assert.Equal(.45, layer.Opacity);
+            Assert.True(BindingOperations.IsDataBound(layer, UIElement.OpacityProperty));
         }
         finally { window.Close(); }
     });
@@ -50,14 +124,14 @@ public sealed class TrayMotionTests
     [Fact]
     public void CopyFeedbackKeepsItsBindingAcrossRepeatedChanges() => SharedStaTestRunner.Run(() =>
     {
-        var source = new CheckBox();
+        var source = new Border { Opacity = 0 };
         var surface = new Border { IsHitTestVisible = false };
         BindingOperations.SetBinding(surface, TrayMotion.OpacityProperty,
-            new Binding(nameof(CheckBox.IsChecked)) { Source = source, Converter = new TrayCopiedOpacityConverter() });
+            new Binding(nameof(Border.Opacity)) { Source = source });
         Assert.Equal(0, surface.Opacity);
-        source.IsChecked = true;
+        source.Opacity = 1;
         Assert.Equal(1, surface.Opacity);
-        source.IsChecked = false;
+        source.Opacity = 0;
         Assert.Equal(0, surface.Opacity);
         Assert.True(BindingOperations.IsDataBound(surface, TrayMotion.OpacityProperty));
         Assert.False(surface.IsHitTestVisible);
@@ -66,14 +140,14 @@ public sealed class TrayMotionTests
     [Fact]
     public void CopyFeedbackKeepsItsBlurBindingAcrossRepeatedChanges() => SharedStaTestRunner.Run(() =>
     {
-        var source = new CheckBox();
+        var source = new Border { Width = 0 };
         var surface = new Border();
         BindingOperations.SetBinding(surface, TrayMotion.BlurRadiusProperty,
-            new Binding(nameof(CheckBox.IsChecked)) { Source = source, Converter = new TrayCopiedBlurConverter() });
+            new Binding(nameof(Border.Width)) { Source = source });
         Assert.Equal(0, TrayMotion.GetBlurRadius(surface));
-        source.IsChecked = true;
+        source.Width = 16;
         Assert.Equal(16, TrayMotion.GetBlurRadius(surface));
-        source.IsChecked = false;
+        source.Width = 0;
         Assert.Equal(0, TrayMotion.GetBlurRadius(surface));
         Assert.True(BindingOperations.IsDataBound(surface, TrayMotion.BlurRadiusProperty));
     });
@@ -101,8 +175,8 @@ public sealed class TrayMotionTests
             Assert.Equal(1.0, cards.Opacity);
 
             tray.BeginExit();
-            var isLeaving = (bool)typeof(ClipboardTray).GetField("_trayLeaving", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(tray)!;
-            var staggerVer = (int)typeof(ClipboardTray).GetField("_entranceStaggerVersion", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(tray)!;
+            var isLeaving = tray.IsLeaving;
+            var staggerVer = tray.EntranceStaggerVersion;
             Assert.True(isLeaving);
             Assert.Equal(0, staggerVer);
         }
@@ -118,8 +192,7 @@ public sealed class TrayMotionTests
         bool prev = VNotch.Services.AnimationConfig.ReduceMotion;
         VNotch.Services.AnimationConfig.SetReduceMotion(false);
         using var tray = new ClipboardTray();
-        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var cards = (System.Collections.ObjectModel.ObservableCollection<VNotch.ViewModels.ClipboardCardViewModel>)typeof(ClipboardTray).GetField("_cards", flags)!.GetValue(tray)!;
+        var cards = tray.ResultCards;
         cards.Add(new VNotch.ViewModels.ClipboardCardViewModel(new VNotch.Models.ClipboardEntry { Title = "File 0", Kind = VNotch.Models.ClipboardKind.File }));
         cards.Add(new VNotch.ViewModels.ClipboardCardViewModel(new VNotch.Models.ClipboardEntry { Title = "File 1", Kind = VNotch.Models.ClipboardKind.File }));
 
@@ -158,9 +231,7 @@ public sealed class TrayMotionTests
         bool previous = VNotch.Services.AnimationConfig.ReduceMotion;
         VNotch.Services.AnimationConfig.SetReduceMotion(false);
         using var tray = new ClipboardTray();
-        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var cards = (System.Collections.ObjectModel.ObservableCollection<VNotch.ViewModels.ClipboardCardViewModel>)typeof(ClipboardTray)
-            .GetField("_cards", flags)!.GetValue(tray)!;
+        var cards = tray.ResultCards;
         cards.Add(new(new VNotch.Models.ClipboardEntry { Title = "File 0", Kind = VNotch.Models.ClipboardKind.File }));
         var window = new BackgroundWindow { Content = tray, Width = 800, Height = 400 };
         try
@@ -190,9 +261,7 @@ public sealed class TrayMotionTests
         bool previous = VNotch.Services.AnimationConfig.ReduceMotion;
         VNotch.Services.AnimationConfig.SetReduceMotion(false);
         using var tray = new ClipboardTray();
-        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var cards = (System.Collections.ObjectModel.ObservableCollection<VNotch.ViewModels.ClipboardCardViewModel>)typeof(ClipboardTray)
-            .GetField("_cards", flags)!.GetValue(tray)!;
+        var cards = tray.ResultCards;
         for (int index = 0; index < 3; index++)
             cards.Add(new(new VNotch.Models.ClipboardEntry { Title = $"Project {index}.pdf", Kind = VNotch.Models.ClipboardKind.File }));
         var window = new BackgroundWindow { Content = tray, Width = 800, Height = 400 };
@@ -201,7 +270,7 @@ public sealed class TrayMotionTests
             window.Show();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             tray.BeginEntrance();
-            await Task.Delay(850);
+            await WpfFrameWaiter.UntilAsync(() => tray.Cards.ItemContainerGenerator.ContainerFromIndex(2) is ListBoxItem { Opacity: 1 } item && Math.Abs(item.RenderTransform.Value.OffsetY) < 1e-6, "last card entrance settles");
             tray.BeginExit();
             tray.Visibility = Visibility.Collapsed;
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);

@@ -43,16 +43,14 @@ public sealed partial class FluidMenuSurface : Grid
         double seconds, byte reduced, out byte settled);
 
     private static readonly Brush NormalFill = AccentTheme.Brush(Color.FromArgb(24, 218, 220, 227));
-    private static readonly Brush NormalRim = AccentTheme.Brush(Color.FromArgb(16, 218, 220, 227));
     private static readonly Brush DangerFill = AccentTheme.Brush(Color.FromArgb(30, 213, 139, 145));
-    private static readonly Brush DangerRim = AccentTheme.Brush(Color.FromArgb(24, 213, 139, 145));
     private readonly ScaleTransform _scale = new(1, 1);
     private readonly TranslateTransform _translate = new();
     private ShapeState _shape;
     private FadeState _fade;
     private double _targetY, _height = 32;
     private bool _visible, _initialized;
-    private long _timestamp;
+    private AnimationFrameClock _frameClock;
     private TimeSpan _renderingTime = TimeSpan.MinValue;
     private int _request;
 
@@ -67,7 +65,7 @@ public sealed partial class FluidMenuSurface : Grid
         Highlight = new Border
         {
             VerticalAlignment = VerticalAlignment.Top, Height = 32, CornerRadius = new CornerRadius(8),
-            Background = NormalFill, BorderBrush = NormalRim, BorderThickness = new Thickness(1),
+            Background = NormalFill,
             SnapsToDevicePixels = false, UseLayoutRounding = false,
             IsHitTestVisible = false, Opacity = 0, RenderTransformOrigin = new Point(.5, .5),
             RenderTransform = new TransformGroup { Children = { _scale, _translate } }
@@ -121,7 +119,6 @@ public sealed partial class FluidMenuSurface : Grid
         Highlight.Height = _height;
         bool danger = row.TemplatedParent is MenuItem { Tag: "danger" };
         Highlight.SetValue(TrayMotion.BackgroundProperty, danger ? DangerFill : NormalFill);
-        Highlight.SetValue(TrayMotion.BorderBrushProperty, danger ? DangerRim : NormalRim);
         if (!_initialized || (!IsAnimating && _fade.Opacity == 0))
         {
             _shape = new ShapeState { Top = _targetY, Bottom = _targetY + _height, WidthScale = 1 };
@@ -160,7 +157,7 @@ public sealed partial class FluidMenuSurface : Grid
         if (!IsVisible || !MotionAllowed) { StopMotion(); return; }
         if (IsAnimating) return;
         IsAnimating = true;
-        _timestamp = Stopwatch.GetTimestamp();
+        _frameClock.Reset(Stopwatch.GetTimestamp());
         _renderingTime = TimeSpan.MinValue;
         CompositionTarget.Rendering += RenderMotion;
     }
@@ -173,10 +170,7 @@ public sealed partial class FluidMenuSurface : Grid
             _renderingTime = frame.RenderingTime;
         }
         if (!IsVisible || !MotionAllowed) { StopMotion(); return; }
-        long now = Stopwatch.GetTimestamp();
-        double seconds = Stopwatch.GetElapsedTime(_timestamp, now).TotalSeconds;
-        if (seconds < .9 / AnimationConfig.TargetFps) return;
-        _timestamp = now;
+        if (!_frameClock.TryAdvance(Stopwatch.GetTimestamp(), AnimationConfig.TargetFps, out double seconds)) return;
         AdvanceMotion(seconds);
     }
 

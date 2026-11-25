@@ -202,7 +202,7 @@ public partial class MainWindow
         if (!canceled && _gestureController.ShouldSkipTrack &&
             (Math.Abs(_gestureController.AccumulatedX) > 55 || Math.Abs(velocity) > 450))
         {
-            var command = _musicDirection > 0 ? _viewModel.NextTrackCommand : _viewModel.PreviousTrackCommand;
+            var command = _musicDirection > 0 ? _viewModel.Media.NextTrackCommand : _viewModel.Media.PreviousTrackCommand;
             command.ExecuteAsync(null).SafeFireAndForget("MUSIC-SWIPE");
             // A throttled command emits no transport event and must return the grabbed cover.
             if (_musicDragging) ReturnMusicSwipe(velocity);

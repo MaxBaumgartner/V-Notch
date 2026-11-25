@@ -41,7 +41,7 @@ public partial class SpotlightPreferencesDialog : Window
         else
         {
             AppCard.Visibility = Visibility.Visible;
-            AppTitle.Text = item.DisplayTitle;
+            AppTitle.Text = new SpotlightResultPresentation(item).DisplayTitle;
             AppTitle.ToolTip = item.Title;
             AppKind.Text = Loc.Get("spotlight.kind.application");
             AppIcon.Source = item.Icon;
@@ -100,6 +100,6 @@ public partial class SpotlightPreferencesDialog : Window
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         // Button handles its own mouse-down, so only unhandled header clicks drag.
-        if (e.ButtonState == MouseButtonState.Pressed) DragMove();
+        if (e.ButtonState == MouseButtonState.Pressed) this.TryDragMove();
     }
 }

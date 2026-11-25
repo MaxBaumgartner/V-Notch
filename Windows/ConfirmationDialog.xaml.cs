@@ -263,7 +263,7 @@ public partial class ConfirmationDialog : Window
     {
         if (e.LeftButton == MouseButtonState.Pressed)
         {
-            DragMove();
+            this.TryDragMove();
         }
     }
 

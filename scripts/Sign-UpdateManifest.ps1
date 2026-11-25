@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$InstallerPath,
     [Parameter(Mandatory)][string]$Version,
     [string]$PrivateKeyPath,
-    [string]$PublicKeyPath = (Join-Path $PSScriptRoot '../Security/update-public-key.pem')
+    [string]$PublicKeyPath = (Join-Path $PSScriptRoot '../Security/update-public-key.pem'),
+    [switch]$RequireAuthenticode
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -14,6 +15,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     $pwshArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-InstallerPath', $InstallerPath, '-Version', $Version)
     if ($PrivateKeyPath) { $pwshArgs += '-PrivateKeyPath', $PrivateKeyPath }
     if ($PublicKeyPath) { $pwshArgs += '-PublicKeyPath', $PublicKeyPath }
+    if ($RequireAuthenticode) { $pwshArgs += '-RequireAuthenticode' }
     & $pwsh.Source @pwshArgs
     if ($LASTEXITCODE -ne 0) {
         throw "Sign-UpdateManifest.ps1 failed with exit code $LASTEXITCODE."
@@ -31,6 +33,9 @@ if ($Version -cnotmatch $versionPattern -or -not [Version]::TryParse($Matches['c
     throw 'Invalid release version.'
 }
 if ($installer.Length -le 0 -or $installer.Length -gt 500MB) { throw 'Invalid installer size.' }
+if ($RequireAuthenticode) {
+    & (Join-Path $PSScriptRoot 'Assert-InstallerSignatures.ps1') -InstallerPath $installer.FullName
+}
 $privatePem = if ($PrivateKeyPath) { [IO.File]::ReadAllText([IO.Path]::GetFullPath($PrivateKeyPath)) } elseif ($env:VNOTCH_UPDATE_SIGNING_KEY_PEM) { $env:VNOTCH_UPDATE_SIGNING_KEY_PEM } else { $env:VNOTCH_UPDATE_SIGNING_PRIVATE_KEY_PEM }
 if ([string]::IsNullOrWhiteSpace($privatePem)) { throw 'VNOTCH_UPDATE_SIGNING_KEY_PEM is required. Unsigned releases are not published.' }
 $key = [Security.Cryptography.ECDsa]::Create()

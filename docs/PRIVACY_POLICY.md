@@ -4,7 +4,7 @@
 
 **Previous published version:** October 24, 2026
 
-**Scope:** Current source tree as of November 11, 2026 (v2.3.1); feature availability depends on the installed build.
+**Scope:** Current source tree as of November 16, 2026 (v2.4.0); feature availability depends on the installed build.
 
 **Developer:** w0otdev & viper1aa  
 **Contact:** [github.com/w0otdev/V-Notch/issues](https://github.com/w0otdev/V-Notch/issues)  
@@ -171,7 +171,7 @@ V-Notch has no backend server and performs no analytics, telemetry, or user trac
 
 ### 4.1 Application Update Checks, Downloads & Release Integrity Verification (GitHub)
 
-- **Endpoints:** `https://api.github.com/repos/w0otdev/V-Notch/releases/latest`, `https://api.github.com/repos/w0otdev/V-Notch/releases` (when checking pre-releases or release notes), `https://github.com/w0otdev/V-Notch/releases.atom` (fallback when the REST API is rate-limited), and `https://api.github.com/repos/w0otdev/V-Notch/releases/tags/v{version}` (for release binary hash verification).
+- Update checks and release notes use `https://github.com/w0otdev/V-Notch/releases.atom`. If the feed is unavailable, V-Notch can read published releases from `https://api.github.com/repos/w0otdev/V-Notch/releases`. Release binary hash verification uses `https://api.github.com/repos/w0otdev/V-Notch/releases/tags/v{version}`.
 - **Why:** To detect whether a newer release of V-Notch is available and to verify local binary hashes against published release assets.
 - **Data sent (update check):** Standard HTTP headers, including `User-Agent: V-Notch-Updater` and a conditional `If-None-Match` (ETag) header for caching. No media metadata, credentials, or local file contents are sent by this feature. As with any HTTPS request, the remote service sees connection information such as your IP address.
 - **Background release integrity check (`AppIntegrityService`):** When `AutoCheckUpdates` is enabled and `EnableLocalOnlyMode` is disabled, V-Notch performs a background release integrity verification query against `https://api.github.com/repos/w0otdev/V-Notch/releases/tags/v{version}` using `User-Agent: V-Notch-Integrity-Checker` to verify local binary hashes against published `.sha256` release assets hosted on `github.com`, `objects.githubusercontent.com`, and `release-assets.githubusercontent.com`. When `AutoCheckUpdates` is disabled or `EnableLocalOnlyMode` is enabled, this background check does not run.
@@ -270,6 +270,14 @@ Opening Spotlight, selecting AI as the default mode, or typing without sending d
 The selected provider receives your submitted content, authentication information, IP address, and ordinary HTTP metadata. Its retention, training, international processing, and account controls depend on its current policies and your service tier or account settings. Local encryption does not prevent the provider from processing submitted content. Review [OpenAI's policies](https://openai.com/policies/), [Gemini API terms](https://ai.google.dev/gemini-api/terms), [Anthropic's commercial terms](https://www.anthropic.com/legal/commercial-terms), and [DeepSeek's privacy policy](https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.html) before sending sensitive information.
 
 The usage display holds provider-reported data in memory: latest-request token counts, rate-limit quota snapshots from supported OpenAI/Claude response headers, and DeepSeek balance results obtained on request. It is not an account-wide usage ledger or monthly budget. Unknown values are hidden; interrupted responses may have incomplete counts. These usage snapshots are not persisted to chat history. Strict Local-Only Mode and the Allow online AI privacy control block explicit AI messages and balance refreshes as well as background requests.
+
+### 4.8.1 AI account-limit monitoring (Opt-In)
+
+Account-limit monitoring is off by default and is independent of Spotlight chat. When enabled, V-Notch starts a read-only instance of your installed Codex CLI to request the signed-in account's subscription limits through the official app-server protocol, at most once every two minutes. Codex handles authentication and sends the authenticated quota requests to OpenAI/Codex services. V-Notch does not copy its credentials, read session cookies, send prompts, or create AI turns. The returned account label, plan and quota windows are held in memory for display. Disabling monitoring, enabling local-only mode, or withdrawing online AI permission cancels Codex polling.
+
+Claude Code integration is separately installed using **Connect Claude Code**. It adds V-Notch's status-line bridge to Claude's user settings only if no custom status line exists, retaining a local backup of those settings. The bridge receives Claude Code's documented status-line input but writes only quota percentages, reset times and observation time to `%LOCALAPPDATA%\V-Notch\ai-usage\claude.json`. Prompts, credentials, session IDs and transcript paths are not saved. V-Notch reads this file locally every 30 seconds while monitoring is enabled; this read requires no network connection. Data reflects the latest reporting Claude Code session, and idle sessions may leave stale values. Disabling V-Notch monitoring stops reads; **Remove Claude bridge** removes V-Notch's own status-line configuration and cached sample, while preserving custom replacements. Restart Claude Code after changing its configuration. If you manually integrated the bridge into a custom script, remove that call yourself. Local settings backups remain under your control.
+
+No account-limit data is uploaded to a V-Notch server or analytics service. Provider usage-dashboard links open your browser under the external-link privacy control. See [AI account limits](AI_ACCOUNT_USAGE.md) for setup and removal details.
 
 ### 4.9 Third Parties
 

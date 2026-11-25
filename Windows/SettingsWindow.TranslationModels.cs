@@ -8,6 +8,7 @@ namespace VNotch;
 
 public partial class SettingsWindow
 {
+    internal TranslationHardware? TranslationHardwareSnapshot { get => _translationHardware; set => _translationHardware = value; }
     private TranslationHardware? _translationHardware;
     private bool _translationHardwareStarted, _translationModelLoading;
     private sealed record ModelChoice(string Id, string Name, string Group, bool IsRecommended, string RecommendedLabel)
@@ -73,7 +74,7 @@ public partial class SettingsWindow
         PushLivePreview();
     }
 
-    private void RefreshTranslationModelDetails()
+    internal void RefreshTranslationModelDetails()
     {
         var model = _translationStore.Profile;
         TranslationModelTitle.Text = Loc.Get("translation.modelTitle");
@@ -92,6 +93,7 @@ public partial class SettingsWindow
         string fit = _translationHardware?.Fits(model) == false ? Loc.Get("translation.modelLowMemory") : Loc.Get("translation.modelEstimate");
         TranslationModelFitHint.Text = Loc.Get("translation.modelRequirements", model.MinimumRamGiB, model.GpuGiB) + " " + fit +
             (model.PromptKind == TranslationPromptKind.TranslateGemma ? " " + Loc.Get("translation.modelSourceHint") : "");
+        if (model.IsLite) TranslationModelFitHint.Text = Loc.Get("translation.liteHint");
         TranslationModelDetailsButton.Visibility = model.IsCustom ? Visibility.Collapsed : Visibility.Visible;
         TranslationDownloadPrivacy.Visibility = model.IsCustom ? Visibility.Collapsed : Visibility.Visible;
         if (model.IsCustom)

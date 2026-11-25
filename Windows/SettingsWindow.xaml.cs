@@ -30,7 +30,6 @@ public partial class SettingsWindow : Window
     private static readonly SolidColorBrush DragHandleGlyphBrush = CreateSettingsBrush(Color.FromArgb(160, 255, 255, 255));
     private static readonly SolidColorBrush DragHandleHoverBrush = CreateSettingsBrush(Color.FromArgb(40, 255, 255, 255));
     private static readonly SolidColorBrush DraggingBackgroundBrush = CreateSettingsBrush(Color.FromArgb(50, 255, 255, 255));
-    private static readonly SolidColorBrush DraggingBorderBrush = CreateSettingsBrush(Color.FromArgb(80, 255, 255, 255));
     private static readonly SolidColorBrush BackupSuccessBrush = CreateSettingsBrush(Color.FromRgb(48, 209, 88));
     private static readonly SolidColorBrush StatusMutedBrush = CreateSettingsBrush(Color.FromRgb(107, 114, 128));
     private static readonly SolidColorBrush StatusErrorBrush = CreateSettingsBrush(Color.FromRgb(239, 68, 68));
@@ -67,6 +66,7 @@ public partial class SettingsWindow : Window
     private const string NavSectionSystem = "System";
     private const string NavSectionPrivacy = "Privacy";
     private const string NavSectionSpotlight = "Spotlight";
+    private const string NavSectionAiUsage = "AiUsage";
     private const string NavSectionFileTray = "FileTray";
     private const string NavSectionAdvanced = "Advanced";
     private const string NavSectionPerformance = "Performance";
@@ -87,11 +87,13 @@ public partial class SettingsWindow : Window
     private const string LocKeyExpandDelay = "settings.expandDelay";
     private const string LocKeyAnimationFps = "settings.animationFps";
 
+    internal NotchSettings EditedSettings => _settings;
     private NotchSettings _settings;
     private readonly SettingsEditSession _editSession;
     private readonly ISettingsApplicationService _settingsAppService;
     private readonly SettingsUpdatePresenter _updatePresenter;
     private bool _isLoadingSettings = true;
+    internal UiScheduledTimer? PreviewDebounce => _livePreviewDebounce;
     private UiScheduledTimer? _livePreviewDebounce;
     private bool _isSpotlightHotkeyRegistered;
     private int _lastAppliedFps;
@@ -119,6 +121,8 @@ public partial class SettingsWindow : Window
         var firstOpenProbe = System.Diagnostics.Stopwatch.StartNew();
         AccentTheme.Apply(settings.AccentColor);
         InitializeComponent();
+        Changelog.RevealRequested += RevealSettingsContent;
+        ContentHost.AddHandler(Expander.ExpandedEvent, new RoutedEventHandler(SettingsGroup_Expanded));
         AddHandler(Mouse.MouseUpEvent, new MouseButtonEventHandler(LivePreview_MouseUp), handledEventsToo: true);
         AddHandler(Keyboard.KeyUpEvent, new KeyEventHandler(LivePreview_KeyUp), handledEventsToo: true);
         FirstOpenProbe?.Invoke($"DEBUG-FIRST-OPEN Settings XAML {firstOpenProbe.Elapsed.TotalMilliseconds:F1} ms");
@@ -130,6 +134,7 @@ public partial class SettingsWindow : Window
         _settings = settings.Clone();
         _editSession = new SettingsEditSession(settings);
         _settingsAppService = settingsAppService ?? throw new ArgumentNullException(nameof(settingsAppService));
+        CaptureProcessStartupPerformanceBaseline(settings);
         _isSpotlightHotkeyRegistered = isSpotlightHotkeyRegistered;
         _lastAppliedFps = settings.AnimationFps;
         _updatePresenter = new SettingsUpdatePresenter(updateService ?? new UpdateService(),
@@ -193,7 +198,7 @@ public partial class SettingsWindow : Window
     {
         if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed)
         {
-            DragMove();
+            this.TryDragMove();
         }
     }
 
@@ -209,7 +214,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        DragMove();
+        this.TryDragMove();
     }
 
     private static bool IsInteractiveElement(DependencyObject? source)
@@ -277,7 +282,7 @@ public partial class SettingsWindow : Window
         InteractionSoundsCheck.IsChecked = _settings.EnableInteractionSounds;
         InteractionSoundVolumeSlider.Value = _settings.InteractionSoundVolume * 100;
         UpdateInteractionSoundControls();
-        AnimationFpsSlider.IsEnabled = !_settings.AutoAnimationFps;
+        UpdateAnimationFpsDependentControls();
         EnableBlurEffectsCheck.IsChecked = _settings.EnableBlurEffects;
         MediaArtBackgroundCheck.IsChecked = _settings.ShowMediaArtBackground;
 
@@ -308,6 +313,7 @@ public partial class SettingsWindow : Window
 
         HoverExpandCheck.IsChecked = _settings.EnableHoverExpand;
         ShowCodexJobsInNotchCheck.IsChecked = _settings.ShowCodexJobsInNotch;
+        ShowScriptJobsInNotchCheck.IsChecked = _settings.ShowScriptJobsInNotch;
         HoverDelaySlider.Value = _settings.HoverExpandDelay;
         HoverDelaySlider.IsEnabled = _settings.EnableHoverExpand;
         HoverDelaySlider.Opacity = _settings.EnableHoverExpand ? 1.0 : 0.4;
@@ -323,6 +329,7 @@ public partial class SettingsWindow : Window
         SetVisualizerAudioDevicePlaceholder();
 
         AutoStartCheck.IsChecked = _settingsAppService.IsAutoStartEnabled();
+        AllowNotchDraggingCheck.IsChecked = _settings.AllowNotchDragging;
         StayBehindWindowsCheck.IsChecked = _settings.StayBehindWindows;
         HelloGreetingCheck.IsChecked = _settings.EnableHelloGreeting;
         HideOnExclusiveFullscreenCheck.IsChecked = _settings.HideOnExclusiveFullscreen;
@@ -344,6 +351,7 @@ public partial class SettingsWindow : Window
         EnableSpotlightCheck.IsChecked = _settings.EnableSpotlight;
         QuickLookCheck.IsChecked = _settings.PreviewFilesWithQuickLook;
         LoadSpotlightAiSettings(_settings);
+        LoadAiUsageSettings();
         LoadTranslationSettings();
         EnableDebugModeCheck.IsChecked = _settings.EnableDebugMode;
         UpdateSpotlightHotkeyWarning();
@@ -389,6 +397,7 @@ public partial class SettingsWindow : Window
         _settings.ProcessPriority = ProcessPriorityPolicy.Normalize(_settings.ProcessPriority);
         ProcessPriorityCombo.SelectedItem = ProcessPriorityCombo.Items.OfType<System.Windows.Controls.ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == _settings.ProcessPriority) ?? ProcessPriorityCombo.Items[0];
         GpuPreferenceCombo.SelectedItem = GpuPreferenceCombo.Items.OfType<System.Windows.Controls.ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == _settings.GpuPreference.ToString()) ?? GpuPreferenceCombo.Items[0];
+        LoadPerformancePresetsUi();
 
         LocalOnlyModeCheck.IsChecked = _settings.EnableLocalOnlyMode;
         AutoCheckUpdatesCheck.IsChecked = _settings.AutoCheckUpdates;
@@ -434,6 +443,7 @@ public partial class SettingsWindow : Window
         TooltipHelper.SetLocalizedTooltip(CheckUpdateButton, "tooltip.checkUpdates");
         TooltipHelper.SetLocalizedTooltip(DownloadUpdateButton, "tooltip.downloadUpdate");
         TooltipHelper.SetLocalizedTooltip(ViewChangelogButton, "tooltip.viewChangelog");
+        TooltipHelper.SetLocalizedTooltip(ChangelogBackButton, "setup.btn.back");
         TooltipHelper.SetLocalizedTooltip(ReportBugButton, "tooltip.reportBug");
         TooltipHelper.SetLocalizedTooltip(RequestFeatureButton, "tooltip.requestFeature");
         TooltipHelper.SetLocalizedTooltip(DiscussionButton, "tooltip.discussions");
@@ -495,20 +505,32 @@ public partial class SettingsWindow : Window
         TooltipHelper.SetLocalizedTooltip(GlassPresetCombo, "tooltip.glassPresetCombo");
     }
 
-    private void ApplyLocalization()
+    internal void ApplyLocalization()
     {
         InvalidateSearchIndex();
         PopulateBatterySources();
         LocalizeAccentColor();
         LocalizeTrayAdvanced();
+        LocalizedPresentation.Apply(this);
+        ApplySupplementalLocalization();
+
+        ApplyLocalizationHeadersAndNav();
+        ApplyLocalizationPrivacySection();
+        ApplyLocalizationAppearanceAndMediaSection();
+        ApplyLocalizationBehaviorUpdatesAndDevicesSection();
+        ApplyLocalizationSystemPerformanceAndDonatingSection();
+
+        ApplySupplementalLocalization();
+    }
+
+    private void ApplyLocalizationHeadersAndNav()
+    {
         HideCameraCheck.Content = Loc.Get("settings.hideCamera");
         HideCameraHint.Text = Loc.Get("settings.hideCamera.hint");
         ClipboardHotkeyLabel.Text = Loc.Get("settings.clipboardHotkey");
         ClipboardHotkeyHint.Text = _clipboardHotkeyError?.Invoke() ?? Loc.Get("settings.clipboardHotkey.hint");
-        LocalizedPresentation.Apply(this);
-        ApplySupplementalLocalization();
         string appVersion = GetAppVersion();
-        if (SidebarBuildVersionText != null) SidebarBuildVersionText.Text = $"Build {appVersion}";
+        if (SidebarBuildVersionText != null) SidebarBuildVersionText.Text = Loc.Get("settings.buildVersion", appVersion);
         SearchPlaceholder.Text = Loc.Get("settings.searchPlaceholder");
 
         AppearanceHeader.Text = Loc.Get("settings.appearance");
@@ -522,6 +544,7 @@ public partial class SettingsWindow : Window
         EnableSpotlightCheck.Content = Loc.Get("settings.enableSpotlight");
         EnableSpotlightHint.Text = Loc.Get("settings.enableSpotlight.hint");
         LocalizeSpotlightAiSettings();
+        LocalizeAiUsageSettings();
         LocalizeTranslationSettings();
         if (TranslationModelProgress != null)
         {
@@ -543,11 +566,15 @@ public partial class SettingsWindow : Window
         NavSystemText.Text = Loc.Get("settings.nav.system");
         NavPrivacyText.Text = Loc.Get("settings.nav.privacy");
         NavSpotlightText.Text = Loc.Get("settings.nav.spotlight");
+        NavAiUsageText.Text = Loc.Get("nav.aiUsage");
         NavAdvancedText.Text = Loc.Get("settings.nav.advanced");
         NavPerformanceText.Text = Loc.Get("settings.nav.performance");
         NavDonatingText.Text = Loc.Get("settings.nav.donating");
         NavUpdatesText.Text = Loc.Get("settings.nav.updates");
+    }
 
+    private void ApplyLocalizationPrivacySection()
+    {
         PrivacyHeader.Text = Loc.Get("settings.header.privacy");
         LocalOnlyModeCheck.Content = Loc.Get("settings.privacy.localOnly");
         LocalOnlyBadgeText.Text = Loc.Get("settings.privacy.localOnly.badge");
@@ -573,7 +600,10 @@ public partial class SettingsWindow : Window
         EnableSpotlightHistoryHint.Text = Loc.Get("settings.privacy.spotlightHistory.hint");
         ClearSpotlightHistoryButton.Content = Loc.Get("settings.privacy.clearSpotlight");
         ClearLogButton.Content = Loc.Get("settings.privacy.clearLog");
+    }
 
+    private void ApplyLocalizationAppearanceAndMediaSection()
+    {
         NavTabsLabel.Text = Loc.Get("settings.navTabs");
         NavTabsHint.Text = Loc.Get("settings.navTabs.hint");
         ResetTabOrderButton.Content = Loc.Get("settings.tab.reset");
@@ -611,6 +641,7 @@ public partial class SettingsWindow : Window
         EnableDebugModeCheck.Content = Loc.Get("settings.enableDebugMode");
         EnableDebugModeHint.Text = Loc.Get("settings.enableDebugMode.hint");
         EnableSpotifyLyricsCheck.Content = Loc.Get("settings.enableSpotifyLyrics");
+        EnableSpotifyLyricsHint.Text = Loc.Get("settings.enableSpotifyLyrics.hint");
         LyricsProviderLabel.Text = Loc.Get("settings.lyrics.providers");
         LyricsProviderHint.Text = Loc.Get("settings.lyrics.providers.hint");
         LyricsProviderHint.Tag = Loc.Get("settings.lyrics.provider.amll.desc");
@@ -649,7 +680,10 @@ public partial class SettingsWindow : Window
         DynamicIslandModeHint.Text = Loc.Get("settings.dynamicIslandMode.hint");
         EnableShadowCheck.Content = Loc.Get("settings.enableShadow");
         EnableShadowHint.Text = Loc.Get("settings.enableShadow.hint");
+    }
 
+    private void ApplyLocalizationBehaviorUpdatesAndDevicesSection()
+    {
         HoverExpandCheck.Content = Loc.Get("settings.hoverExpand");
         HoverExpandHint.Text = Loc.Get("settings.hoverExpand.hint");
         ExpandDelayLabel.Text = Loc.Get(LocKeyExpandDelay);
@@ -670,9 +704,11 @@ public partial class SettingsWindow : Window
 
         CheckUpdateButton.Content = Loc.Get("settings.checkUpdate");
         DownloadUpdateButton.Content = Loc.Get("settings.downloadInstall");
-        UpdateStatusText.Text = Loc.Get("settings.upToDate");
+        _updatePresenter.RefreshCheckStatus(_settings.EnableLocalOnlyMode);
         CurrentVersionText.Text = Loc.Get("settings.currentVersion", GetAppVersion());
         ViewChangelogButton.Content = Loc.Get("settings.btn.changelog");
+        ChangelogHeading.Text = Loc.Get("changelog.title");
+        System.Windows.Automation.AutomationProperties.SetName(ChangelogBackButton, Loc.Get("setup.btn.back"));
         ReportBugLabel.Text = Loc.Get("settings.reportBug");
         ReportBugHint.Text = Loc.Get("settings.reportBug.hint");
         RequestFeatureLabel.Text = Loc.Get("settings.requestFeature");
@@ -692,18 +728,17 @@ public partial class SettingsWindow : Window
         VisualizerAudioLabel.Text = Loc.Get("settings.visualizerAudio");
         VisualizerAudioHint.Text = Loc.Get("settings.visualizerAudio.hint");
         if (IsLoaded)
-        {
             Dispatcher.BeginInvoke(new Action(() => LoadVisualizerAudioDevices().SafeFireAndForget("SETTINGS-VIS-AUDIO")), DispatcherPriority.Background);
-        }
         else
-        {
             SetVisualizerAudioDevicePlaceholder();
-        }
 
         ResetButton.Content = Loc.Get("settings.btn.reset");
         ApplyButton.Content = Loc.Get("settings.btn.apply");
         SaveButton.Content = Loc.Get("settings.btn.save");
+    }
 
+    private void ApplyLocalizationSystemPerformanceAndDonatingSection()
+    {
         HelloGreetingCheck.Content = Loc.Get("settings.helloGreeting");
         HelloGreetingHint.Text = Loc.Get("settings.helloGreeting.hint");
         AutoStartCheck.Content = Loc.Get("settings.autoStart");
@@ -712,6 +747,8 @@ public partial class SettingsWindow : Window
         InteractionSoundsHint.Text = Loc.Get("settings.interactionSounds.hint");
         InteractionSoundVolumeSlider.Label = Loc.Get("settings.interactionSoundVolume");
         InteractionSoundVolumeSlider.Description = Loc.Get("settings.interactionSoundVolume.hint");
+        AllowNotchDraggingCheck.Content = Loc.Get("settings.allowNotchDragging");
+        AllowNotchDraggingHint.Text = Loc.Get("settings.allowNotchDragging.hint");
         StayBehindWindowsCheck.Content = Loc.Get("settings.stayBehindWindows");
         StayBehindWindowsHint.Text = Loc.Get("settings.stayBehindWindows.hint");
         HideOnExclusiveFullscreenCheck.Content = Loc.Get("settings.hideExclusiveFs");
@@ -763,8 +800,6 @@ public partial class SettingsWindow : Window
         OtherProjectsSubtext.Text = Loc.Get("settings.donating.otherProjects.subtitle");
         ProjectVertexDesc.Text = Loc.Get("settings.donating.otherProjects.vertex.desc");
         ProjectScrollVDesc.Text = Loc.Get("settings.donating.otherProjects.scrollv.desc");
-
-        ApplySupplementalLocalization();
     }
 
     internal void SetSpotlightHotkeyStatus(bool isRegistered)
@@ -838,8 +873,7 @@ public partial class SettingsWindow : Window
         if (IncludePrereleaseUpdatesCheck != null) IncludePrereleaseUpdatesCheck.IsEnabled = !isLocalOnly;
         if (EnableOnlineArtworkCheck != null) EnableOnlineArtworkCheck.IsEnabled = !isLocalOnly;
         if (EnableOnlineLyricsCheck != null) EnableOnlineLyricsCheck.IsEnabled = !isLocalOnly;
-        if (CheckUpdateButton != null) CheckUpdateButton.IsEnabled = !isLocalOnly;
-        if (DownloadUpdateButton != null) DownloadUpdateButton.IsEnabled = !isLocalOnly;
+        _updatePresenter.RefreshCheckStatus(isLocalOnly);
     }
 
     private void UpdatePrivacyNetworkSection(bool isLocalOnly, bool animate)
@@ -850,22 +884,7 @@ public partial class SettingsWindow : Window
         PrivacyNetworkSection.IsEnabled = !isLocalOnly;
         PrivacyNetworkSection.IsHitTestVisible = !isLocalOnly;
 
-        double targetOpacity = isLocalOnly ? 0.35 : 1.0;
-        if (animate && !AnimationConfig.ReduceMotion)
-        {
-            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            var opacityAnim = new DoubleAnimation(PrivacyNetworkSection.Opacity, targetOpacity, TimeSpan.FromMilliseconds(260))
-            {
-                EasingFunction = ease
-            };
-            Timeline.SetDesiredFrameRate(opacityAnim, AnimationConfig.TargetFps);
-            PrivacyNetworkSection.BeginAnimation(OpacityProperty, opacityAnim);
-        }
-        else
-        {
-            PrivacyNetworkSection.BeginAnimation(OpacityProperty, null);
-            PrivacyNetworkSection.Opacity = targetOpacity;
-        }
+        AnimateSettingsOpacity(PrivacyNetworkSection, isLocalOnly ? 0.35 : 1.0, animate, 260);
     }
 
     private void UpdateLocalOnlyActiveBadge(bool isLocalOnly, bool animate)
@@ -965,26 +984,10 @@ public partial class SettingsWindow : Window
         element.IsEnabled = enabled;
         element.IsHitTestVisible = enabled;
 
-        double targetOpacity = enabled ? 1.0 : disabledOpacity;
-
-        if (animate && !_isLoadingSettings && !AnimationConfig.ReduceMotion)
-        {
-            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            var anim = new DoubleAnimation(element.Opacity, targetOpacity, TimeSpan.FromMilliseconds(240))
-            {
-                EasingFunction = ease
-            };
-            Timeline.SetDesiredFrameRate(anim, AnimationConfig.TargetFps);
-            element.BeginAnimation(OpacityProperty, anim);
-        }
-        else
-        {
-            element.BeginAnimation(OpacityProperty, null);
-            element.Opacity = targetOpacity;
-        }
+        AnimateSettingsOpacity(element, enabled ? 1.0 : disabledOpacity, animate);
     }
 
-    private void AnimateCollapsibleRow(FrameworkElement? element, bool visible, bool animate = false)
+    internal void AnimateCollapsibleRow(FrameworkElement? element, bool visible, bool animate = false)
     {
         if (element == null) return;
 
@@ -1003,28 +1006,23 @@ public partial class SettingsWindow : Window
         element.Visibility = Visibility.Visible;
         element.IsEnabled = true;
         element.IsHitTestVisible = true;
+        AnimateSettingsOpacity(element, 1.0, animate);
 
         if (animate && !_isLoadingSettings && !AnimationConfig.ReduceMotion)
         {
             var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            var fadeIn = new DoubleAnimation(element.Opacity < 0.1 ? 0.0 : element.Opacity, 1.0, TimeSpan.FromMilliseconds(240))
-            {
-                EasingFunction = ease
-            };
-            Timeline.SetDesiredFrameRate(fadeIn, AnimationConfig.TargetFps);
-            element.BeginAnimation(OpacityProperty, fadeIn);
-
             if (element.RenderTransform is TranslateTransform tt)
             {
-                var slideIn = new DoubleAnimation(-6, 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = ease };
+                tt.BeginAnimation(TranslateTransform.YProperty, null);
+                tt.Y = 0;
+                var slideIn = new DoubleAnimation(-6, 0, TimeSpan.FromMilliseconds(240))
+                { EasingFunction = ease, FillBehavior = FillBehavior.Stop };
                 Timeline.SetDesiredFrameRate(slideIn, AnimationConfig.TargetFps);
                 tt.BeginAnimation(TranslateTransform.YProperty, slideIn);
             }
         }
         else
         {
-            element.BeginAnimation(OpacityProperty, null);
-            element.Opacity = 1.0;
             if (element.RenderTransform is TranslateTransform tt)
             {
                 tt.BeginAnimation(TranslateTransform.YProperty, null);
@@ -1035,15 +1033,19 @@ public partial class SettingsWindow : Window
 
     private void CollapseCollapsibleRow(FrameworkElement element, bool animate)
     {
+        double from = element.Opacity;
         element.IsEnabled = false;
         element.IsHitTestVisible = false;
+        element.BeginAnimation(OpacityProperty, null);
+        element.Opacity = 0.0;
 
         if (animate && !_isLoadingSettings && !AnimationConfig.ReduceMotion && element.Visibility == Visibility.Visible)
         {
             var ease = new QuadraticEase { EasingMode = EasingMode.EaseOut };
-            var fadeOut = new DoubleAnimation(element.Opacity, 0.0, TimeSpan.FromMilliseconds(180))
+            var fadeOut = new DoubleAnimation(from, 0.0, TimeSpan.FromMilliseconds(180))
             {
-                EasingFunction = ease
+                EasingFunction = ease,
+                FillBehavior = FillBehavior.Stop
             };
             fadeOut.Completed += (_, _) =>
             {
@@ -1055,8 +1057,6 @@ public partial class SettingsWindow : Window
         }
         else
         {
-            element.BeginAnimation(OpacityProperty, null);
-            element.Opacity = 0.0;
             element.Visibility = Visibility.Collapsed;
         }
     }
@@ -1221,6 +1221,7 @@ public partial class SettingsWindow : Window
 
     private void ApplySupplementalLocalization()
     {
+        ShowScriptJobsInNotchCheck.Content = Loc.Get("settings.showScriptJobsInNotch");
         Language = System.Windows.Markup.XmlLanguage.GetLanguage(Loc.GetCulture().IetfLanguageTag);
         Title = Loc.Get("settings.windowTitle");
         ApplyTooltips();
@@ -1246,6 +1247,7 @@ public partial class SettingsWindow : Window
 
     private void ApplyGpuAndProcessLocalization()
     {
+        ApplyPerformancePresetsLocalization();
         if (GpuPreferenceLabel != null) GpuPreferenceLabel.Text = Loc.Get("settings.gpuPreference");
         if (GpuPreferenceHint != null) GpuPreferenceHint.Text = Loc.Get("settings.gpuPreference.hint");
         if (GpuPreferenceRestartNote != null) GpuPreferenceRestartNote.Text = Loc.Get("settings.gpuPreference.restart");
@@ -1297,8 +1299,32 @@ public partial class SettingsWindow : Window
     private void DownloadUpdate_Click(object sender, RoutedEventArgs e)
         => _updatePresenter.DownloadUpdateAsync().SafeFireAndForget("SETTINGS-UPDATE-DOWNLOAD");
 
-    private void ViewChangelog_Click(object sender, RoutedEventArgs e)
-        => _updatePresenter.ShowChangelog();
+    private async void ViewChangelog_Click(object sender, RoutedEventArgs e)
+    {
+        StopSmoothScroll();
+        SettingsPageWave.Capture(SettingsPane, Orientation.Horizontal, forward: true);
+        ResetProgressiveBlurElements(isMenuList: false);
+        SettingsScrollViewer.Visibility = Visibility.Collapsed;
+        ChangelogPage.Visibility = Visibility.Visible;
+        ChangelogBackButton.Focus();
+        await _updatePresenter.LoadChangelogAsync(Changelog.LoadAsync);
+    }
+
+    private void ChangelogBack_Click(object sender, RoutedEventArgs e)
+    {
+        HideChangelog(turnBack: true);
+        ViewChangelogButton.Focus();
+    }
+
+    private void HideChangelog(bool turnBack = false)
+    {
+        if (ChangelogPage.Visibility != Visibility.Visible) return;
+        if (turnBack) SettingsPageWave.Capture(SettingsPane, Orientation.Horizontal, forward: false);
+        ResetProgressiveBlurElements(isMenuList: false);
+        ChangelogPage.Visibility = Visibility.Collapsed;
+        SettingsScrollViewer.Visibility = Visibility.Visible;
+        if (turnBack) AnimateActivePanel(_activeNav);
+    }
 
     private void PanelDonating_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
         => UpdateAnimatedStarStoryboard();

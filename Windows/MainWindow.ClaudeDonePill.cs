@@ -109,9 +109,10 @@ public partial class MainWindow
                 if (_claudeDone.Count == 0 || _cleanedUp)
                 {
                     _claudeDoneReturnTimer.Stop();
+                    QueueScriptJobPill();
                     return;
                 }
-                if (!IsCodexJobPillShown && (_isClaudeNotificationVisible || _compactPillArbiter.ActiveSlot != CompactPillSlot.None)) return;
+                if (!IsJobPillShown && (_isClaudeNotificationVisible || _compactPillArbiter.ActiveSlot != CompactPillSlot.None)) return;
                 ShowClaudeDonePill();
             };
         }

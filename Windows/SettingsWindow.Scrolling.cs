@@ -40,7 +40,9 @@ public partial class SettingsWindow
         out byte outSettled);
 
     private double _scrollVelocity;
+    internal double ScrollTarget => _scrollTarget;
     private double _scrollTarget;
+    internal bool IsScrollAnimating => _isScrollAnimating;
     private bool _isScrollAnimating;
     private long _lastScrollTickTimestamp;
     private const double ScrollFriction = 0.82;
@@ -62,10 +64,21 @@ public partial class SettingsWindow
             return true;
         }
 
-        return FindVisualChildren<ComboBox>(this).Any(c => c.IsDropDownOpen);
+        // An open WPF ComboBox captures the mouse. Walking the full settings
+        // tree here used to run on every wheel notch while the page was moving.
+        return FindVisualAncestor<ComboBox>(Mouse.Captured as DependencyObject) is { IsDropDownOpen: true };
     }
 
-    private void SettingsScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    private void SettingsScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        UpdateAiUsageStickyPreview();
+        if (e.OriginalSource == SettingsScrollViewer &&
+            (e.ViewportHeightChange != 0 || e.ViewportWidthChange != 0 || e.ExtentHeightChange != 0 ||
+             e.VerticalOffset >= _nextRevealBelow || e.VerticalOffset <= _nextRevealAbove))
+            RevealVisibleComponents();
+    }
+
+    internal void SettingsScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (IsAnyComboBoxDropDownOpen())
         {

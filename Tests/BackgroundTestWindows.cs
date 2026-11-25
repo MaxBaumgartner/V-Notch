@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -7,6 +8,14 @@ namespace VNotch.Tests;
 
 internal static class BackgroundTestWindows
 {
+    internal static string OrchestraDirectory { get; } =
+        Path.Combine(Path.GetTempPath(), "vnotch-orchestra-" + Guid.NewGuid().ToString("N"));
+
+    // CodexAccounts caches this setting, so establish it before any test constructs a window or watcher.
+    [ModuleInitializer]
+    internal static void IsolateOrchestra() =>
+        Environment.SetEnvironmentVariable("ORCHESTRA_STATE_DIR", OrchestraDirectory);
+
     private const int GwlExStyle = -20;
     private const int BackgroundStyles = 0x08000000 | 0x00000080 | 0x00000020; // NOACTIVATE, TOOLWINDOW, TRANSPARENT
     private const int AppWindowStyle = 0x00040000;
@@ -18,6 +27,9 @@ internal static class BackgroundTestWindows
         EnsureApplicationResources();
         if (_initialized) return;
         if (DesktopTestMode.Enabled) { _initialized = true; return; }
+        // The raw-input HWND is created on a separate STA. It must not subscribe
+        // to physical clicks from the user's desktop during background tests.
+        VNotch.Services.InputMonitorService.InitializeWorkerThread = VNotch.TestSupport.BackgroundTestDesktop.AttachCurrentThread;
         // Run before any test action constructs a production window. This metadata exists
         // only in the testhost process; the application assembly stays unchanged.
         foreach (var windowType in typeof(MainWindow).Assembly.GetTypes()

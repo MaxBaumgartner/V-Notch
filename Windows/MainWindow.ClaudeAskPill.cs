@@ -18,20 +18,20 @@ public partial class MainWindow
 
     // When Claude Code asks (a tool to allow, or a question), the closed notch shows the session's pill and keeps
     // it until it is settled, here or in the terminal. Swiped right it allows, swiped left it denies: the pill
-    // follows the finger and names the outcome once far enough. A question is pulled down to answer it in the
-    // Claude tab, where its options are. A tap opens that tab too. A plan to read still opens the tab by itself.
+    // follows the finger and names the outcome once far enough. Pulling a question down unfolds its options.
+    // A tap opens the Claude tab. A plan to read still opens the tab by itself.
     private const double AskSwipeDistance = 64;
     private const double AskPullDistance = 34;
     private static readonly Brush AskAllowBrush = FrozenBrush(0xA6, 0xC9, 0xA0);
     private static readonly Brush AskDenyBrush = FrozenBrush(0xD9, 0x8A, 0x84);
 
-    private enum AskGesture { None, Pressed, Swipe, Pull }
+    private enum AskGesture { None, Pressed, Swipe, Pull, SheetPressed, SheetSwipe }
 
     private ClaudePermissionRequest? _askRequest;
     private string _askStatus = "";
-    private Brush? _askStatusBrush;
     private AskGesture _askGesture;
     private Point _askGestureStart;
+    private DispatcherTimer? _askSettledTimer;
 
     private bool IsAskPillShown => _askRequest != null && _isClaudeNotificationVisible;
 
@@ -49,7 +49,6 @@ public partial class MainWindow
         _claudeNotificationTimer?.Stop();
         _askRequest = request;
         _askStatus = status;
-        _askStatusBrush ??= ClaudeNotificationStatus.Foreground;
         return true;
     }
 
@@ -68,18 +67,30 @@ public partial class MainWindow
     /// <summary>Settled elsewhere (terminal, the tab): the pill goes, or moves on to the next one waiting.</summary>
     private void SyncClaudeAskPill()
     {
-        if (_askRequest == null || _claudeTracker == null) return;
-        if (_claudeTracker.GetPending().Any(r => r.Id == _askRequest.Id)) return;
+        if ((_askRequest == null && _askSheetRequest == null) || _claudeTracker == null) return;
+        var pending = _claudeTracker.GetPending();
+        if (_askSheetRequest != null && !pending.Contains(_askSheetRequest))
+        {
+            _askSheetRequest = null;
+            _askSheetAnswers = null;
+        }
+        if (_askRequest == null || pending.Contains(_askRequest)) return;
+        if (_askGesture != AskGesture.None) EndAskGesture();
         _askRequest = null;
-        if (!_isClaudeNotificationVisible || _askGesture != AskGesture.None) return;
+        FoldAskSheet(AdvanceAskPill);
+    }
+
+    private void AdvanceAskPill()
+    {
+        if (_askRequest != null || !_isClaudeNotificationVisible) return;
         if (NewestAskForPill() is { } next && TryShowClaudeAskPill(next)) return;
         AnimateClaudeNotificationOut();
     }
 
     private bool TryBeginAskGesture(MouseButtonEventArgs e)
     {
-        if (!IsAskPillShown || _isExpanded || _isAnimating || e.ChangedButton != MouseButton.Left) return false;
-        _askGesture = AskGesture.Pressed;
+        if ((!IsAskPillShown && _askSheet == null) || _isExpanded || _isAnimating || e.ChangedButton != MouseButton.Left) return false;
+        _askGesture = _askSheet == null ? AskGesture.Pressed : AskGesture.SheetPressed;
         _askGestureStart = e.GetPosition(this);
         NotchWrapper.CaptureMouse();
         return true;
@@ -88,21 +99,28 @@ public partial class MainWindow
     private bool HandleAskGestureMove(MouseEventArgs e)
     {
         if (_askGesture == AskGesture.None) return false;
-        if (e.LeftButton != MouseButtonState.Pressed || _askRequest == null)
+        if (e.LeftButton != MouseButtonState.Pressed)
         {
             EndAskGesture();
             return true;
         }
-        Vector moved = e.GetPosition(this) - _askGestureStart;
+        MoveAskGesture(e.GetPosition(this) - _askGestureStart);
+        return true;
+    }
+
+    private void MoveAskGesture(Vector moved)
+    {
+        if (_askGesture == AskGesture.SheetPressed && moved.Length > CopiedGestureSlop)
+            _askGesture = AskGesture.SheetSwipe;
         if (_askGesture == AskGesture.Pressed && moved.Length > CopiedGestureSlop)
         {
-            bool question = _askRequest.Questions is { Count: > 0 };
+            bool question = _askRequest?.Questions is { Count: > 0 };
             if (question && moved.Y > Math.Abs(moved.X)) _askGesture = AskGesture.Pull;
             else if (!question && Math.Abs(moved.X) > Math.Abs(moved.Y)) _askGesture = AskGesture.Swipe;
             else
             {
                 EndAskGesture();
-                return true;
+                return;
             }
         }
 
@@ -114,7 +132,7 @@ public partial class MainWindow
             SetAskOffset(Math.Sign(x) * follow, 0);
             bool armed = reach >= AskSwipeDistance;
             CrossFadeText(ClaudeNotificationStatus, !armed ? _askStatus : Loc.Get(x > 0 ? "control.claude.allow" : "control.claude.deny"));
-            ClaudeNotificationStatus.Foreground = !armed ? _askStatusBrush : x > 0 ? AskAllowBrush : AskDenyBrush;
+            ClaudeNotificationStatus.Foreground = !armed ? DefaultPillStatus : x > 0 ? AskAllowBrush : AskDenyBrush;
         }
         else if (_askGesture == AskGesture.Pull)
         {
@@ -122,46 +140,47 @@ public partial class MainWindow
             SetAskOffset(0, Math.Min(y * 0.35, 12));
             CrossFadeText(ClaudeNotificationStatus, y >= AskPullDistance ? Loc.Get("claude.pill.answer") : _askStatus);
         }
-        return true;
     }
 
     private bool HandleAskGestureUp(MouseButtonEventArgs e)
     {
         if (_askGesture == AskGesture.None) return false;
-        Vector moved = e.GetPosition(this) - _askGestureStart;
+        CompleteAskGesture(e.GetPosition(this) - _askGestureStart, e.ClickCount);
+        return true;
+    }
+
+    private void CompleteAskGesture(Vector moved, int clickCount)
+    {
         var gesture = _askGesture;
         var request = _askRequest;
         EndAskGesture();
-        if (request == null || _claudeTracker == null) return true;
 
-        if (gesture == AskGesture.Pressed)
+        if (gesture is AskGesture.Pressed or AskGesture.SheetPressed)
         {
-            ToggleNotchFromClick(e.ClickCount);
-            return true;
+            ToggleNotchFromClick(clickCount);
+            return;
         }
+        if (gesture == AskGesture.SheetSwipe && IsAskSheetPullUp(moved)) FoldAskSheet();
+        if (request == null || _claudeTracker == null) return;
         if (gesture == AskGesture.Swipe && Math.Abs(moved.X) >= AskSwipeDistance)
         {
             bool allow = moved.X > 0;
             if (_claudeTracker.Decide(request.Id, allow ? ClaudeDecision.Allow : ClaudeDecision.Deny))
                 PlayAskSettled(allow);
-            return true;
         }
-        if (gesture == AskGesture.Pull && moved.Y >= AskPullDistance)
-        {
-            OpenClaudeTabFromPill();
-            return true;
-        }
-        SpringAskBack();
-        return true;
+        else if (gesture == AskGesture.Pull && moved.Y >= AskPullDistance) OpenAskSheet(request);
     }
 
     private void EndAskGesture()
     {
         _askGesture = AskGesture.None;
         if (NotchWrapper.IsMouseCaptured) NotchWrapper.ReleaseMouseCapture();
-        CrossFadeText(ClaudeNotificationStatus, _askStatus);
-        if (_askStatusBrush != null) ClaudeNotificationStatus.Foreground = _askStatusBrush;
-        SpringAskBack();
+        if (_askSheet == null)
+        {
+            CrossFadeText(ClaudeNotificationStatus, _askStatus);
+            ClaudeNotificationStatus.Foreground = DefaultPillStatus;
+            SpringAskBack();
+        }
     }
 
     private void SetAskOffset(double x, double y)
@@ -185,17 +204,24 @@ public partial class MainWindow
         // A small directional impulse settles at home and carries an interrupted swipe's speed.
         Motion.To(ClaudeNotificationTranslate, TranslateTransform.XProperty, 0, Motion.Press,
             velocity: Motion.VelocityOf(ClaudeNotificationTranslate, TranslateTransform.XProperty) + (allowed ? 1 : -1) * 220);
-        // Read it, then the next one waiting or the pill goes.
-        var linger = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(900) };
-        linger.Tick += (_, _) =>
+        LingerAskSettled();
+    }
+
+    private void LingerAskSettled()
+    {
+        _askSettledTimer ??= CreateAskSettledTimer();
+        _askSettledTimer.Start();
+    }
+
+    private DispatcherTimer CreateAskSettledTimer()
+    {
+        var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(900) };
+        timer.Tick += (_, _) =>
         {
-            linger.Stop();
-            if (_askStatusBrush != null) ClaudeNotificationStatus.Foreground = _askStatusBrush;
-            if (_askRequest != null || !_isClaudeNotificationVisible) return;
-            if (NewestAskForPill() is { } next && TryShowClaudeAskPill(next)) return;
-            AnimateClaudeNotificationOut();
+            timer.Stop();
+            AdvanceAskPill();
         };
-        linger.Start();
+        return timer;
     }
 
     #endregion

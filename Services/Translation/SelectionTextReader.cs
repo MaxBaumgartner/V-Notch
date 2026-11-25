@@ -38,9 +38,7 @@ internal static partial class SelectionTextReader
         public void Dispose() => Native.Dispose();
     }
 
-    internal static Result? Read(IntPtr window, AutomationElement? eventElement, bool manual, out bool protectedInput,
-        AutomationElement? previousElement = null, AutomationElement? rootElement = null, bool allowOwnProcess = false,
-        NativeSelectionState? previousSelection = null)
+    internal static Result? Read(IntPtr window, AutomationElement? eventElement, bool manual, out bool protectedInput, bool allowOwnProcess = false, NativeSelectionState? previousSelection = null)
     {
         int[]? eventId = null;
         try { eventId = eventElement?.GetRuntimeId(); }
@@ -57,7 +55,7 @@ internal static partial class SelectionTextReader
         if (nonempty.Length == 0) return null;
         string text = string.Join("\n", nonempty);
         // One extra character signals truncation without reading an unbounded UIA range.
-        return text[..Math.Min(text.Length, TranslationInput.MaxCharacters + 1)];
+        return TranslationInput.Prefix(text, TranslationInput.MaxCharacters + 1);
     }
 
     internal static string SanitizeSelectionPart(string? part)

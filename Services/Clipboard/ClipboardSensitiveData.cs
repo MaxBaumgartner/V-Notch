@@ -25,14 +25,20 @@ internal static partial class ClipboardSensitiveData
     internal const int DetectorVersion = 2;
     internal const string Mask = "••••••••";
 
-    internal static string CreateLayoutMask(string text)
+    internal static string CreateLayoutMask(string text) => string.IsNullOrEmpty(text) ? string.Empty : Mask;
+
+    internal static bool IsSensitiveFileName(string? pathOrName)
     {
-        ReadOnlySpan<char> src = (text ?? string.Empty).AsSpan();
-        Span<char> buf = stackalloc char[8];
-        if (vn_clipboard_sensitive_format_mask(src, src.Length, buf, buf.Length, out int len) == 0 && len == 8)
-            return Mask;
-        return Mask;
+        if (string.IsNullOrWhiteSpace(pathOrName)) return false;
+        ReadOnlySpan<char> span = pathOrName.AsSpan();
+        return vn_clipboard_is_secret_filename(span, span.Length, out byte isSecret) == 0 && isSecret != 0;
     }
+
+    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int vn_clipboard_is_secret_filename(
+        ReadOnlySpan<char> pathPtr,
+        int pathLen,
+        out byte outIsSecret);
 
     [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_clipboard_sensitive_analyze(
@@ -45,22 +51,14 @@ internal static partial class ClipboardSensitiveData
         out int outReason,
         out int outConfidence);
 
-    [LibraryImport(NativeDll, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int vn_clipboard_sensitive_format_mask(
-        ReadOnlySpan<char> textPtr,
-        int textLen,
-        Span<char> outMask,
-        int outCap,
-        out int outLen);
-
     internal static bool IsSensitive(string text) => Analyze(text).ShouldMask;
     internal static bool IsSensitive(string text, string sourceApp, string sourceExecutable) =>
         Analyze(text, sourceApp, sourceExecutable).ShouldMask;
 
     internal static ClipboardSensitivityResult Analyze(string text, string sourceApp = "", string sourceExecutable = "")
     {
-        if (text == null) return default;
-        ReadOnlySpan<char> t = text.AsSpan();
+        if (text == null && string.IsNullOrEmpty(sourceApp) && string.IsNullOrEmpty(sourceExecutable)) return default;
+        ReadOnlySpan<char> t = (text ?? string.Empty).AsSpan();
         ReadOnlySpan<char> a = (sourceApp ?? string.Empty).AsSpan();
         ReadOnlySpan<char> e = (sourceExecutable ?? string.Empty).AsSpan();
         if (vn_clipboard_sensitive_analyze(t, t.Length, a, a.Length, e, e.Length, out int reason, out int confidence) != 0)

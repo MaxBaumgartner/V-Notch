@@ -329,10 +329,13 @@ public sealed class GreetingAcceptanceTests
             // The fixture's provider owns the worker and drains queued saves before deleting its directory.
             services.AddSingleton<ISettingsService>(_ => settings);
             services.AddSingleton(_ => new VNotch.Services.Clipboard.ClipboardHistoryStore(System.IO.Path.Combine(_directory, "clipboard")));
+            services.AddSingleton<MainWindow>(provider => ActivatorUtilities.CreateInstance<MainWindow>(
+                provider, System.IO.Path.Combine(_directory, "jobs")));
             configureServices?.Invoke(services);
             _provider = services.BuildServiceProvider();
             Window = _provider.GetRequiredService<MainWindow>();
         }
+        internal string ScriptJobsDirectory => System.IO.Path.Combine(_directory, "jobs");
         internal Task ShowGreetingAsync(CancellationToken ct = default)
         {
             Window.ShowActivated = false;

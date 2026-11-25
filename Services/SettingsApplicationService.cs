@@ -5,7 +5,7 @@ using VNotch.Models;
 
 namespace VNotch.Services;
 
-public sealed class SettingsApplicationService : ISettingsApplicationService
+public sealed partial class SettingsApplicationService : ISettingsApplicationService
 {
     private static bool IsValidFilePath(string? filePath) =>
         filePath != null && filePath.Any(c => c > ' ' && c != '\u00a0' && c != '\ufeff');
@@ -13,6 +13,11 @@ public sealed class SettingsApplicationService : ISettingsApplicationService
     private readonly ISettingsService _settingsService;
     private readonly IStartupManager _startupManager;
     private readonly SemaphoreSlim _applyGate = new(1, 1);
+
+    internal string? PresetBackupDirectory =>
+        (_settingsService as SettingsService)?.AppFolder is { Length: > 0 } appFolder
+            ? System.IO.Path.Combine(appFolder, "Presets")
+            : null;
 
     public event EventHandler<NotchSettings>? SettingsApplied;
 

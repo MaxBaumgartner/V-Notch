@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using VNotch.Services;
+using VNotch.Models;
 using static VNotch.Services.Win32Interop;
 
 namespace VNotch.Controllers;
@@ -9,6 +10,7 @@ namespace VNotch.Controllers;
 public sealed class OverlayWindowController : IDisposable
 {
     private const double HorizontalPadding = 96;
+    private const double VerticalPadding = 80;
     private readonly Window _window;
     private readonly NotchShellState _state;
     private readonly Func<bool> _isVisible;
@@ -21,6 +23,9 @@ public sealed class OverlayWindowController : IDisposable
     private bool _displayUpdatePending;
     private bool _manualPosition;
     private System.Windows.Threading.DispatcherTimer? _placementCheck;
+    private bool _hasCustomPosition;
+    private System.Drawing.Rectangle _screenBounds;
+    private double _placementScale;
     public Func<System.Windows.Forms.Screen>? TargetScreen { get; set; }
     public Func<bool>? IsZOrderSuspended { get; set; }
 
@@ -92,12 +97,15 @@ public sealed class OverlayWindowController : IDisposable
         if (enabled) _window.Activate();
     }
 
-    public void PositionAtTop(double surfaceWidth, double expandedHeight)
+    public void PositionAtTop(double surfaceWidth, double expandedHeight) =>
+        PositionOnScreen(surfaceWidth, expandedHeight, null, default);
+
+    internal void PositionOnScreen(double surfaceWidth, double expandedHeight, NotchPosition? position, Size notchSize)
     {
         var screen = TargetScreen?.Invoke() ?? System.Windows.Forms.Screen.FromHandle(_state.Hwnd);
         double dpiScale = MonitorSelection.GetScale(screen);
         double widthDip = surfaceWidth + HorizontalPadding;
-        double heightDip = expandedHeight + 80;
+        double heightDip = expandedHeight + VerticalPadding;
         if (!double.IsFinite(widthDip) || widthDip <= 0) throw new ArgumentOutOfRangeException(nameof(surfaceWidth));
         if (!double.IsFinite(heightDip) || heightDip <= 0) throw new ArgumentOutOfRangeException(nameof(expandedHeight));
         int screenLeft = screen.Bounds.Left;
@@ -110,6 +118,10 @@ public sealed class OverlayWindowController : IDisposable
         _state.FixedY = screen.Bounds.Top;
         _state.WindowWidth = bounds.Width;
         _state.WindowHeight = bounds.Height;
+        _screenBounds = screen.Bounds;
+        _placementScale = dpiScale;
+        _hasCustomPosition = position != null;
+        if (position != null) SetCustomOrigin(position, notchSize);
         _state.HasFixedBounds = true;
         _manualPosition = false;
         StartPlacementCheck();
@@ -126,6 +138,31 @@ public sealed class OverlayWindowController : IDisposable
         ApplyPreferredZOrder();
     }
 
+    private void SetCustomOrigin(NotchPosition position, Size notchSize)
+    {
+        var anchor = position.Resolve(_screenBounds,
+            (int)Math.Ceiling(notchSize.Width * _placementScale),
+            (int)Math.Ceiling(notchSize.Height * _placementScale));
+        _state.FixedX = anchor.X - _state.WindowWidth / 2;
+        _state.FixedY = anchor.Y;
+    }
+
+    internal bool FitCustomPosition(NotchPosition position, Size notchSize)
+    {
+        if (_manualPosition || !_state.HasFixedBounds || _screenBounds.IsEmpty) return false;
+        var previous = (_state.FixedX, _state.FixedY);
+        SetCustomOrigin(position, notchSize);
+        if (previous == (_state.FixedX, _state.FixedY)) return false;
+        ApplyFixedBounds();
+        return true;
+    }
+
+    public void SetInitialSize(double surfaceWidth, double notchHeight)
+    {
+        _window.Width = surfaceWidth + HorizontalPadding;
+        _window.Height = notchHeight + VerticalPadding;
+    }
+
     public void ResizeHeight(double heightDip)
     {
         if (!double.IsFinite(heightDip) || heightDip <= 0) throw new ArgumentOutOfRangeException(nameof(heightDip));
@@ -135,7 +172,7 @@ public sealed class OverlayWindowController : IDisposable
     }
 
     // A display change can arrive before Windows has settled (sleep, docking, primary swap), or not reach
-    // us at all. Every few seconds compare where the notch sits with where it belongs and re-centre if not.
+    // us at all. Reapply placement when the target display changes after the last update.
     private void StartPlacementCheck()
     {
         if (_placementCheck != null) return;
@@ -150,6 +187,13 @@ public sealed class OverlayWindowController : IDisposable
             return;
         var screen = TargetScreen?.Invoke() ?? System.Windows.Forms.Screen.FromHandle(_state.Hwnd);
         var b = screen.Bounds;
+        if (_hasCustomPosition)
+        {
+            if (b != _screenBounds || MonitorSelection.GetScale(screen) != _placementScale)
+                _onDisplayChanged();
+            return;
+        }
+
         int expectedX = b.Left + (b.Width - _state.WindowWidth) / 2;
         if (expectedX == _state.FixedX && b.Top == _state.FixedY)
             return;
@@ -168,7 +212,7 @@ public sealed class OverlayWindowController : IDisposable
 
     public void ResetToCenteredTop(double widthDip, double heightDip)
     {
-        PositionAtTop(Math.Max(600, widthDip - HorizontalPadding), Math.Max(200, heightDip - 80));
+        PositionAtTop(Math.Max(600, widthDip - HorizontalPadding), Math.Max(200, heightDip - VerticalPadding));
     }
 
     public void ReassertBounds()

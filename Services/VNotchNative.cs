@@ -3,47 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace VNotch.Services;
 
-public enum VnMarkdownBlockKind : byte
-{
-    Empty = 0,
-    Heading = 1,
-    HorizontalRule = 2,
-    TableRow = 3,
-    TableSeparator = 4,
-    Blockquote = 5,
-    ChecklistItem = 6,
-    BulletItem = 7,
-    NumberedItem = 8,
-    Paragraph = 9,
-}
-
-public enum VnMarkdownInlineKind : byte
-{
-    Text = 0,
-    Bold = 1,
-    Italic = 2,
-    Code = 3,
-    Link = 4,
-    Url = 5,
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct VnMarkdownBlockToken
-{
-    public byte Kind;
-    public byte Level;
-    public byte IsChecked;
-    public byte HardBreak;
-    public int TextStart;
-    public int TextLen;
-    public int MarkerStart;
-    public int MarkerLen;
-
-    public readonly VnMarkdownBlockKind BlockKind => (VnMarkdownBlockKind)Kind;
-    public readonly bool Checked => IsChecked != 0;
-    public readonly bool HasHardBreak => HardBreak != 0;
-}
-
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
 public struct VnMarkdownSlice
 {
@@ -51,135 +10,162 @@ public struct VnMarkdownSlice
     public int Len;
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct VnMarkdownInlineToken
-{
-    public byte Kind;
-    public int TextStart;
-    public int TextLen;
-    public int AuxStart;
-    public int AuxLen;
-
-    public readonly VnMarkdownInlineKind InlineKind => (VnMarkdownInlineKind)Kind;
-}
-
 public static partial class VNotchNative
 {
-    public const int VN_OK = 0;
-    public const int VN_ERR_INVALID_ARG = -1;
-    public const int VN_ERR_BUFFER_TOO_SMALL = -2;
-    public const int VN_ERR_FAIL = -3;
+    private const string DllName = "VNotch.Native.dll";
 
-    [LibraryImport("VNotch.Native", StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial int vn_markdown_tokenize_blocks(
-        ReadOnlySpan<char> text_ptr,
-        int text_len,
-        Span<VnMarkdownBlockToken> out_tokens,
-        int token_cap,
-        out int out_written);
+    public const int VN_OK = (int)Interop.NativeStatus.Ok;
+    public const int VN_ERR_INVALID_ARG = (int)Interop.NativeStatus.InvalidArgument;
+    public const int VN_ERR_BUFFER_TOO_SMALL = (int)Interop.NativeStatus.BufferTooSmall;
+    public const int VN_ERR_FAIL = (int)Interop.NativeStatus.Failure;
 
-    [LibraryImport("VNotch.Native", StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial int vn_markdown_split_table_cells(
-        ReadOnlySpan<char> line_ptr,
-        int line_len,
-        Span<VnMarkdownSlice> out_cells,
-        int cell_cap,
-        out int out_written);
+    internal const int VN_PERF_SELECTION_BACKUP = -2;
+    internal const int VN_PERF_SELECTION_CUSTOM = -1;
+    internal const int VN_PERF_PRESET_ECO = 0;
+    internal const int VN_PERF_PRESET_EVERYDAY = 1;
+    internal const int VN_PERF_PRESET_BALANCED = 2;
+    internal const int VN_PERF_PRESET_HIGH_END = 3;
+    internal const int VN_PERF_PRESET_COUNT = 4;
 
-    [LibraryImport("VNotch.Native", StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial int vn_markdown_tokenize_inlines(
-        ReadOnlySpan<char> text_ptr,
-        int text_len,
-        Span<VnMarkdownInlineToken> out_tokens,
-        int token_cap,
-        out int out_written);
+    [LibraryImport(DllName, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int vn_settings_search_normalize(
+        ReadOnlySpan<char> inputPtr,
+        int inputLen,
+        Span<char> outBuf,
+        int outCap,
+        out int outLen);
 
-    public static VnMarkdownBlockToken[] TokenizeMarkdownBlocks(ReadOnlySpan<char> markdown)
-    {
-        if (markdown.IsEmpty)
-        {
-            return Array.Empty<VnMarkdownBlockToken>();
-        }
+    [LibraryImport(DllName, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int vn_settings_search_score_row(
+        ReadOnlySpan<char> normTitlePtr,
+        int normTitleLen,
+        ReadOnlySpan<char> normContentPtr,
+        int normContentLen,
+        ReadOnlySpan<char> normCombinedPtr,
+        int normCombinedLen,
+        ReadOnlySpan<char> normQueryPtr,
+        int normQueryLen,
+        byte allowFuzzy,
+        out int outScore);
 
-        Span<VnMarkdownBlockToken> stackBuf = stackalloc VnMarkdownBlockToken[128];
-        int rc = vn_markdown_tokenize_blocks(markdown, markdown.Length, stackBuf, stackBuf.Length, out int written);
-        if (rc == VN_OK)
-        {
-            return written > 0 ? stackBuf[..written].ToArray() : Array.Empty<VnMarkdownBlockToken>();
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_nav_tabs_calculate_target_slot_hysteresis(
+        int current_target,
+        double visual_pos,
+        double pitch,
+        int total_slots,
+        out int out_slot);
 
-        if (rc == VN_ERR_BUFFER_TOO_SMALL && written > 0)
-        {
-            var heapBuf = new VnMarkdownBlockToken[written];
-            int rc2 = vn_markdown_tokenize_blocks(markdown, markdown.Length, heapBuf, heapBuf.Length, out int written2);
-            if (rc2 == VN_OK && written2 > 0)
-            {
-                return written2 == heapBuf.Length ? heapBuf : heapBuf[..written2];
-            }
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_nav_tabs_calculate_neighbor_offset(
+        int index,
+        int initial_slot,
+        int target_slot,
+        double pitch,
+        out double out_offset);
 
-        return Array.Empty<VnMarkdownBlockToken>();
-    }
+    [LibraryImport(DllName, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int vn_media_detection_build_session_instance_key(
+        nint unkPtr,
+        ReadOnlySpan<char> sourceApp,
+        int sourceAppLen,
+        Span<char> outBuf,
+        int outCap,
+        out int outLen);
 
-    public static VnMarkdownSlice[] SplitMarkdownTableCells(ReadOnlySpan<char> line)
-    {
-        if (line.IsEmpty)
-        {
-            return Array.Empty<VnMarkdownSlice>();
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_ai_usage_compute_window_visual(
+        double usedPercent,
+        int durationMinutes,
+        byte hasResetsAt,
+        long resetsAtUtcTicks,
+        byte hasUpdatedAt,
+        long updatedAtUtcTicks,
+        long nowUtcTicks,
+        out VnAiQuotaWindowVisualOut outVisual);
 
-        Span<VnMarkdownSlice> stackBuf = stackalloc VnMarkdownSlice[32];
-        int rc = vn_markdown_split_table_cells(line, line.Length, stackBuf, stackBuf.Length, out int written);
-        if (rc == VN_OK)
-        {
-            return written > 0 ? stackBuf[..written].ToArray() : Array.Empty<VnMarkdownSlice>();
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_ai_usage_compute_card_summary(
+        int state,
+        int windowCount,
+        byte hasUpdatedAt,
+        long updatedAtUtcTicks,
+        long nowUtcTicks,
+        out VnAiProviderCardSummaryOut outSummary);
 
-        if (rc == VN_ERR_BUFFER_TOO_SMALL && written > 0)
-        {
-            var heapBuf = new VnMarkdownSlice[written];
-            int rc2 = vn_markdown_split_table_cells(line, line.Length, heapBuf, heapBuf.Length, out int written2);
-            if (rc2 == VN_OK && written2 > 0)
-            {
-                return written2 == heapBuf.Length ? heapBuf : heapBuf[..written2];
-            }
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_ai_usage_resolve_claude_setup_state(
+        int usageState,
+        byte hasSettingsFile,
+        byte hasStatusLine,
+        byte matchesBridgeCommand,
+        byte hasCustomApiEndpoint,
+        out byte outActionKind,
+        out int outPromptMode);
 
-        return Array.Empty<VnMarkdownSlice>();
-    }
+    [LibraryImport(DllName)]
+    internal static partial int vn_perf_preset_apply(
+        int presetId,
+        in VnPerformancePresetState currentState,
+        out VnPerformancePresetState outState);
 
-    public static VnMarkdownInlineToken[] TokenizeMarkdownInlines(ReadOnlySpan<char> text)
-    {
-        if (text.IsEmpty)
-        {
-            return Array.Empty<VnMarkdownInlineToken>();
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_perf_preset_match(
+        in VnPerformancePresetState state,
+        out int outPresetId);
 
-        Span<VnMarkdownInlineToken> stackBuf = stackalloc VnMarkdownInlineToken[64];
-        int rc = vn_markdown_tokenize_inlines(text, text.Length, stackBuf, stackBuf.Length, out int written);
-        if (rc == VN_OK)
-        {
-            return written > 0 ? stackBuf[..written].ToArray() : Array.Empty<VnMarkdownInlineToken>();
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_perf_preset_decide_selection(
+        in VnPerformancePresetState currentState,
+        byte hasBackup,
+        byte matchesBackupFull,
+        byte matchesLastPresetFull,
+        int preferredSelection,
+        out int outActiveItem,
+        out byte outShouldBackupOnPresetSelect);
 
-        if (rc == VN_ERR_BUFFER_TOO_SMALL && written > 0)
-        {
-            var heapBuf = new VnMarkdownInlineToken[written];
-            int rc2 = vn_markdown_tokenize_inlines(text, text.Length, heapBuf, heapBuf.Length, out int written2);
-            if (rc2 == VN_OK && written2 > 0)
-            {
-                return written2 == heapBuf.Length ? heapBuf : heapBuf[..written2];
-            }
-        }
+    [LibraryImport(DllName)]
+    internal static partial int vn_perf_preset_recommend_hardware_tier(
+        out int outPresetId);
+}
 
-        return new[]
-        {
-            new VnMarkdownInlineToken
-            {
-                Kind = (byte)VnMarkdownInlineKind.Text,
-                TextStart = 0,
-                TextLen = text.Length
-            }
-        };
-    }
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+internal struct VnPerformancePresetState
+{
+    public byte AutoAnimationFps;
+    public int AnimationFps;
+    public byte EnableBlurEffects;
+    public byte EnableSubjectBlur;
+    public byte EnableSmartCrop;
+    public byte ShowMediaArtBackground;
+    public byte EnableShadow;
+    public byte IsLiquidGlass;
+    public byte UseGpuRefraction;
+    public byte UseUltimateGpu;
+    public int GlassTargetFps;
+    public int GpuPreference;
+    public int ProcessPriority;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+internal struct VnAiQuotaWindowVisualOut
+{
+    public double ClampedUsedPercent;
+    public double ClampedRemainingPercent;
+    public double RowOpacity;
+    public byte IsExpired;
+    public byte IsStale;
+    public byte SeverityTier;
+    public byte ResetMode;
+    public int ResetHours;
+    public int ResetMinutes;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+internal struct VnAiProviderCardSummaryOut
+{
+    public byte ShowQuotaRows;
+    public int VisibleWindowCount;
+    public byte IsStale;
+    public byte ActionKind;
 }

@@ -1,11 +1,13 @@
-using System.Reflection;
 using System.Windows;
-using System.Windows.Input;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
+using VNotch.Controls;
 using VNotch.Models;
 using VNotch.Services;
+using VNotch.Services.AiUsage;
 using VNotch.Services.Translation;
 using Xunit;
 
@@ -14,6 +16,405 @@ namespace VNotch.Tests;
 [Collection("Localization")]
 public sealed class SettingsWindowControlTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PerformancePresetFocusAndHoverKeepTextBoundsStable(bool reducedMotion) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previousMotion = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(reducedMotion);
+        using var fixture = new Fixture();
+        var text = new TextBlock
+        {
+            Text = "Low-End & Battery Saver\nFor older PCs or 4 to 8 GB RAM. Caps 60 FPS and turns off blur and shadow.",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 13.5
+        };
+        var button = new Button
+        {
+            Style = (Style)fixture.Window.FindResource("PerformancePresetRowButtonStyle"),
+            Uid = "Idle",
+            Content = text
+        };
+        var host = new BackgroundWindow { Content = button, Width = 520, Height = 160 };
+        try
+        {
+            host.Show();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            var before = text.TransformToAncestor(button).TransformBounds(new Rect(text.RenderSize));
+            Assert.Null(button.Template.FindName("RowFocusRing", button));
+            var hover = (Border)button.Template.FindName("RowHoverFeedback", button);
+            Assert.Equal(new Thickness(0), hover.BorderThickness);
+            Assert.Null(hover.BorderBrush);
+            foreach (var property in new[] { UIElement.IsKeyboardFocusedProperty, UIElement.IsMouseOverProperty })
+            {
+                var trigger = Assert.Single(button.Template.Triggers.OfType<Trigger>(), t => t.Property == property && Equals(t.Value, true));
+                var setter = Assert.IsType<Setter>(Assert.Single(trigger.Setters));
+                Assert.Equal("RowHoverFeedback", setter.TargetName);
+                Assert.Equal(TrayMotion.OpacityProperty, setter.Property);
+                Assert.Empty(trigger.EnterActions);
+                Assert.Empty(trigger.ExitActions);
+                hover.SetCurrentValue(setter.Property, setter.Value);
+                await WpfFrameWaiter.UntilAsync(() =>
+                {
+                    button.UpdateLayout();
+                    Assert.Equal(before, text.TransformToAncestor(button).TransformBounds(new Rect(text.RenderSize)));
+                    Assert.Equal(1, text.Opacity);
+                    Assert.Equal(1, button.Opacity);
+                    return hover.Opacity == 1;
+                }, "preset feedback settles without moving or fading its text", ct);
+            }
+        }
+        finally
+        {
+            host.Close();
+            AnimationConfig.SetReduceMotion(previousMotion);
+        }
+    });
+
+    [Fact]
+    public void NestedSettingsTreesSurviveSearchAndKeepIndependentFeatureSwitches() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        using var fixture = new Fixture();
+        var window = fixture.Window;
+        window.Show();
+        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        string[] names =
+        [
+            "DynamicIslandWidthSlider", "InteractionSoundVolumeSlider", "HoverDelaySlider", "IdleAutoHideDelaySlider",
+            "AutoDismissNotifyCheck", "NotificationDurationSlider", "SubjectBlurRow",
+            "ManualCityTextBox", "SpotlightDefaultModeCombo", "TranslationModelCombo",
+            "TranslationCurrencyCombo", "LyricsProviderPanel", "SpotifyCanvasBrightnessSlider",
+            "IgnoreYouTubeAutoSubtitlesCheck", "SubtitlePriorityRow", "YouTubeApiKeyRow", "AnimationFpsSlider"
+        ];
+        var controls = names.Select(name => Assert.IsAssignableFrom<FrameworkElement>(window.FindName(name))).ToArray();
+        var parents = controls.Select(control => control.Parent).ToArray();
+        foreach (var control in controls) Assert.True(TreeDepth(control) > 0, control.Name);
+        Assert.Equal(2, TreeDepth(window.NotificationDurationSlider));
+        Assert.Equal(2, TreeDepth(window.SpotifyCanvasBrightnessSlider));
+
+        window.EnableYouTubeSubtitlesCheck.IsChecked = true;
+        window.EnableSpotifyLyricsCheck.IsChecked = false;
+        Assert.True(window.EnableYouTubeSubtitlesCheck.IsEnabled);
+        Assert.True(window.IgnoreYouTubeAutoSubtitlesCheck.IsEnabled);
+        foreach (string query in new[] { "notification", "Spotify", "subtitles", "volume", "currency" })
+        {
+            window.ExecuteSearch(query);
+            window.ExitSearchMode();
+            for (int i = 0; i < controls.Length; i++) Assert.Same(parents[i], controls[i].Parent);
+        }
+
+        string? directory = Environment.GetEnvironmentVariable("VNOTCH_SETTINGS_TREE_FRAMES");
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            System.IO.Directory.CreateDirectory(directory);
+            foreach (string section in new[] { "Appearance", "Behavior", "Advanced", "Spotlight", "Translation", "Skins" })
+            {
+                window.NavigateToSection(section);
+                await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                window.ResetProgressiveBlurElements(isMenuList: false);
+                var card = Assert.IsType<Border>(window.FindName(section == "Skins" ? "SkinCard" : section + "Card"));
+                card.BeginAnimation(UIElement.OpacityProperty, null);
+                card.Opacity = 1;
+                card.RenderTransform = Transform.Identity;
+                card.Measure(new Size(600, double.PositiveInfinity));
+                card.Arrange(new Rect(0, 0, 600, card.DesiredSize.Height));
+                card.UpdateLayout();
+                await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(1200,
+                    Math.Max(1, (int)Math.Ceiling(card.ActualHeight * 2)), 192, 192, PixelFormats.Pbgra32);
+                bitmap.Render(card);
+                var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                using var file = System.IO.File.Create(System.IO.Path.Combine(directory, section + ".png"));
+                encoder.Save(file);
+            }
+        }
+
+        static int TreeDepth(FrameworkElement control)
+        {
+            int depth = 0;
+            for (DependencyObject? node = control; node != null; node = VisualTreeHelper.GetParent(node))
+                if (node is VNotch.Controls.SettingsTreePanel) depth++;
+            return depth;
+        }
+    });
+
+    [Fact]
+    public void AiSubscriptionsCustomizationControlsSaveAllOfTheirSelectedValues() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        var appearance = AiUsageAppearance.Current;
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            foreach (string name in new[] { "AiUsageShowCodexCheck", "AiUsageWeeklyCheck", "AiUsageResetsCheck", "AiUsagePlanCheck", "AiUsageLogosCheck", "AiUsageAccountCheck" })
+                Assert.IsType<CheckBox>(window.FindName(name)).IsChecked = false;
+            foreach (string name in new[] { "AiUsageClaudeFirstChoice", "AiUsageCompactChoice", "AiUsageUsedChoice", "AiUsageCustomColorsChoice" })
+                Assert.IsType<RadioButton>(window.FindName(name)).IsChecked = true;
+            Assert.IsType<VNotch.Controls.ElasticSlider>(window.FindName("AiUsageBarHeightSlider")).Value = 9;
+            Assert.IsType<VNotch.Controls.ElasticSlider>(window.FindName("AiUsageMotionSlider")).Value = 0;
+            foreach (var (name, color) in new[] { ("AiUsageCodexColorInput", "#ABCDEF"), ("AiUsageClaudeColorInput", "#326BFF") })
+            {
+                var input = Assert.IsType<TextBox>(window.FindName(name));
+                input.Text = color;
+                window.AiUsageColor_Blur(input,
+                    new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, 0, input, window));
+            }
+            window.AiUsageCustomize_Changed(window, new RoutedEventArgs());
+            await window.ApplyWithoutClosingAsync();
+            var saved = fixture.Service.Applied!;
+            Assert.Equal(AiUsageAppearance.From(window.ReadSettingsFromUi()), AiUsageAppearance.From(saved));
+            Assert.False(saved.AiUsageShowCodex);
+            Assert.True(saved.AiUsageShowClaude);
+            Assert.True(saved.AiUsageClaudeFirst);
+            Assert.True(saved.AiUsageCompact);
+            Assert.True(saved.AiUsageShowUsedPercent);
+            Assert.False(saved.AiUsageStatusColors);
+            Assert.Equal("#ABCDEF", saved.AiUsageCodexColor);
+            Assert.Equal("#326BFF", saved.AiUsageClaudeColor);
+            Assert.Equal(9, saved.AiUsageBarHeight);
+            Assert.Equal(0, saved.AiUsageMotionIntensity);
+            window.LoadAiUsageCustomization(saved);
+            Assert.Equal("#ABCDEF", window.AiUsageCodexColorInput.Text);
+            Assert.Equal("#326BFF", window.AiUsageClaudeColorInput.Text);
+        }
+        finally { AiUsageAppearance.Apply(appearance); }
+    });
+
+    [Fact]
+    public void AiSubscriptionsCancelRestoresAnImmediatePreviewBeforeTheDebounceRuns() => SharedStaTestRunner.Run(() =>
+    {
+        var appearance = AiUsageAppearance.Current;
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            var baseline = window.ReadSettingsFromUi();
+            Assert.IsType<CheckBox>(window.FindName("AiUsageShowCodexCheck")).IsChecked = false;
+            Assert.False(AiUsageAppearance.Current.ShowCodex);
+            Assert.True(window.HasUncommittedLivePreview());
+            window.RevertLivePreviewIfNeeded();
+            Assert.Equal(AiUsageAppearance.From(baseline), AiUsageAppearance.Current);
+            Assert.False(window.HasUncommittedLivePreview());
+        }
+        finally { AiUsageAppearance.Apply(appearance); }
+    });
+
+    [Fact]
+    public void AiSubscriptionsInlineChoicesUseTheBundledBoldFaceWithoutDropDowns() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        using var fixture = new Fixture();
+        var window = fixture.Window;
+        window.Show();
+        window.NavigateToAiUsage();
+        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        var card = Assert.IsType<Border>(window.FindName("AiUsageCard"));
+        AssertSfProBold(card);
+        Assert.DoesNotContain(AiSettingsVisuals(card), node => node is ComboBox or Expander);
+        var choices = AiSettingsVisuals(card).OfType<RadioButton>().ToArray();
+        Assert.Equal(8, choices.Length);
+        window.AiUsageRemainingChoice.IsChecked = true;
+        window.AiUsageRemainingChoice.ApplyTemplate();
+        window.AiUsageRemainingChoice.Focus();
+        var choiceSurface = Assert.IsType<Border>(window.AiUsageRemainingChoice.Template.FindName("ChoiceSurface", window.AiUsageRemainingChoice));
+        Assert.Equal(new Thickness(0), choiceSurface.BorderThickness);
+        Assert.Null(choiceSurface.BorderBrush);
+        Assert.Equal(Colors.Transparent, Assert.IsType<SolidColorBrush>(choiceSurface.Background).Color);
+        var face = new Typeface(AppFonts.Get(), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+        Assert.True(face.TryGetGlyphTypeface(out var glyph));
+        Assert.Equal(FontWeights.Bold, glyph.Weight);
+        Assert.Contains("Bold", glyph.FontUri.ToString(), StringComparison.OrdinalIgnoreCase);
+        ct.ThrowIfCancellationRequested();
+    });
+
+    [Fact]
+    public void AiUsageTypographyApplyDoesNotMutateSealedStyleOnLiveSubtree() => SharedStaTestRunner.Run(() =>
+    {
+        var outer = new Border();
+        outer.Resources[typeof(TextBlock)] = new Style(typeof(TextBlock));
+        var label = new TextBlock { Text = "Claude" };
+        var card = new Border { Child = label };
+        outer.Child = card;
+        outer.Measure(new Size(200, 60));
+
+        VNotch.Controls.AiUsageTypography.Apply(card, new Thickness(0, 1, 0, 2));
+
+        Assert.Equal(FontWeights.Bold, label.FontWeight);
+        Assert.False(label.UseLayoutRounding);
+        Assert.False(label.SnapsToDevicePixels);
+        Assert.Equal(new Thickness(0, 1, 0, 2), label.Padding);
+    });
+
+    private static IEnumerable<DependencyObject> AiSettingsVisuals(DependencyObject root)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var nested in AiSettingsVisuals(child)) yield return nested;
+        }
+    }
+
+    private static void AssertSfProBold(DependencyObject root)
+    {
+        if (root is TextBlock text && (text.Text.Length > 0 || text.Inlines.Count > 0))
+        {
+            Assert.True(text.FontWeight == FontWeights.Bold, $"{text.Name} '{text.Text}' uses {text.FontWeight} ({text.FontFamily.Source})");
+            Assert.Contains("SF Pro Display", text.FontFamily.Source, StringComparison.OrdinalIgnoreCase);
+        }
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) AssertSfProBold(VisualTreeHelper.GetChild(root, i));
+    }
+
+    [Fact]
+    public void AiSubscriptionsTreeChoicesStayExclusiveAndSurviveLocalizationAndSearch() => SharedStaTestRunner.Run(() =>
+    {
+        var appearance = AiUsageAppearance.Current;
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.NavigateToAiUsage();
+            Assert.IsType<VNotch.Controls.SettingsTreePanel>(window.FindName("AiUsageCustomizationTree"));
+            Assert.Equal(Visibility.Visible, window.AiUsageAppearancePanel.Visibility);
+            Assert.Equal(Visibility.Visible, window.AiUsageConnectionsPanel.Visibility);
+            window.AiUsageClaudeFirstChoice.IsChecked = true;
+            window.AiUsageCompactChoice.IsChecked = true;
+            window.AiUsageUsedChoice.IsChecked = true;
+            Assert.False(window.AiUsageCodexFirstChoice.IsChecked);
+            Assert.False(window.AiUsageComfortableChoice.IsChecked);
+            Assert.False(window.AiUsageRemainingChoice.IsChecked);
+            Assert.False(window.AiUsageCustomColorsPanel.IsEnabled);
+            Assert.Equal(Visibility.Visible, window.AiUsageCustomColorsPanel.Visibility);
+            window.AiUsageCustomColorsChoice.IsChecked = true;
+            Assert.False(window.AiUsageStatusColorsChoice.IsChecked);
+            Assert.True(window.AiUsageCustomColorsPanel.IsEnabled);
+            window.AiUsageWeeklyCheck.IsChecked = false;
+            window.AiUsageMotionSlider.Value = 35;
+            Loc.SetLanguage("vi");
+            window.ApplyLocalization();
+            Assert.Equal(Loc.Get("aiUsage.compact"), window.AiUsageCompactChoice.Content);
+            window.ExecuteSearch("Codex");
+            window.ExitSearchMode();
+            var snapshot = window.ReadSettingsFromUi();
+            Assert.False(snapshot.AiUsageShowWeekly);
+            Assert.True(snapshot.AiUsageClaudeFirst);
+            Assert.True(snapshot.AiUsageCompact);
+            Assert.True(snapshot.AiUsageShowUsedPercent);
+            Assert.False(snapshot.AiUsageStatusColors);
+            Assert.Equal(35, snapshot.AiUsageMotionIntensity);
+            Assert.False(snapshot.EnableAiUsageMonitoring);
+        }
+        finally { AiUsageAppearance.Apply(appearance); }
+    });
+
+    [Fact]
+    public void AiSubscriptionsAppearanceResetKeepsAccountSetupAndRendersTheSettingsTree() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        var appearance = AiUsageAppearance.Current;
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.EnableAiUsageCheck.IsChecked = true;
+            window.EditedSettings.CodexUsageExecutable = @"C:\Trusted\codex.exe";
+            window.AiUsageWeeklyCheck.IsChecked = false;
+            window.AiUsageMotionSlider.Value = 25;
+            window.AiUsageResetAppearance_Click(window, new RoutedEventArgs());
+            var reset = window.ReadSettingsFromUi();
+            Assert.True(reset.EnableAiUsageMonitoring);
+            Assert.Equal(@"C:\Trusted\codex.exe", reset.CodexUsageExecutable);
+            Assert.True(reset.AiUsageShowWeekly);
+            Assert.Equal(75, reset.AiUsageMotionIntensity);
+            window.Show();
+            window.NavigateToAiUsage();
+            window.AiUsageCustomColorsChoice.IsChecked = true;
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            window.ResetProgressiveBlurElements(isMenuList: false);
+            var card = window.AiUsageCard;
+            card.BeginAnimation(UIElement.OpacityProperty, null);
+            card.Opacity = 1;
+            card.RenderTransform = Transform.Identity;
+            card.Measure(new Size(620, double.PositiveInfinity));
+            card.Arrange(new Rect(0, 0, 620, card.DesiredSize.Height));
+            card.UpdateLayout();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(1240,
+                Math.Max(1, (int)Math.Ceiling(card.ActualHeight * 2)), 192, 192, PixelFormats.Pbgra32);
+            bitmap.Render(card);
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+            string directory = Environment.GetEnvironmentVariable("VNOTCH_AI_DESIGN_FRAMES")
+                ?? System.IO.Path.Combine(AppContext.BaseDirectory, "artifacts", "ai-subscriptions");
+            System.IO.Directory.CreateDirectory(directory);
+            using var file = System.IO.File.Create(System.IO.Path.Combine(directory, "settings-tree.png"));
+            encoder.Save(file);
+            ct.ThrowIfCancellationRequested();
+        }
+        finally { AiUsageAppearance.Apply(appearance); }
+    });
+
+    [Fact]
+    public void AiUsageSetupGroupsAccountsAndKeepsAdvancedToolsVisibleInTheTree() => SharedStaTestRunner.Run(() =>
+    {
+        using var fixture = new Fixture();
+        var window = fixture.Window;
+        window.NavigateToAiUsage();
+        Assert.IsType<CheckBox>(window.FindName("EnableAiUsageCheck")).IsChecked = true;
+        window.PresentAiUsageConnections(new("Codex", AiUsageState.Ready, DateTimeOffset.UtcNow,
+            Plan: "plus", AccountLabel: "user@example.test"), new("Claude", AiUsageState.Waiting), new(true, true, true, true), true);
+        Assert.Equal(Visibility.Visible, window.AiUsageConnectionsPanel.Visibility);
+        string codex = Assert.IsType<TextBlock>(window.FindName("AiUsageCodexStatus")).Text;
+        Assert.Contains("user@example.test", codex);
+        Assert.Contains("plus", codex);
+        Assert.Equal(Loc.Get("aiUsage.claudeCustomEndpoint"), Assert.IsType<TextBlock>(window.FindName("AiUsageClaudeStatus")).Text);
+        var connect = Assert.IsType<Button>(window.FindName("AiUsageClaudeConnectButton"));
+        Assert.False(connect.IsEnabled);
+        Assert.Equal(Loc.Get("aiUsage.statusConnected"), connect.Content);
+        Assert.True(Assert.IsType<Button>(window.FindName("AiUsageClaudeRemoveButton")).IsEnabled);
+    });
+
+    [Fact]
+    public void AiUsageSetupOffersConnectionAndDisablesRefreshUntilMonitoringIsEnabled() => SharedStaTestRunner.Run(() =>
+    {
+        using var fixture = new Fixture();
+        var window = fixture.Window;
+        Assert.IsType<CheckBox>(window.FindName("EnableAiUsageCheck")).IsChecked = false;
+        window.PresentAiUsageConnections(new("Codex", AiUsageState.Disabled), new("Claude", AiUsageState.Disabled), default, true);
+        Assert.True(Assert.IsType<Button>(window.FindName("AiUsageClaudeConnectButton")).IsEnabled);
+        Assert.False(Assert.IsType<Button>(window.FindName("AiUsageClaudeRemoveButton")).IsEnabled);
+        Assert.False(Assert.IsType<Button>(window.FindName("AiUsageRefreshButton")).IsEnabled);
+        Assert.Equal(Loc.Get("aiUsage.state.Disabled"), Assert.IsType<TextBlock>(window.FindName("AiUsageClaudeStatus")).Text);
+    });
+
+    [Fact]
+    public void AiAccountLimitsAreSelectableAndKeepTheirSettingsAcrossLocalization() => SharedStaTestRunner.Run(() =>
+    {
+        using var fixture = new Fixture();
+        var window = fixture.Window;
+        var combo = Assert.IsType<ComboBox>(window.FindName("WidgetCombo"));
+        Assert.Contains(combo.Items.Cast<ComboBoxItem>(), item => item.Tag as string == "aiusage");
+        window.NavigateToAiUsage();
+        Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(window.FindName("PanelAiUsage")).Visibility);
+        Assert.Equal(Visibility.Collapsed, Assert.IsType<StackPanel>(window.FindName("PanelAppearance")).Visibility);
+        Assert.IsType<CheckBox>(window.FindName("EnableAiUsageCheck")).IsChecked = true;
+        Assert.IsType<CheckBox>(window.FindName("TrackCodexUsageCheck")).IsChecked = false;
+        Assert.IsType<CheckBox>(window.FindName("TrackClaudeUsageCheck")).IsChecked = true;
+        var settings = window.ReadSettingsFromUi();
+        Assert.NotEqual("aiusage", settings.ExpandedWidget);
+        Assert.True(settings.EnableAiUsageMonitoring);
+        Assert.False(settings.TrackCodexUsage);
+        Assert.True(settings.TrackClaudeUsage);
+        Loc.SetLanguage("vi");
+        window.ApplyLocalization();
+        Assert.Equal(Loc.Get("nav.aiUsage"), Assert.IsType<TextBlock>(window.FindName("NavAiUsageText")).Text);
+        Assert.Equal(Loc.Get("aiUsage.customize"), window.AiUsageCustomizeTitle.Text);
+        Assert.True(window.ReadSettingsFromUi().EnableAiUsageMonitoring);
+        window.EditedSettings.CodexUsageExecutable = @"C:\Previous\codex.exe";
+        window.AiUsageCodexAuto_Click(window, new RoutedEventArgs());
+        Assert.Empty(window.ReadSettingsFromUi().CodexUsageExecutable);
+    });
+
     [Fact]
     public void BatterySourceIsEditableAndSurvivesLocalizationAndApply() => SharedStaTestRunner.RunAsync(async _ =>
     {
@@ -23,7 +424,7 @@ public sealed class SettingsWindowControlTests
         combo.SelectedValue = NotchSettings.AutoBluetoothBatteryDeviceId;
         Assert.Equal(NotchSettings.AutoBluetoothBatteryDeviceId, window.ReadSettingsFromUi().BatteryDeviceId);
         Loc.SetLanguage("vi");
-        Invoke(window, "ApplyLocalization");
+        window.ApplyLocalization();
         Assert.Equal(NotchSettings.AutoBluetoothBatteryDeviceId, combo.SelectedValue);
         await window.ApplyWithoutClosingAsync();
         Assert.Equal(NotchSettings.AutoBluetoothBatteryDeviceId, fixture.Service.Applied!.BatteryDeviceId);
@@ -89,7 +490,6 @@ public sealed class SettingsWindowControlTests
         Assert.False(string.IsNullOrWhiteSpace(window.LyricsProviderHint.Tag as string));
         Assert.DoesNotContain("API key", window.LyricsProviderHint.Tag as string, StringComparison.OrdinalIgnoreCase);
     });
-    private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
     [Fact]
     public void InvisibleShortcutPersistsOnlyItsOwnChange() => SharedStaTestRunner.RunAsync(async ct =>
@@ -113,17 +513,17 @@ public sealed class SettingsWindowControlTests
     {
         using var fixture = new Fixture();
         var window = fixture.Window;
-        Assert.Equal(9, window.TranslationModelCombo.Items.Count);
+        Assert.Equal(TranslationModelCatalog.All.Length, window.TranslationModelCombo.Items.Count);
         Assert.Equal(2, window.TranslationModelCombo.Items.Groups!.Count);
         foreach (var model in TranslationModelCatalog.All)
         {
             window.TranslationModelCombo.SelectedValue = model.Id;
             Assert.Equal(model.Id, window.ReadSettingsFromUi().TranslationModelId);
-            Assert.Equal(model.Id, Field<TranslationModelStore>(window, "_translationStore").Profile.Id);
+            Assert.Equal(model.Id, window.TranslationStore.Profile.Id);
             Assert.Contains(model.DisplayName, window.TranslationModelHint.Text);
         }
-        typeof(SettingsWindow).GetField("_translationHardware", Private)!.SetValue(window, new TranslationHardware(16, 8, 8, "GPU"));
-        typeof(SettingsWindow).GetMethod("RefreshTranslationModelDetails", Private)!.Invoke(window, null);
+        window.TranslationHardwareSnapshot = new TranslationHardware(16, 8, 8, "GPU");
+        window.RefreshTranslationModelDetails();
         Assert.Equal("gemma4-31b", window.ReadSettingsFromUi().TranslationModelId);
         Assert.Single(window.TranslationModelCombo.Items.Cast<object>().Where(x => x.ToString()!.Contains(Loc.Get("translation.recommended"))));
     });
@@ -134,7 +534,7 @@ public sealed class SettingsWindowControlTests
         using var fixture = new Fixture();
         var window = fixture.Window;
         window.EnableTranslationCheck.IsChecked = true;
-        var inputs = Field<Dictionary<string, (TextBlock Label, TextBox Input)>>(window, "_translationAdvancedInputs");
+        var inputs = window.TranslationAdvancedInputs;
         Assert.Equal(13, inputs.Count);
         inputs["GpuLayers"].Input.Text = "-10";
         inputs["CacheEntries"].Input.Text = "300";
@@ -260,7 +660,7 @@ public sealed class SettingsWindowControlTests
             Assert.False(window.TranslationPulseOffset.HasAnimatedProperties);
             await window.RunTranslationModelActionAsync(_ =>
             {
-                Invoke(window, "TranslationModelChanged");
+                window.TranslationModelChanged();
                 throw new TranslationException("translation.downloadTimeout");
             });
             await window.Dispatcher.InvokeAsync(() => { });
@@ -281,105 +681,167 @@ public sealed class SettingsWindowControlTests
     });
 
     [Theory]
-    [InlineData("EnableBlurEffectsCheck", "EnableBlurEffects")]
-    [InlineData("MediaArtBackgroundCheck", "ShowMediaArtBackground")]
-    [InlineData("EnableSubjectBlurCheck", "EnableSubjectBlur")]
-    [InlineData("EnableSmartCropCheck", "EnableSmartCrop")]
-    [InlineData("EnableSpotifyLyricsCheck", "EnableSpotifyLyrics")]
-    [InlineData("BrightenDarkLyricsBackgroundCheck", "BrightenDarkLyricsBackground")]
-    [InlineData("EnableYouTubeSubtitlesCheck", "EnableYouTubeSubtitles")]
-    [InlineData("IgnoreYouTubeAutoSubtitlesCheck", "IgnoreYouTubeAutoSubtitles")]
-    [InlineData("DynamicIslandModeCheck", "EnableDynamicIslandMode")]
-    [InlineData("AutoAnimationFpsCheck", "AutoAnimationFps")]
-    [InlineData("HoverExpandCheck", "EnableHoverExpand")]
-    [InlineData("DisableMouseLeaveAutoCloseCheck", "DisableMouseLeaveAutoClose")]
-    [InlineData("KeepMediaPinnedCheck", "KeepMediaPinnedOnTrackChange")]
-    [InlineData("ReopenLastViewCheck", "ReopenLastViewOnExpand")]
-    [InlineData("StayBehindWindowsCheck", "StayBehindWindows")]
-    [InlineData("HelloGreetingCheck", "EnableHelloGreeting")]
-    [InlineData("HideOnExclusiveFullscreenCheck", "HideOnExclusiveFullscreen")]
-    [InlineData("HideOnWindowedFullscreenCheck", "HideOnWindowedFullscreen")]
-    [InlineData("IdleAutoHideCheck", "EnableIdleAutoHide")]
-    [InlineData("MusicNotifyCheck", "ShowMusicNotifications")]
-    [InlineData("SystemNotifyCheck", "ShowSystemNotifications")]
-    [InlineData("HideCameraCheck", "HideCamera")]
-    [InlineData("TrayTextCheck", "ClipboardCaptureText")]
-    [InlineData("TrayImagesCheck", "ClipboardCaptureImages")]
-    [InlineData("TrayFilesCheck", "ClipboardCaptureFiles")]
-    [InlineData("TraySensitiveCheck", "ClipboardAutoDeleteSensitive")]
-    [InlineData("ShowBatteryCheck", "ShowBatteryIndicator")]
-    [InlineData("EnableWeatherCheck", "EnableWeather")]
-    [InlineData("AutoCheckUpdatesCheck", "AutoCheckUpdates")]
-    [InlineData("EnableOnlineArtworkCheck", "EnableOnlineArtworkLookup")]
-    [InlineData("EnableOnlineLyricsCheck", "EnableOnlineLyrics")]
-    [InlineData("EnablePrivacyIndicatorsCheck", "EnablePrivacyIndicators")]
-    [InlineData("EnableBrowserUrlInspectionCheck", "EnableBrowserUrlInspection")]
-    [InlineData("EnableDiagnosticLoggingCheck", "EnableDiagnosticLogging")]
-    [InlineData("EnableSpotlightHistoryCheck", "EnableSpotlightHistory")]
-    [InlineData("EnableTranslationCheck", "EnableLiveTranslation")]
-    [InlineData("AutoTranslationCheck", "AutoLiveTranslation")]
+    [InlineData("EnableBlurEffectsCheck", nameof(NotchSettings.EnableBlurEffects))]
+    [InlineData("MediaArtBackgroundCheck", nameof(NotchSettings.ShowMediaArtBackground))]
+    [InlineData("EnableSubjectBlurCheck", nameof(NotchSettings.EnableSubjectBlur))]
+    [InlineData("EnableSmartCropCheck", nameof(NotchSettings.EnableSmartCrop))]
+    [InlineData("EnableSpotifyLyricsCheck", nameof(NotchSettings.EnableSpotifyLyrics))]
+    [InlineData("BrightenDarkLyricsBackgroundCheck", nameof(NotchSettings.BrightenDarkLyricsBackground))]
+    [InlineData("EnableYouTubeSubtitlesCheck", nameof(NotchSettings.EnableYouTubeSubtitles))]
+    [InlineData("IgnoreYouTubeAutoSubtitlesCheck", nameof(NotchSettings.IgnoreYouTubeAutoSubtitles))]
+    [InlineData("DynamicIslandModeCheck", nameof(NotchSettings.EnableDynamicIslandMode))]
+    [InlineData("AutoAnimationFpsCheck", nameof(NotchSettings.AutoAnimationFps))]
+    [InlineData("HoverExpandCheck", nameof(NotchSettings.EnableHoverExpand))]
+    [InlineData("DisableMouseLeaveAutoCloseCheck", nameof(NotchSettings.DisableMouseLeaveAutoClose))]
+    [InlineData("KeepMediaPinnedCheck", nameof(NotchSettings.KeepMediaPinnedOnTrackChange))]
+    [InlineData("ReopenLastViewCheck", nameof(NotchSettings.ReopenLastViewOnExpand))]
+    [InlineData("AllowNotchDraggingCheck", nameof(NotchSettings.AllowNotchDragging))]
+    [InlineData("StayBehindWindowsCheck", nameof(NotchSettings.StayBehindWindows))]
+    [InlineData("HelloGreetingCheck", nameof(NotchSettings.EnableHelloGreeting))]
+    [InlineData("HideOnExclusiveFullscreenCheck", nameof(NotchSettings.HideOnExclusiveFullscreen))]
+    [InlineData("HideOnWindowedFullscreenCheck", nameof(NotchSettings.HideOnWindowedFullscreen))]
+    [InlineData("IdleAutoHideCheck", nameof(NotchSettings.EnableIdleAutoHide))]
+    [InlineData("MusicNotifyCheck", nameof(NotchSettings.ShowMusicNotifications))]
+    [InlineData("SystemNotifyCheck", nameof(NotchSettings.ShowSystemNotifications))]
+    [InlineData("HideCameraCheck", nameof(NotchSettings.HideCamera))]
+    [InlineData("TrayTextCheck", nameof(NotchSettings.ClipboardCaptureText))]
+    [InlineData("TrayImagesCheck", nameof(NotchSettings.ClipboardCaptureImages))]
+    [InlineData("TrayFilesCheck", nameof(NotchSettings.ClipboardCaptureFiles))]
+    [InlineData("TraySensitiveCheck", nameof(NotchSettings.ClipboardAutoDeleteSensitive))]
+    [InlineData("ShowBatteryCheck", nameof(NotchSettings.ShowBatteryIndicator))]
+    [InlineData("EnableWeatherCheck", nameof(NotchSettings.EnableWeather))]
+    [InlineData("AutoCheckUpdatesCheck", nameof(NotchSettings.AutoCheckUpdates))]
+    [InlineData("EnableOnlineArtworkCheck", nameof(NotchSettings.EnableOnlineArtworkLookup))]
+    [InlineData("EnableOnlineLyricsCheck", nameof(NotchSettings.EnableOnlineLyrics))]
+    [InlineData("EnablePrivacyIndicatorsCheck", nameof(NotchSettings.EnablePrivacyIndicators))]
+    [InlineData("EnableBrowserUrlInspectionCheck", nameof(NotchSettings.EnableBrowserUrlInspection))]
+    [InlineData("EnableDiagnosticLoggingCheck", nameof(NotchSettings.EnableDiagnosticLogging))]
+    [InlineData("EnableSpotlightHistoryCheck", nameof(NotchSettings.EnableSpotlightHistory))]
+    [InlineData("EnableTranslationCheck", nameof(NotchSettings.EnableLiveTranslation))]
+    [InlineData("AutoTranslationCheck", nameof(NotchSettings.AutoLiveTranslation))]
     public void ToggleValuesRoundTripThroughPreviewAndPersistence(string controlName, string settingName) => SharedStaTestRunner.RunAsync(async ct =>
     {
+        bool Read(NotchSettings settings) => settingName switch
+        {
+            nameof(NotchSettings.EnableBlurEffects) => settings.EnableBlurEffects,
+            nameof(NotchSettings.ShowMediaArtBackground) => settings.ShowMediaArtBackground,
+            nameof(NotchSettings.EnableSubjectBlur) => settings.EnableSubjectBlur,
+            nameof(NotchSettings.EnableSmartCrop) => settings.EnableSmartCrop,
+            nameof(NotchSettings.EnableSpotifyLyrics) => settings.EnableSpotifyLyrics,
+            nameof(NotchSettings.BrightenDarkLyricsBackground) => settings.BrightenDarkLyricsBackground,
+            nameof(NotchSettings.EnableYouTubeSubtitles) => settings.EnableYouTubeSubtitles,
+            nameof(NotchSettings.IgnoreYouTubeAutoSubtitles) => settings.IgnoreYouTubeAutoSubtitles,
+            nameof(NotchSettings.EnableDynamicIslandMode) => settings.EnableDynamicIslandMode,
+            nameof(NotchSettings.AutoAnimationFps) => settings.AutoAnimationFps,
+            nameof(NotchSettings.EnableHoverExpand) => settings.EnableHoverExpand,
+            nameof(NotchSettings.DisableMouseLeaveAutoClose) => settings.DisableMouseLeaveAutoClose,
+            nameof(NotchSettings.KeepMediaPinnedOnTrackChange) => settings.KeepMediaPinnedOnTrackChange,
+            nameof(NotchSettings.ReopenLastViewOnExpand) => settings.ReopenLastViewOnExpand,
+            nameof(NotchSettings.AllowNotchDragging) => settings.AllowNotchDragging,
+            nameof(NotchSettings.StayBehindWindows) => settings.StayBehindWindows,
+            nameof(NotchSettings.EnableHelloGreeting) => settings.EnableHelloGreeting,
+            nameof(NotchSettings.HideOnExclusiveFullscreen) => settings.HideOnExclusiveFullscreen,
+            nameof(NotchSettings.HideOnWindowedFullscreen) => settings.HideOnWindowedFullscreen,
+            nameof(NotchSettings.EnableIdleAutoHide) => settings.EnableIdleAutoHide,
+            nameof(NotchSettings.ShowMusicNotifications) => settings.ShowMusicNotifications,
+            nameof(NotchSettings.ShowSystemNotifications) => settings.ShowSystemNotifications,
+            nameof(NotchSettings.HideCamera) => settings.HideCamera,
+            nameof(NotchSettings.ClipboardCaptureText) => settings.ClipboardCaptureText,
+            nameof(NotchSettings.ClipboardCaptureImages) => settings.ClipboardCaptureImages,
+            nameof(NotchSettings.ClipboardCaptureFiles) => settings.ClipboardCaptureFiles,
+            nameof(NotchSettings.ClipboardAutoDeleteSensitive) => settings.ClipboardAutoDeleteSensitive,
+            nameof(NotchSettings.ShowBatteryIndicator) => settings.ShowBatteryIndicator,
+            nameof(NotchSettings.EnableWeather) => settings.EnableWeather,
+            nameof(NotchSettings.AutoCheckUpdates) => settings.AutoCheckUpdates,
+            nameof(NotchSettings.EnableOnlineArtworkLookup) => settings.EnableOnlineArtworkLookup,
+            nameof(NotchSettings.EnableOnlineLyrics) => settings.EnableOnlineLyrics,
+            nameof(NotchSettings.EnablePrivacyIndicators) => settings.EnablePrivacyIndicators,
+            nameof(NotchSettings.EnableBrowserUrlInspection) => settings.EnableBrowserUrlInspection,
+            nameof(NotchSettings.EnableDiagnosticLogging) => settings.EnableDiagnosticLogging,
+            nameof(NotchSettings.EnableSpotlightHistory) => settings.EnableSpotlightHistory,
+            nameof(NotchSettings.EnableLiveTranslation) => settings.EnableLiveTranslation,
+            nameof(NotchSettings.AutoLiveTranslation) => settings.AutoLiveTranslation,
+            _ => throw new ArgumentOutOfRangeException(nameof(settingName))
+        };
         using var fixture = new Fixture();
-        var toggle = Field<ToggleButton>(fixture.Window, controlName);
-        var property = typeof(NotchSettings).GetProperty(settingName)!;
+        var toggle = Assert.IsAssignableFrom<ToggleButton>(fixture.Window.FindName(controlName));
         foreach (bool enabled in new[] { false, true, false })
         {
             toggle.IsChecked = enabled;
             var snapshot = fixture.Window.ReadSettingsFromUi();
-            Assert.Equal(enabled, property.GetValue(snapshot));
+            Assert.Equal(enabled, Read(snapshot));
             fixture.Window.ApplyPreview(snapshot);
             await fixture.Window.SaveAsync(snapshot, ct);
-            Assert.Equal(enabled, property.GetValue(fixture.Service.Applied!));
+            Assert.Equal(enabled, Read(fixture.Service.Applied!));
         }
     });
 
     [Theory]
-    [InlineData("WidthSlider", "Width", 350, 350)]
-    [InlineData("HeightSlider", "Height", 48, 48)]
-    [InlineData("RadiusSlider", "CornerRadius", 18, 18)]
-    [InlineData("DynamicIslandWidthSlider", "DynamicIslandWidth", 250, 250)]
-    [InlineData("DynamicIslandHeightSlider", "DynamicIslandHeight", 48, 48)]
-    [InlineData("OpacitySlider", "Opacity", 70, 0.7)]
-    [InlineData("BlurBrightnessSlider", "MediaBlurBrightnessBoost", 150, 1.5)]
-    [InlineData("BlurDarkOverlaySlider", "MediaBlurDarkOverlay", 35, 0.35)]
-    [InlineData("SpotifyCanvasBrightnessSlider", "SpotifyCanvasBrightness", 60, 0.6)]
-    [InlineData("AnimationFpsSlider", "AnimationFps", 60, 60)]
-    [InlineData("HoverDelaySlider", "HoverExpandDelay", 500, 500)]
-    [InlineData("IdleAutoHideDelaySlider", "IdleAutoHideDelay", 5, 5000)]
-    [InlineData("IdleAutoHideDelaySlider", "IdleAutoHideDelay", 0.5, 500)]
-    [InlineData("IdleAutoHideDelaySlider", "IdleAutoHideDelay", 0.3, 300)]
-    [InlineData("IdleAutoHideDelaySlider", "IdleAutoHideDelay", 0.1, 100)]
-    [InlineData("TrayDelaySlider", "ClipboardCaptureDelay", 700, 700)]
+    [InlineData("WidthSlider", nameof(NotchSettings.Width), 350, 350)]
+    [InlineData("HeightSlider", nameof(NotchSettings.Height), 48, 48)]
+    [InlineData("RadiusSlider", nameof(NotchSettings.CornerRadius), 18, 18)]
+    [InlineData("DynamicIslandWidthSlider", nameof(NotchSettings.DynamicIslandWidth), 250, 250)]
+    [InlineData("DynamicIslandHeightSlider", nameof(NotchSettings.DynamicIslandHeight), 48, 48)]
+    [InlineData("OpacitySlider", nameof(NotchSettings.Opacity), 70, 0.7)]
+    [InlineData("BlurBrightnessSlider", nameof(NotchSettings.MediaBlurBrightnessBoost), 150, 1.5)]
+    [InlineData("BlurDarkOverlaySlider", nameof(NotchSettings.MediaBlurDarkOverlay), 35, 0.35)]
+    [InlineData("SpotifyCanvasBrightnessSlider", nameof(NotchSettings.SpotifyCanvasBrightness), 60, 0.6)]
+    [InlineData("AnimationFpsSlider", nameof(NotchSettings.AnimationFps), 60, 60)]
+    [InlineData("HoverDelaySlider", nameof(NotchSettings.HoverExpandDelay), 500, 500)]
+    [InlineData("IdleAutoHideDelaySlider", nameof(NotchSettings.IdleAutoHideDelay), 5, 5000)]
+    [InlineData("IdleAutoHideDelaySlider", nameof(NotchSettings.IdleAutoHideDelay), 0.5, 500)]
+    [InlineData("IdleAutoHideDelaySlider", nameof(NotchSettings.IdleAutoHideDelay), 0.3, 300)]
+    [InlineData("IdleAutoHideDelaySlider", nameof(NotchSettings.IdleAutoHideDelay), 0.1, 100)]
+    [InlineData("TrayDelaySlider", nameof(NotchSettings.ClipboardCaptureDelay), 700, 700)]
     public void SlidersConvertDisplayUnitsToSettings(string controlName, string settingName, double value, double expected) => SharedStaTestRunner.Run(() =>
     {
+        double Read(NotchSettings settings) => settingName switch
+        {
+            nameof(NotchSettings.Width) => settings.Width,
+            nameof(NotchSettings.Height) => settings.Height,
+            nameof(NotchSettings.CornerRadius) => settings.CornerRadius,
+            nameof(NotchSettings.DynamicIslandWidth) => settings.DynamicIslandWidth,
+            nameof(NotchSettings.DynamicIslandHeight) => settings.DynamicIslandHeight,
+            nameof(NotchSettings.Opacity) => settings.Opacity,
+            nameof(NotchSettings.MediaBlurBrightnessBoost) => settings.MediaBlurBrightnessBoost,
+            nameof(NotchSettings.MediaBlurDarkOverlay) => settings.MediaBlurDarkOverlay,
+            nameof(NotchSettings.SpotifyCanvasBrightness) => settings.SpotifyCanvasBrightness,
+            nameof(NotchSettings.AnimationFps) => settings.AnimationFps,
+            nameof(NotchSettings.HoverExpandDelay) => settings.HoverExpandDelay,
+            nameof(NotchSettings.IdleAutoHideDelay) => settings.IdleAutoHideDelay,
+            nameof(NotchSettings.ClipboardCaptureDelay) => settings.ClipboardCaptureDelay,
+            _ => throw new ArgumentOutOfRangeException(nameof(settingName))
+        };
         using var fixture = new Fixture();
-        Field<RangeBase>(fixture.Window, controlName).Value = value;
+        Assert.IsAssignableFrom<RangeBase>(fixture.Window.FindName(controlName)).Value = value;
         var snapshot = fixture.Window.ReadSettingsFromUi();
-        Assert.Equal(expected, Convert.ToDouble(typeof(NotchSettings).GetProperty(settingName)!.GetValue(snapshot)), 5);
+        Assert.Equal(expected, Read(snapshot), 5);
         fixture.Window.ApplyPreview(snapshot);
-        Assert.Equal(value, Field<RangeBase>(fixture.Window, controlName).Value);
+        Assert.Equal(value, Assert.IsAssignableFrom<RangeBase>(fixture.Window.FindName(controlName)).Value);
     });
 
     [Theory]
-    [InlineData("WidgetCombo", "ExpandedWidget")]
-    [InlineData("ClockPageStyleCombo", "ClockPageStyle")]
+    [InlineData("WidgetCombo", nameof(NotchSettings.ExpandedWidget))]
+    [InlineData("ClockPageStyleCombo", nameof(NotchSettings.ClockPageStyle))]
     public void EveryWidgetOptionSurvivesPreviewAndLocalization(string controlName, string settingName) => SharedStaTestRunner.Run(() =>
     {
+        string Read(NotchSettings settings) => settingName switch
+        {
+            nameof(NotchSettings.ExpandedWidget) => settings.ExpandedWidget,
+            nameof(NotchSettings.ClockPageStyle) => settings.ClockPageStyle,
+            _ => throw new ArgumentOutOfRangeException(nameof(settingName))
+        };
         using var fixture = new Fixture();
-        var combo = Field<ComboBox>(fixture.Window, controlName);
+        var combo = Assert.IsAssignableFrom<ComboBox>(fixture.Window.FindName(controlName));
         var tags = combo.Items.Cast<ComboBoxItem>().Select(item => (string)item.Tag).ToArray();
         foreach (string tag in tags)
         {
             combo.SelectedItem = combo.Items.Cast<ComboBoxItem>().Single(item => (string)item.Tag == tag);
             var snapshot = fixture.Window.ReadSettingsFromUi();
-            Assert.Equal(tag, typeof(NotchSettings).GetProperty(settingName)!.GetValue(snapshot));
+            Assert.Equal(tag, Read(snapshot));
             fixture.Window.ApplyPreview(snapshot);
-            Invoke(fixture.Window, controlName switch
-            {
-                "WidgetCombo" => "RepopulateWidgetComboPreservingSelection",
-                _ => "RepopulateClockPageStyleComboPreservingSelection"
-            });
+            if (controlName == "WidgetCombo") fixture.Window.RepopulateWidgetComboPreservingSelection();
+            else fixture.Window.RepopulateClockPageStyleComboPreservingSelection();
             Assert.Equal(tag, Assert.IsType<ComboBoxItem>(combo.SelectedItem).Tag);
         }
     });
@@ -413,6 +875,140 @@ public sealed class SettingsWindowControlTests
         Assert.True(window.AnimationFpsSlider.IsEnabled);
     });
 
+    [Theory]
+    [InlineData("Appearance", "DynamicIslandModeCheck", "DynamicIslandWidthSlider", .4, true)]
+    [InlineData("Appearance", "DynamicIslandModeCheck", "DynamicIslandHeightSlider", .4, true)]
+    [InlineData("Appearance", "EnableSpotifyLyricsCheck", "LyricsProviderPanel", .45, true)]
+    [InlineData("Appearance", "EnableSpotifyLyricsCheck", "BlurDarkOverlaySlider", .45, true)]
+    [InlineData("Appearance", "EnableSpotifyCanvasCheck", "SpotifyCanvasBrightnessSlider", .45, true)]
+    [InlineData("Appearance", "EnableYouTubeSubtitlesCheck", "SubtitlePriorityRow", .45, true)]
+    [InlineData("Appearance", "EnableBlurEffectsCheck", "SubjectBlurRow", .45, true)]
+    [InlineData("Behavior", "HoverExpandCheck", "HoverDelaySlider", .4, true)]
+    [InlineData("Behavior", "IdleAutoHideCheck", "IdleAutoHideDelaySlider", .4, true)]
+    [InlineData("Behavior", "SystemNotifyCheck", "AutoDismissNotifyCheck", .4, true)]
+    [InlineData("Behavior", "AutoDismissNotifyCheck", "NotificationDurationSlider", .4, true)]
+    [InlineData("System", "EnableWeatherCheck", "ManualCityTextBox", .45, true)]
+    [InlineData("Performance", "AutoAnimationFpsCheck", "AnimationFpsSlider", .4, false)]
+    [InlineData("Privacy", "LocalOnlyModeCheck", "PrivacyNetworkSection", .35, false)]
+    [InlineData("Skins", "EnableShadowCheck", "GlassShadowOpacitySlider", .4, true)]
+    [InlineData("Skins", "EnableShadowCheck", "GlassShadowSpreadSlider", .4, true)]
+    [InlineData("FileTray", "TrayTextCheck", "TrayDelayRow", .4, true)]
+    public void DependentOptionsKeepTheirLatestStateWhenMotionIsInterrupted(
+        string section, string toggleName, string optionName, double dimmedOpacity, bool checkedWhenEnabled) => SharedStaTestRunner.RunAsync(async () =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.EnableSpotifyLyricsCheck.IsChecked = true;
+            window.SystemNotifyCheck.IsChecked = true;
+            if (section == "Skins")
+            {
+                window.DynamicIslandModeCheck.IsChecked = true;
+                window.SkinCombo.SelectedIndex = 1;
+            }
+            window.TrayImagesCheck.IsChecked = false;
+            window.TrayFilesCheck.IsChecked = false;
+            var toggle = Assert.IsType<CheckBox>(window.FindName(toggleName));
+            var option = Assert.IsAssignableFrom<UIElement>(window.FindName(optionName));
+            window.Show();
+            window.NavigateToSection(section);
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            foreach (bool reducedMotion in new[] { false, true })
+            {
+                AnimationConfig.SetReduceMotion(reducedMotion);
+                foreach (bool enabled in new[] { false, true, false, true })
+                {
+                    if (ReferenceEquals(toggle, window.EnableSpotifyCanvasCheck))
+                        window.SetSpotifyCanvasOptIn(enabled, () => true);
+                    else
+                        toggle.IsChecked = enabled == checkedWhenEnabled;
+                    // A reveal can replace the toggle's fade before it completes.
+                    window.ApplyProgressiveBlurCascade([option], 80, -1, false, 60);
+                    window.ResetProgressiveBlurElements(false);
+                    Assert.Equal(enabled, option.IsEnabled);
+                    Assert.Equal(enabled ? 1 : dimmedOpacity, option.Opacity);
+                }
+                window.NavigateToSection("Devices");
+                window.NavigateToSection(section);
+                window.ResetProgressiveBlurElements(false);
+                Assert.Equal(1, option.Opacity);
+            }
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StyledFeatureGroupsKeepDimmingAcrossViewsAndSearch(bool reducedMotion) => SharedStaTestRunner.RunAsync(async () =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        var appearance = AiUsageAppearance.Current;
+        AnimationConfig.SetReduceMotion(reducedMotion);
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.EnableTranslationCheck.IsChecked = true;
+            window.Show();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            foreach (var (section, group, setEnabled) in new (string, StackPanel, Action<bool>)[]
+            {
+                ("Spotlight", window.SpotlightOptions, enabled => window.EnableSpotlightCheck.IsChecked = enabled),
+                ("Translation", window.CurrencyOptions, enabled => window.CurrencyConversionCheck.IsChecked = enabled),
+                ("AiUsage", window.AiUsageCustomColorsPanel, enabled =>
+                {
+                    if (enabled) window.AiUsageCustomColorsChoice.IsChecked = true;
+                    else window.AiUsageStatusColorsChoice.IsChecked = true;
+                })
+            })
+            {
+                window.NavigateToSection(section);
+                foreach (bool enabled in new[] { false, true, false, true })
+                {
+                    setEnabled(enabled);
+                    window.ApplyProgressiveBlurCascade([group], 80, -1, false, 60);
+                    window.ResetProgressiveBlurElements(false);
+                    Assert.Equal(enabled, group.IsEnabled);
+                    Assert.Equal(enabled ? 1 : .45, group.Opacity);
+                }
+                window.ExecuteSearch("color");
+                window.ExitSearchMode();
+                window.NavigateToSection("Devices");
+                window.NavigateToSection(section);
+                window.ResetProgressiveBlurElements(false);
+                Assert.Equal(1, group.Opacity);
+                setEnabled(false);
+                Assert.Equal(.45, group.Opacity);
+            }
+        }
+        finally { AiUsageAppearance.Apply(appearance); AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Fact]
+    public void ReopenedSettingsRowsStayVisibleWhenTheirFadeIsReplaced() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.Show();
+            window.NavigateToSection("Advanced");
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            window.AnimateCollapsibleRow(window.YouTubeApiKeyRow, false, false);
+            window.YouTubeApiCheck.IsChecked = true;
+            window.ApplyProgressiveBlurCascade([window.YouTubeApiKeyRow], 80, -1, false, 60);
+            window.ResetProgressiveBlurElements(false);
+            Assert.Equal(Visibility.Visible, window.YouTubeApiKeyRow.Visibility);
+            Assert.Equal(1, window.YouTubeApiKeyRow.Opacity);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
     [Fact]
     public void SearchShowsMatchesAndEmptyStateThenRestoresTheSettingsRows() => SharedStaTestRunner.RunAsync(async ct =>
     {
@@ -430,13 +1026,13 @@ public sealed class SettingsWindowControlTests
         window.SettingsSearchBox.Clear();
         Assert.Empty(window.SearchResultsStack.Children);
         Assert.NotNull(window.WidthSlider.Parent);
-        Assert.False(Field<bool>(window, "_isSearchMode"));
+        Assert.False(window.IsSearchMode);
         Assert.Equal(Visibility.Visible, window.SearchPlaceholder.Visibility);
         window.SettingsSearchBox.Text = "opacity";
         await WpfFrameWaiter.UntilAsync(() => window.SearchResultsStack.Children.Count > 0, "a second settings search", ct);
-        Invoke(window, "SearchingClearButton_Click", window.SearchingClearButton, new RoutedEventArgs());
+        window.SearchingClearButton_Click(window.SearchingClearButton, new RoutedEventArgs());
         Assert.Equal("", window.SettingsSearchBox.Text);
-        Assert.False(Field<bool>(window, "_isSearchMode"));
+        Assert.False(window.IsSearchMode);
     });
 
     [Fact]
@@ -478,12 +1074,12 @@ public sealed class SettingsWindowControlTests
         };
         window.YouTubeApiKeyPasswordBox.Password = value;
         Assert.Equal(statusKey == "" ? "" : Loc.Get(statusKey), window.YouTubeApiKeyStatus.Text);
-        Invoke(window, "ToggleKeyVisibility_Click", window, new RoutedEventArgs());
+        window.ToggleKeyVisibility_Click(window, new RoutedEventArgs());
         Assert.Equal(Visibility.Visible, window.YouTubeApiKeyTextBox.Visibility);
         Assert.Equal(value, window.YouTubeApiKeyTextBox.Text);
         window.YouTubeApiKeyTextBox.Text = value + "x";
         Assert.Equal(value + "x", window.YouTubeApiKeyPasswordBox.Password);
-        Invoke(window, "ToggleKeyVisibility_Click", window, new RoutedEventArgs());
+        window.ToggleKeyVisibility_Click(window, new RoutedEventArgs());
         Assert.Equal(Visibility.Collapsed, window.YouTubeApiKeyTextBox.Visibility);
         Assert.Equal(value + "x", window.ReadSettingsFromUi().YouTubeApiKey);
     });
@@ -504,7 +1100,7 @@ public sealed class SettingsWindowControlTests
                 "settings window loads before pointer hover", ct);
             var row = (StackPanel)window.NavAppearance.Child;
             var pointer = new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount);
-            Invoke(window, "NavButton_MouseEnter", window.NavAppearance, pointer);
+            window.NavButton_MouseEnter(window.NavAppearance, pointer);
             await WpfFrameWaiter.UntilAsync(() => window.NavActiveHoverOverlay.Opacity >= .099,
                 "selected settings pill lights up on hover", ct);
             Assert.Same(window.FindResource("AccentForegroundBrush"), window.NavAppearanceText.Foreground);
@@ -514,36 +1110,37 @@ public sealed class SettingsWindowControlTests
             Assert.Equal(0, row.RenderTransform.Value.OffsetX);
             Assert.Equal(1, row.Children[0].RenderTransform.Value.M11, 3);
 
-            Invoke(window, "NavButton_MouseEnter", window.NavSkins, pointer);
+            window.NavButton_MouseEnter(window.NavSkins, pointer);
             await WpfFrameWaiter.UntilAsync(() => window.NavHoverIndicator.Opacity == 1,
                 "unselected settings row reveals its hover surface", ct);
             Assert.Same(window.FindResource("AccentNavHoverBrush"), window.NavHoverIndicator.Background);
-            Assert.Same(window.FindResource("AccentNavHoverBorderBrush"), window.NavHoverIndicator.BorderBrush);
+            Assert.Equal(new Thickness(0), window.NavHoverIndicator.BorderThickness);
+            Assert.Null(window.NavHoverIndicator.BorderBrush);
             double displayedY = window.NavHoverIndicatorTranslate.Y;
             window.NavSkins.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseLeaveEvent });
-            Assert.Equal("Skins", Field<string>(window, "_hoveredNav"));
+            Assert.Equal("Skins", window.HoveredSection);
             Assert.True(window.NavHoverIndicator.Opacity > .99);
-            Invoke(window, "NavButton_MouseEnter", window.NavPrivacy, pointer);
+            window.NavButton_MouseEnter(window.NavPrivacy, pointer);
             if (motion) Assert.Equal(displayedY, window.NavHoverIndicatorTranslate.Y, 3);
 
-            Invoke(window, "NavButton_MouseEnter", window.NavBehavior, pointer);
+            window.NavButton_MouseEnter(window.NavBehavior, pointer);
             window.NavigateToSection("Behavior");
             await WpfFrameWaiter.UntilAsync(() => window.NavActiveHoverOverlay.Opacity >= .099,
                 "newly selected settings pill keeps its hover feedback", ct);
             Assert.Same(window.FindResource("AccentForegroundBrush"), window.NavBehaviorText.Foreground);
-            Invoke(window, "NavItemsHost_MouseLeave", window.NavItemsHost, pointer);
+            window.NavItemsHost_MouseLeave(window.NavItemsHost, pointer);
             var nextRow = (StackPanel)window.NavBehavior.Child;
             await WpfFrameWaiter.UntilAsync(() => window.NavActiveHoverOverlay.Opacity == 0 && window.NavHoverIndicator.Opacity == 0 &&
                 nextRow.RenderTransform.Value.OffsetX == 0 && nextRow.Children[0].RenderTransform.Value.M11 == 1,
                 "settings hover fully clears after leaving the navigation", ct);
             Assert.Same(window.FindResource("AccentForegroundBrush"), window.NavBehaviorText.Foreground);
-            Assert.Equal("Behavior", Field<string>(window, "_activeNav"));
-            Assert.False(Field<bool>(window, "_navHoverAnimating"));
+            Assert.Equal("Behavior", window.ActiveSection);
+            Assert.False(window.NavHover.IsAnimating);
 
-            Invoke(window, "NavButton_MouseEnter", window.NavPrivacy, pointer);
+            window.NavButton_MouseEnter(window.NavPrivacy, pointer);
             window.Hide();
             Assert.Equal(0, window.NavHoverIndicator.Opacity);
-            Assert.False(Field<bool>(window, "_navHoverAnimating"));
+            Assert.False(window.NavHover.IsAnimating);
         }
         finally { AnimationConfig.SetReduceMotion(previous); }
     });
@@ -562,26 +1159,26 @@ public sealed class SettingsWindowControlTests
                 "sidebar loads before testing continuous hover", ct);
             if (!SystemParameters.ClientAreaAnimation) return;
             var pointer = new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount);
-            Invoke(window, "NavButton_MouseEnter", window.NavSkins, pointer);
-            Invoke(window, "AdvanceNavHoverMotion", .1);
-            Invoke(window, "NavButton_MouseEnter", window.NavSpotlight, pointer);
-            Invoke(window, "AdvanceNavHoverMotion", .016);
-            object moving = Field<object>(window, "_navHoverState");
-            Assert.True((double)moving.GetType().GetField("YVelocity")!.GetValue(moving)! > 0);
+            window.NavButton_MouseEnter(window.NavSkins, pointer);
+            window.NavHover.Advance(.1);
+            window.NavButton_MouseEnter(window.NavSpotlight, pointer);
+            window.NavHover.Advance(.016);
+            var moving = window.NavHover.State;
+            Assert.True(moving.YVelocity > 0);
             window.NavSpotlight.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseLeaveEvent });
-            Assert.Equal("Spotlight", Field<string>(window, "_hoveredNav"));
-            Assert.Equal(moving, Field<object>(window, "_navHoverState"));
-            Invoke(window, "NavButton_MouseEnter", window.NavBehavior, pointer);
-            Assert.Equal(moving, Field<object>(window, "_navHoverState"));
-            Invoke(window, "NavItemsHost_MouseLeave", window.NavItemsHost, pointer);
-            Invoke(window, "AdvanceNavHoverMotion", .1);
-            Invoke(window, "AdvanceNavHoverMotion", .1);
+            Assert.Equal("Spotlight", window.HoveredSection);
+            Assert.Equal(moving, window.NavHover.State);
+            window.NavButton_MouseEnter(window.NavBehavior, pointer);
+            Assert.Equal(moving, window.NavHover.State);
+            window.NavItemsHost_MouseLeave(window.NavItemsHost, pointer);
+            window.NavHover.Advance(.1);
+            window.NavHover.Advance(.1);
             Assert.InRange(window.NavHoverIndicator.Opacity, .001, .05);
-            object fading = Field<object>(window, "_navHoverState");
-            Invoke(window, "NavButton_MouseEnter", window.NavDevices, pointer);
-            Assert.Equal(fading, Field<object>(window, "_navHoverState"));
-            for (int frame = 0; frame < 10; frame++) Invoke(window, "AdvanceNavHoverMotion", .1);
-            Assert.False(Field<bool>(window, "_navHoverAnimating"));
+            var fading = window.NavHover.State;
+            window.NavButton_MouseEnter(window.NavDevices, pointer);
+            Assert.Equal(fading, window.NavHover.State);
+            for (int frame = 0; frame < 10; frame++) window.NavHover.Advance(.1);
+            Assert.False(window.NavHover.IsAnimating);
             Assert.Equal(1, window.NavHoverIndicator.Opacity);
 
             string? framesDirectory = Environment.GetEnvironmentVariable("VNOTCH_NAV_HOVER_FRAMES");
@@ -589,11 +1186,11 @@ public sealed class SettingsWindowControlTests
             {
                 System.IO.Directory.CreateDirectory(framesDirectory);
                 AccentTheme.Apply("pink");
-                Invoke(window, "ResetProgressiveBlurElements", true);
+                window.ResetProgressiveBlurElements(true);
                 var destinations = new[] { window.NavSkins, window.NavSpotlight, window.NavBehavior, window.NavFileTray, window.NavPrivacy };
                 for (int frame = 0; frame < 100; frame++)
                 {
-                    if (frame % 20 == 0) Invoke(window, "NavButton_MouseEnter", destinations[frame / 20], pointer);
+                    if (frame % 20 == 0) window.NavButton_MouseEnter(destinations[frame / 20], pointer);
                     await WpfFrameWaiter.NextAsync(ct);
                     var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
                         (int)Math.Ceiling(window.NavItemsHost.ActualWidth * 2),
@@ -613,7 +1210,7 @@ public sealed class SettingsWindowControlTests
                 }
             }
             window.Hide();
-            Assert.False(Field<bool>(window, "_navHoverAnimating"));
+            Assert.False(window.NavHover.IsAnimating);
             Assert.Equal(0, window.NavHoverIndicator.Opacity);
         }
         finally { AccentTheme.Apply("default"); AnimationConfig.SetReduceMotion(previous); }
@@ -630,32 +1227,134 @@ public sealed class SettingsWindowControlTests
         {
             using var fixture = new Fixture();
             var window = fixture.Window;
-            var panels = Field<Dictionary<string, StackPanel>>(window, "_navPanels");
+            var panels = window.NavigationPanels;
             int sectionIdx = 0;
             foreach (string section in panels.Keys.Reverse())
             {
                 AnimationConfig.SetReduceMotion(reducedMotion || sectionIdx++ > 1);
-                Invoke(window, "NavigateToSection", section);
+                window.NavigateToSection(section);
                 if (!reducedMotion && sectionIdx == 1 && window.IsLoaded && SystemParameters.ClientAreaAnimation)
                 {
-                    Assert.True(Field<bool>(window, "_navPillAnimating"));
+                    Assert.True(window.SelectionMotion.IsMoving);
                 }
                 await WpfFrameWaiter.UntilAsync(() => panels[section].Visibility == Visibility.Visible && panels.Values.Count(panel => panel.Visibility == Visibility.Visible) == 1, "settings section navigation", ct);
-                Assert.Equal(section, Field<string>(window, "_activeNav"));
+                Assert.Equal(section, window.ActiveSection);
                 Assert.Equal(0, window.SettingsScrollViewer.VerticalOffset);
                 Assert.True(window.NavActiveIndicatorTranslate.Y >= 0);
             }
-            string[] destinations = panels.Keys.Where(key => key != Field<string>(window, "_activeNav")).Take(3).ToArray();
+            string[] destinations = panels.Keys.Where(key => key != window.ActiveSection).Take(3).ToArray();
             AnimationConfig.SetReduceMotion(reducedMotion);
-            foreach (string destination in destinations) Invoke(window, "NavigateToSection", destination);
+            foreach (string destination in destinations) window.NavigateToSection(destination);
             string latest = destinations[^1];
             await WpfFrameWaiter.UntilAsync(() => panels[latest].Visibility == Visibility.Visible && panels.Values.Count(panel => panel.Visibility == Visibility.Visible) == 1, "latest settings section wins", ct);
             await WpfFrameWaiter.UntilAsync(() => window.NavActiveIndicatorScale.ScaleX == 1 && window.NavActiveIndicatorScale.ScaleY == 1,
                 "settings selection pill settles after rapid selection", ct);
-            Invoke(window, "NavigateToSection", latest);
-            Assert.Equal(latest, Field<string>(window, "_activeNav"));
+            window.NavigateToSection(latest);
+            Assert.Equal(latest, window.ActiveSection);
         }
         finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DonationQrRevealsWithItsWhiteFrame(bool reducedMotion) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        var systemMotion = AnimationConfig.ClientAreaAnimationOverride;
+        try
+        {
+            AnimationConfig.ClientAreaAnimationOverride = true;
+            AnimationConfig.SetReduceMotion(reducedMotion);
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.Show();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            window.NavigateToSection("Donating");
+            window.UpdateLayout();
+
+            var frame = window.DonationQrFrame;
+            var qr = Assert.IsType<Image>(frame.Child);
+            Assert.True(Assert.IsAssignableFrom<System.Windows.Media.Imaging.BitmapSource>(qr.Source).PixelWidth > 0);
+            if (!reducedMotion)
+            {
+                await WpfFrameWaiter.UntilAsync(() => frame.Opacity is > 0 and < 1 || qr.Opacity is > 0 and < 1,
+                    "donation QR mid-reveal", ct);
+                Assert.Equal(frame.Opacity, frame.Opacity * qr.Opacity, 6);
+                await WpfFrameWaiter.UntilAsync(() => !frame.HasAnimatedProperties && !qr.HasAnimatedProperties,
+                    "donation QR reveal to settle", ct);
+            }
+            Assert.True(qr.IsVisible);
+            Assert.Equal(1, frame.Opacity);
+            Assert.Equal(1, qr.Opacity);
+        }
+        finally
+        {
+            AnimationConfig.SetReduceMotion(previous);
+            AnimationConfig.ClientAreaAnimationOverride = systemMotion;
+        }
+    });
+
+    [Fact]
+    public void SettingsContentRevealsAcrossPagesAndExpandedGroups() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        var systemMotion = AnimationConfig.ClientAreaAnimationOverride;
+        try
+        {
+            AnimationConfig.SetReduceMotion(false);
+            AnimationConfig.ClientAreaAnimationOverride = true;
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.Show();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            window.NavigateToSection("FileTray");
+            Assert.True(window.SettingsPageWave.IsVisible);
+            window.UpdateLayout();
+            await WpfFrameWaiter.UntilAsync(() => window.TrayAdvancedTitle.Opacity is > .05 and < 1 &&
+                window.TrayAdvancedHint.Opacity < window.TrayAdvancedTitle.Opacity &&
+                window.TrayTextCheck.Opacity < window.TrayAdvancedTitle.Opacity, "individual components in one settings tree", ct);
+            Assert.True(window.TrayTextCheck.HasAnimatedProperties);
+            Assert.False(window.TrayTextRow.HasAnimatedProperties);
+
+            window.NavigateToSection("Advanced");
+            window.UpdateLayout();
+            var bottom = window.EnableDebugModeCheck;
+            Assert.True(bottom.TranslatePoint(new Point(), window.SettingsScrollViewer).Y > window.SettingsScrollViewer.ViewportHeight);
+            Assert.False(bottom.HasAnimatedProperties);
+            var wheel = new MouseWheelEventArgs(Mouse.PrimaryDevice, 0,
+                -(int)Math.Ceiling(window.SettingsScrollViewer.ScrollableHeight))
+                { RoutedEvent = Mouse.PreviewMouseWheelEvent };
+            window.SettingsScrollViewer.RaiseEvent(wheel);
+            Assert.True(wheel.Handled);
+            await WpfFrameWaiter.UntilAsync(() => bottom.Opacity is > 0 and < 1, "a newly scrolled-in control to reveal", ct);
+            await WpfFrameWaiter.UntilAsync(() => !window.IsScrollAnimating,
+                "wheel scroll during reveal to settle", ct);
+            await WpfFrameWaiter.UntilAsync(() => !bottom.HasAnimatedProperties && bottom.Opacity == 1, "the control to settle", ct);
+            window.SettingsScrollViewer.ScrollToTop();
+            window.UpdateLayout();
+            bottom.BringIntoView();
+            window.UpdateLayout();
+            Assert.False(bottom.HasAnimatedProperties);
+
+            window.NavigateToTranslation();
+            window.TranslationAdvancedExpander.IsExpanded = true;
+            window.UpdateLayout();
+            window.TranslationCustomPromptLabel.BringIntoView();
+            await WpfFrameWaiter.UntilAsync(() => window.TranslationCustomPromptLabel.Opacity is > 0 and < 1,
+                "expanded options to reveal", ct);
+            AnimationConfig.SetReduceMotion(true);
+            Assert.Equal(1, window.TranslationCustomPromptLabel.Opacity);
+            Assert.False(window.TranslationCustomPromptLabel.HasAnimatedProperties);
+            window.NavigateToSection("FileTray");
+            Assert.False(window.SettingsPageWave.IsVisible);
+            Assert.Equal(1, window.TrayTextCheck.Opacity);
+        }
+        finally
+        {
+            AnimationConfig.ClientAreaAnimationOverride = systemMotion;
+            AnimationConfig.SetReduceMotion(previous);
+        }
     });
 
     [Fact]
@@ -680,12 +1379,11 @@ public sealed class SettingsWindowControlTests
             double start = window.NavActiveIndicator.TranslatePoint(new Point(0, 0), window.NavItemsStack).Y;
             double target = window.NavPrivacy.TranslatePoint(new Point(0, 0), window.NavItemsStack).Y;
             window.NavigateToSection("Privacy");
-            Invoke(window, "AdvanceNavPillMotion", .08);
+            var pill = window.SelectionMotion;
+            pill.Advance(.08);
             double between = window.NavActiveIndicator.TranslatePoint(new Point(0, 0), window.NavItemsStack).Y;
             double stretched = window.NavActiveIndicatorScale.ScaleY;
-            var state = Field<object>(window, "_navPillState");
-            double topVelocity = (double)state.GetType().GetField("TopVelocity")!.GetValue(state)!;
-            double bottomVelocity = (double)state.GetType().GetField("BottomVelocity")!.GetValue(state)!;
+            var (topVelocity, bottomVelocity) = pill.Velocity;
             Assert.InRange(between, start + .1, target - .1);
             Assert.True(stretched > 1.05);
             Assert.True(window.NavActiveIndicatorScale.ScaleX < 1);
@@ -693,10 +1391,9 @@ public sealed class SettingsWindowControlTests
             window.NavigateToSection("Appearance");
             Assert.Equal(between, window.NavActiveIndicator.TranslatePoint(new Point(0, 0), window.NavItemsStack).Y, 3);
             Assert.Equal(stretched, window.NavActiveIndicatorScale.ScaleY, 3);
-            var retargeted = Field<object>(window, "_navPillState");
-            Assert.Equal(topVelocity, (double)retargeted.GetType().GetField("TopVelocity")!.GetValue(retargeted)!);
-            Assert.Equal(bottomVelocity, (double)retargeted.GetType().GetField("BottomVelocity")!.GetValue(retargeted)!);
-            await WpfFrameWaiter.UntilAsync(() => !Field<bool>(window, "_navPillAnimating"),
+            Assert.Equal(topVelocity, pill.Velocity.TopVelocity);
+            Assert.Equal(bottomVelocity, pill.Velocity.BottomVelocity);
+            await WpfFrameWaiter.UntilAsync(() => !pill.IsMoving,
                 "reversed sidebar selection settles and detaches its frame handler", ct);
             Assert.Equal(window.NavAppearance.TranslatePoint(new Point(0, 0), window.NavItemsStack).Y,
                 window.NavActiveIndicatorTranslate.Y, 3);
@@ -708,7 +1405,6 @@ public sealed class SettingsWindowControlTests
                 System.IO.Directory.CreateDirectory(framesDirectory);
                 window.NavigateToSection("Skins");
                 window.SyncNavIndicators(animate: false);
-                var iconBrushMethod = typeof(SettingsWindow).GetMethod("ApplyNavIconBrush", BindingFlags.Static | BindingFlags.NonPublic)!;
                 int frame = 0;
                 foreach (string section in new[] { "Devices", "Privacy", "Skins" })
                 {
@@ -717,12 +1413,12 @@ public sealed class SettingsWindowControlTests
                     {
                         if (button.Child is not StackPanel row || row.Children.Count < 2) continue;
                         Brush brush = button.Tag as string == section ? Brushes.Black : Brushes.Silver;
-                        iconBrushMethod.Invoke(null, new object[] { row.Children[0], brush, false });
+                        SettingsWindow.ApplyNavIconBrush(row.Children[0], brush, false);
                         if (row.Children[1] is TextBlock text) text.Foreground = brush;
                     }
                     for (int step = 0; step < 36; step++, frame++)
                     {
-                        Invoke(window, "AdvanceNavPillMotion", .016);
+                        pill.Advance(.016);
                         var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
                             (int)Math.Ceiling(window.NavItemsHost.ActualWidth * 2),
                             (int)Math.Ceiling(window.NavItemsHost.ActualHeight * 2), 192, 192, PixelFormats.Pbgra32);
@@ -753,7 +1449,7 @@ public sealed class SettingsWindowControlTests
             window.NavigateToSection("System");
             AnimationConfig.SetReduceMotion(true);
             window.SyncNavIndicators(animate: false);
-            Assert.False(Field<bool>(window, "_navPillAnimating"));
+            Assert.False(window.SelectionMotion.IsMoving);
             Assert.False(window.NavActiveIndicatorTranslate.HasAnimatedProperties);
             Assert.False(window.NavActiveIndicatorScale.HasAnimatedProperties);
             Assert.Equal(System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(window.NavSystem).Y + window.NavSystem.Margin.Top,
@@ -770,6 +1466,8 @@ public sealed class SettingsWindowControlTests
     public void CascadeWithoutTailBlurPreservesOpacityAndReleasesEveryClock(bool menu) => SharedStaTestRunner.RunAsync(async ct =>
     {
         bool previous = AnimationConfig.ReduceMotion;
+        var previousSystemMotion = AnimationConfig.ClientAreaAnimationOverride;
+        AnimationConfig.ClientAreaAnimationOverride = true;
         AnimationConfig.SetReduceMotion(false);
         try
         {
@@ -780,14 +1478,68 @@ public sealed class SettingsWindowControlTests
                 IsEnabled = index != 7
             }).ToArray();
             fixture.Window.ApplyProgressiveBlurCascade(items, 0, menu ? -1 : 1, menu, 60);
-            Assert.All(items.Take(6), item => Assert.IsType<System.Windows.Media.Effects.BlurEffect>(item.Effect));
-            Assert.All(items.Skip(6), item => Assert.Null(item.Effect));
+            Assert.All(items, item => Assert.True(item.HasAnimatedProperties));
+            Assert.All(items, item => Assert.Null(item.Effect));
             await WpfFrameWaiter.UntilAsync(() => items.All(item => !item.HasAnimatedProperties &&
-                !item.RenderTransform.HasAnimatedProperties && item.Effect == null), "cascade releases blur and motion clocks", ct);
+                !item.RenderTransform.HasAnimatedProperties && item.Effect == null), "cascade releases motion clocks without blur", ct);
             Assert.All(items.Take(7), item => Assert.Equal(1, item.Opacity));
             Assert.Equal(.4, items[7].Opacity);
             fixture.Window.ResetProgressiveBlurElements(menu);
             Assert.All(items, item => Assert.Equal(0, ((TranslateTransform)item.RenderTransform).Y));
+        }
+        finally
+        {
+            AnimationConfig.ClientAreaAnimationOverride = previousSystemMotion;
+            AnimationConfig.SetReduceMotion(previous);
+        }
+    });
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void TranslationOptionsFollowSwitchAfterReveal(bool reducedMotion, bool interrupt) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(reducedMotion);
+        try
+        {
+            using var fixture = new Fixture();
+            var window = fixture.Window;
+            window.Show();
+            window.NavigateToTranslation();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            window.ResetProgressiveBlurElements(isMenuList: false);
+            window.EnableTranslationCheck.IsChecked = false;
+            window.CurrencyConversionCheck.IsChecked = false;
+            Assert.Equal(.45, window.TranslationOptions.Opacity);
+
+            window.ApplyProgressiveBlurCascade([window.TranslationOptions], 80, -1, false, 60);
+            window.EnableTranslationCheck.IsChecked = true;
+            if (interrupt) window.ResetProgressiveBlurElements(isMenuList: false);
+            await WpfFrameWaiter.UntilAsync(() => !window.TranslationOptions.HasAnimatedProperties &&
+                !window.TranslationOptions.RenderTransform.HasAnimatedProperties, "translation options finish revealing", ct);
+
+            Assert.True(window.TranslationSourceCombo.IsEnabled);
+            Assert.True(window.TranslationModelCombo.IsEnabled);
+            Assert.Equal(1, window.TranslationOptions.Opacity);
+            Assert.Equal(.45, window.CurrencyOptions.Opacity);
+            window.CurrencyConversionCheck.IsChecked = true;
+            Assert.Equal(1, window.CurrencyOptions.Opacity);
+
+            foreach (bool enabled in new[] { false, true })
+            {
+                window.EnableTranslationCheck.IsChecked = enabled;
+                Assert.Equal(enabled, window.TranslationSourceCombo.IsEnabled);
+                Assert.Equal(enabled ? 1 : .45, window.TranslationOptions.Opacity);
+            }
+
+            window.NavigateToSection("Appearance");
+            window.NavigateToTranslation();
+            window.ResetProgressiveBlurElements(isMenuList: false);
+            Assert.Equal(1, window.TranslationOptions.Opacity);
+            window.EnableTranslationCheck.IsChecked = false;
+            Assert.Equal(.45, window.TranslationOptions.Opacity);
         }
         finally { AnimationConfig.SetReduceMotion(previous); }
     });
@@ -799,7 +1551,7 @@ public sealed class SettingsWindowControlTests
         var window = fixture.Window;
         window.Left = 80;
         window.Top = 60;
-        Invoke(window, "PlayEntranceAnimation");
+        window.PlayEntranceAnimation();
         Assert.True(window.ShellScale.ScaleX < 1);
         Assert.Equal(new Point(0.5, 0), window.MainShell.RenderTransformOrigin);
         await WpfFrameWaiter.UntilAsync(() => Math.Abs(window.ShellScale.ScaleX - 1) < 1e-6 && Math.Abs(window.ShellScale.ScaleY - 1) < 1e-6 && Math.Abs(window.FooterTranslate.Y) < 1e-6, "settings entrance shell and footer", ct);
@@ -811,7 +1563,9 @@ public sealed class SettingsWindowControlTests
         Assert.Equal(1, window.SocialFacebook.Opacity);
         Assert.Equal(1, window.SocialDiscord.Opacity);
         Assert.Equal(new CornerRadius(24), window.MainShell.CornerRadius);
-        await WpfFrameWaiter.UntilAsync(() => window.MainShell.Effect is System.Windows.Media.Effects.DropShadowEffect { Opacity: 0.42 }, "settings entrance shadow", ct);
+        Assert.Null(window.MainShell.Effect);
+        await WpfFrameWaiter.UntilAsync(() => window.MainShellShadow.Effect is System.Windows.Media.Effects.DropShadowEffect { Opacity: 0.42 }, "settings entrance shadow", ct);
+        Assert.Null(window.MainShell.Effect);
     });
 
     [Fact]
@@ -832,26 +1586,26 @@ public sealed class SettingsWindowControlTests
             await WpfFrameWaiter.NextAsync(ct);
             Assert.True(window.SettingsScrollViewer.ScrollableHeight > 500);
             var wheel = new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, -120) { RoutedEvent = System.Windows.Input.Mouse.PreviewMouseWheelEvent };
-            Invoke(window, "SettingsScrollViewer_PreviewMouseWheel", window.SettingsScrollViewer, wheel);
+            window.SettingsScrollViewer_PreviewMouseWheel(window.SettingsScrollViewer, wheel);
             Assert.True(wheel.Handled);
-            Assert.True(Field<bool>(window, "_isScrollAnimating"));
-            double target = Field<double>(window, "_scrollTarget");
-            await WpfFrameWaiter.UntilAsync(() => !Field<bool>(window, "_isScrollAnimating"), "smooth settings wheel scroll settles", ct);
+            Assert.True(window.IsScrollAnimating);
+            double target = window.ScrollTarget;
+            await WpfFrameWaiter.UntilAsync(() => !window.IsScrollAnimating, "smooth settings wheel scroll settles", ct);
             Assert.Equal(target, window.SettingsScrollViewer.VerticalOffset);
             var originalCombo = window.WidgetCombo;
             window.WidgetCombo = new OpenDropDownComboBox();
             try
             {
                 var blocked = new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, -120) { RoutedEvent = System.Windows.Input.Mouse.PreviewMouseWheelEvent };
-                Invoke(window, "SettingsScrollViewer_PreviewMouseWheel", window.SettingsScrollViewer, blocked);
+                window.SettingsScrollViewer_PreviewMouseWheel(window.SettingsScrollViewer, blocked);
                 Assert.True(blocked.Handled);
-                Assert.False(Field<bool>(window, "_isScrollAnimating"));
+                Assert.False(window.IsScrollAnimating);
                 Assert.Equal(target, window.SettingsScrollViewer.VerticalOffset);
             }
             finally { window.WidgetCombo = originalCombo; }
             var reverse = new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, 1200) { RoutedEvent = System.Windows.Input.Mouse.PreviewMouseWheelEvent };
-            Invoke(window, "SettingsScrollViewer_PreviewMouseWheel", window.SettingsScrollViewer, reverse);
-            await WpfFrameWaiter.UntilAsync(() => { window.SettingsScrollViewer.UpdateLayout(); return !Field<bool>(window, "_isScrollAnimating"); }, "settings scroll clamps to top", ct);
+            window.SettingsScrollViewer_PreviewMouseWheel(window.SettingsScrollViewer, reverse);
+            await WpfFrameWaiter.UntilAsync(() => { window.SettingsScrollViewer.UpdateLayout(); return !window.IsScrollAnimating; }, "settings scroll clamps to top", ct);
             Assert.Equal(0, window.SettingsScrollViewer.VerticalOffset);
         }
         finally
@@ -871,15 +1625,14 @@ public sealed class SettingsWindowControlTests
     public void SubtitlePriorityRestoresAllSupportedModesExactlyOnce(string? input, string expected) => SharedStaTestRunner.Run(() =>
     {
         using var fixture = new Fixture();
-        Field<NotchSettings>(fixture.Window, "_settings").SubtitlePriority = input!;
-        Invoke(fixture.Window, "LoadSubtitlePriority");
-        Assert.Equal(expected, typeof(SettingsWindow).GetMethod("GetSubtitlePriorityString", Private)!.Invoke(fixture.Window, null));
+        fixture.Window.EditedSettings.SubtitlePriority = input!;
+        fixture.Window.LoadSubtitlePriority();
+        Assert.Equal(expected, fixture.Window.GetSubtitlePriorityString());
         var items = fixture.Window.SubtitlePriorityItems.Items;
         Assert.Equal(3, items.Count);
         foreach (object item in items) Assert.False(string.IsNullOrWhiteSpace(item.ToString()));
     });
 
-    private static T Field<T>(SettingsWindow window, string name) => (T)typeof(SettingsWindow).GetField(name, Private)!.GetValue(window)!;
 
     // The settings window stays unshown. Supply the open state without creating
     // a native popup, while the scroll viewer renders in an input-safe host.
@@ -888,8 +1641,6 @@ public sealed class SettingsWindowControlTests
         static OpenDropDownComboBox() => IsDropDownOpenProperty.OverrideMetadata(typeof(OpenDropDownComboBox),
             new FrameworkPropertyMetadata(true, null, (_, _) => true));
     }
-    private static void Invoke(SettingsWindow window, string method, params object?[] arguments) =>
-        typeof(SettingsWindow).GetMethod(method, Private)!.Invoke(window, arguments);
 
     private sealed class Fixture : IDisposable
     {
@@ -918,16 +1669,239 @@ public sealed class SettingsWindowControlTests
         await window.SaveAsync(snapshot, ct);
         Assert.True(fixture.Service.Applied!.IncludePrereleaseUpdates);
         Loc.SetLanguage("vi");
-        Invoke(window, "ApplyLocalization");
+        window.ApplyLocalization();
         Assert.Equal("THỬ NGHIỆM", window.TranslationExperimentalBadge.Text);
         Assert.Contains("pre-release", window.IncludePrereleaseUpdatesCheck.Content.ToString());
         window.LocalOnlyModeCheck.IsChecked = true;
         Assert.False(window.IncludePrereleaseUpdatesCheck.IsEnabled);
     });
 
+    [Fact]
+    public void ChangelogOpensAndNavigatesWithinSettings() => SharedStaTestRunner.RunAsync(async () =>
+    {
+        var updates = new PrereleasePreferenceUpdateService
+        {
+            Releases = [new() { Version = "2.0.0", PublishedAt = new DateTime(2026, 1, 2), ReleaseNotes = "### Changes\n- Notes with *emphasis*, a [link](https://example.com) and `code`.\n\n```txt\nexample\n```" }]
+        };
+        using var fixture = new Fixture(updates);
+        var window = fixture.Window;
+        window.Show();
+        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        window.NavigateToSection("Updates");
+
+        void OpenChangelog() => window.ViewChangelogButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        OpenChangelog();
+        window.UpdateLayout();
+        Assert.Same(window, Window.GetWindow(window.Changelog));
+        Assert.Empty(window.OwnedWindows);
+        Assert.True(window.Changelog.ChangelogContent.IsVisible);
+        Assert.True(window.Changelog.ContentScrollViewer.ViewportHeight > 0);
+        AssertSfProBold(window.ChangelogPage);
+        Assert.True(window.NavUpdates.IsVisible);
+        Assert.False(window.SettingsScrollViewer.IsVisible);
+        Assert.Equal(2, window.Changelog.VersionList.Items.Count);
+
+        var list = window.Changelog.VersionList;
+        var firstRow = (ListBoxItem)list.Items[0];
+        firstRow.Focus();
+        var down = new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(list)!, 0, Key.Down)
+            { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+        firstRow.RaiseEvent(down);
+        Assert.True(down.Handled);
+        Assert.Equal(1, list.SelectedIndex);
+        Assert.Equal("1.0.0", ((ListBoxItem)list.SelectedItem).Tag);
+
+        window.ChangelogBackButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.True(window.ViewChangelogButton.IsVisible);
+        OpenChangelog();
+        Assert.Equal(2, window.Changelog.VersionList.Items.Count);
+        window.NavigateToSection("Appearance");
+        Assert.True(window.PanelAppearance.IsVisible);
+        Assert.False(window.Changelog.IsVisible);
+        window.NavigateToSection("Updates");
+        Assert.True(window.ViewChangelogButton.IsVisible);
+        OpenChangelog();
+        window.ExecuteSearch("volume");
+        Assert.True(window.PanelSearching.IsVisible);
+        Assert.False(window.Changelog.IsVisible);
+    });
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ChangelogSkeletonTracksPendingHistoryInBothPanes(bool succeeds) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        var pending = new TaskCompletionSource<IReadOnlyList<UpdateInfo>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var fixture = new Fixture(new PrereleasePreferenceUpdateService { PendingHistory = pending.Task });
+        var window = fixture.Window;
+        window.Show();
+        window.NavigateToSection("Updates");
+        void OpenChangelog() => window.ViewChangelogButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        OpenChangelog();
+        var view = window.Changelog;
+        await WpfFrameWaiter.UntilAsync(() => view.VersionSkeleton.IsVisible && view.NotesSkeleton.IsVisible &&
+            !window.SettingsPageWave.IsVisible, "both changelog loading placeholders to appear", ct);
+        Assert.Empty(view.VersionList.Items);
+        Assert.False(view.ChangelogContent.IsVisible);
+        Assert.False(view.ErrorPanel.IsVisible);
+        window.ChangelogBackButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.False(view.NotesSkeleton.IsVisible);
+        OpenChangelog();
+        Assert.True(view.VersionSkeleton.IsVisible);
+        Assert.True(view.NotesSkeleton.IsVisible);
+
+        if (succeeds) pending.SetResult([new() { Version = "1.0.0", ReleaseNotes = "Release notes" }]);
+        else pending.SetException(new InvalidOperationException("History unavailable"));
+        await WpfFrameWaiter.UntilAsync(() => !view.NotesSkeleton.IsVisible && !view.VersionSkeleton.IsVisible,
+            "both changelog placeholders to give way to the result", ct);
+        Assert.Equal(succeeds, view.ChangelogContent.IsVisible);
+        Assert.Equal(!succeeds, view.ErrorPanel.IsVisible);
+        Assert.Equal(succeeds ? 1 : 0, view.VersionList.Items.Count);
+    });
+
+    [Fact]
+    public void ChangelogRowChromeRevealsWithItsLabels() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        using var fixture = new Fixture(new PrereleasePreferenceUpdateService
+        {
+            Releases = Enumerable.Range(1, 12).Select(i => new UpdateInfo
+            {
+                Version = $"2.0.{i}",
+                ReleaseNotes = string.Join("\n\n", Enumerable.Range(1, 36).Select(n => $"Change {n}"))
+            }).ToArray()
+        });
+        bool previousMotion = AnimationConfig.ReduceMotion;
+        var previousSystem = AnimationConfig.ClientAreaAnimationOverride;
+        try
+        {
+            AnimationConfig.SetReduceMotion(false);
+            AnimationConfig.ClientAreaAnimationOverride = true;
+            var window = fixture.Window;
+            window.Show();
+            window.NavigateToSection("Updates");
+            window.ViewChangelogButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            window.UpdateLayout();
+            var view = window.Changelog;
+            var track = VisualTreeHelper.GetParent(view.VersionList);
+            var selected = (ListBoxItem)view.VersionList.SelectedItem;
+            var labels = (FrameworkElement)selected.Content;
+            var neighbor = (ListBoxItem)view.VersionList.Items[1];
+            var hoverSurface = (Border)neighbor.Template.FindName("VersionRow", neighbor);
+
+            double OpacityInTrack(UIElement element)
+            {
+                double opacity = 1;
+                for (DependencyObject visual = element; visual != track; visual = VisualTreeHelper.GetParent(visual))
+                    if (visual is UIElement layer) opacity *= layer.Opacity;
+                return opacity;
+            }
+
+            await WpfFrameWaiter.UntilAsync(() => view.SelectionMark.IsVisible &&
+                OpacityInTrack(labels) is > .01 and < .95, "the selected row mid-reveal", ct);
+            var lowerRows = view.VersionList.Items.Cast<ListBoxItem>().Skip(8).ToArray();
+            Assert.Equal(view.ReleaseNotes.Children[0].Opacity, selected.Opacity, precision: 3);
+            var lowerNotes = view.ReleaseNotes.Children.Cast<UIElement>().Skip(8).ToArray();
+            Assert.NotEmpty(lowerRows);
+            Assert.NotEmpty(lowerNotes);
+            Assert.All(lowerRows, row => Assert.Equal(0, row.Opacity));
+            Assert.All(lowerNotes, note => Assert.Equal(0, note.Opacity));
+            Assert.False(view.VersionList.IsKeyboardFocusWithin);
+            Assert.Same(window.FindResource("AccentBrush"), view.SelectionMark.Background);
+            Assert.Same(window.FindResource("AccentForegroundBrush"), selected.Foreground);
+            Assert.Equal(OpacityInTrack(labels), OpacityInTrack(view.SelectionMark), precision: 3);
+            Assert.Equal(OpacityInTrack((UIElement)neighbor.Content), OpacityInTrack(hoverSurface), precision: 3);
+            double labelTop = labels.TranslatePoint(new Point(0, 1 - selected.Padding.Top), view.VersionList).Y;
+            Assert.Equal(labelTop, view.SelectionMark.TranslatePoint(new Point(), view.VersionList).Y, precision: 3);
+
+            view.VersionList.SelectedIndex = 1;
+            await WpfFrameWaiter.UntilAsync(() => !view.ReleaseWave.IsVisible && view.MarkScale.ScaleY == 1 &&
+                Math.Abs(view.MarkOffset.Y - neighbor.TranslatePoint(new Point(0, 1), view.VersionList).Y) < .01,
+                "the indicator to settle on the interrupted row", ct);
+            Assert.Equal(1, OpacityInTrack(view.SelectionMark));
+            Assert.All(lowerRows, row => Assert.Equal(1, row.Opacity));
+            await WpfFrameWaiter.UntilAsync(() => view.ReleaseNotes.Children.Cast<UIElement>()
+                .All(note => !note.HasAnimatedProperties && note.Opacity == 1), "all release notes to finish revealing", ct);
+
+            neighbor.Focus();
+            neighbor.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(neighbor)!, 0, Key.End)
+                { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            var last = (ListBoxItem)view.VersionList.Items[^1];
+            Assert.Same(last, view.VersionList.SelectedItem);
+            window.UpdateLayout();
+            Assert.True(view.VersionScrollViewer.VerticalOffset > 0);
+            await WpfFrameWaiter.UntilAsync(() => view.MarkScale.ScaleY == 1 &&
+                Math.Abs(last.TranslatePoint(new Point(0, 1), view.VersionScrollViewer).Y -
+                    view.SelectionMark.TranslatePoint(new Point(), view.VersionScrollViewer).Y) < .01,
+                "the selection to settle on the scrolled row", ct);
+        }
+        finally
+        {
+            AnimationConfig.SetReduceMotion(previousMotion);
+            AnimationConfig.ClientAreaAnimationOverride = previousSystem;
+        }
+    });
+
+    [Fact]
+    public void ChangelogSelectionCanInterruptMotionAndHonorReducedMotion() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        using var fixture = new Fixture(new PrereleasePreferenceUpdateService
+        {
+            Releases = [new() { Version = "2.0.0", ReleaseNotes = "Latest notes" }]
+        });
+        var window = fixture.Window;
+        bool previousMotion = AnimationConfig.ReduceMotion;
+        bool? previousSystemMotion = AnimationConfig.ClientAreaAnimationOverride;
+        try
+        {
+            AnimationConfig.SetReduceMotion(false);
+            AnimationConfig.ClientAreaAnimationOverride = true;
+            window.Show();
+            window.NavigateToSection("Updates");
+            window.ViewChangelogButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var view = window.Changelog;
+            await WpfFrameWaiter.UntilAsync(() => view.SelectionMark.IsVisible && view.MarkOffset.Y > 0 &&
+                !window.SettingsPageWave.IsVisible, "the opening wave to finish", ct);
+            double first = view.MarkOffset.Y;
+            view.VersionList.SelectedIndex = 1;
+            double second = ((ListBoxItem)view.VersionList.SelectedItem).TranslatePoint(new Point(0, 1), view.VersionList).Y;
+            Assert.True(second > first);
+            Assert.True(view.ReleaseHeader.HasAnimatedProperties);
+            await WpfFrameWaiter.UntilAsync(() => view.ReleaseWave.IsVisible && view.ReleaseWave.Progress is > 0 and < 1 &&
+                view.MarkScale.ScaleY > 1.02 && view.MarkScale.ScaleX < 1,
+                "the version pill to stretch during the blur wave", ct);
+            view.VersionList.SelectedIndex = 0;
+            await WpfFrameWaiter.UntilAsync(() => !view.ReleaseWave.IsVisible && view.MarkScale.ScaleY == 1 &&
+                view.ReleaseHeader.Opacity >= .999,
+                "the wave, retargeted selection and reveal to settle", ct);
+            Assert.Equal(first, view.MarkOffset.Y, precision: 3);
+            var paragraph = Assert.IsType<TextBlock>(view.ReleaseNotes.Children[0]);
+            Assert.Equal("Latest notes", new TextRange(paragraph.ContentStart, paragraph.ContentEnd).Text);
+
+            window.EnableBlurEffectsCheck.IsChecked = false;
+            view.VersionList.SelectedIndex = 1;
+            Assert.False(view.ReleaseWave.IsVisible);
+            window.EnableBlurEffectsCheck.IsChecked = true;
+            AnimationConfig.SetReduceMotion(true);
+            view.VersionList.SelectedIndex = 0;
+            Assert.Equal(first, view.MarkOffset.Y, precision: 3);
+            Assert.False(view.ReleaseWave.IsVisible);
+            Assert.Equal(1, view.ReleaseNotes.Opacity);
+            window.ChangelogBackButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.False(window.SettingsPageWave.IsVisible);
+            Assert.True(window.ViewChangelogButton.IsVisible);
+        }
+        finally
+        {
+            AnimationConfig.ClientAreaAnimationOverride = previousSystemMotion;
+            AnimationConfig.SetReduceMotion(previousMotion);
+        }
+    });
+
     private sealed class PrereleasePreferenceUpdateService : IUpdateService
     {
         public bool IncludePrereleases { get; private set; }
+        public IReadOnlyList<UpdateInfo> Releases { get; init; } = [];
+        public Task<IReadOnlyList<UpdateInfo>>? PendingHistory { get; init; }
         public string CurrentVersion => "1.0.0";
         public UpdateInfo? LatestUpdateInfo => null;
         public event EventHandler<UpdateInfo?>? UpdateCheckCompleted { add { /* no-op */ } remove { /* no-op */ } }
@@ -936,7 +1910,7 @@ public sealed class SettingsWindowControlTests
             IncludePrereleases = includePrereleases;
             return Task.FromResult<UpdateInfo?>(null);
         }
-        public Task<IReadOnlyList<UpdateInfo>> GetAllReleasesAsync() => Task.FromResult<IReadOnlyList<UpdateInfo>>([]);
+        public Task<IReadOnlyList<UpdateInfo>> GetAllReleasesAsync() => PendingHistory ?? Task.FromResult(Releases);
         public Task<bool> DownloadAndInstallUpdateAsync(UpdateInfo updateInfo, IProgress<double>? progress = null, CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
@@ -963,16 +1937,14 @@ public sealed class SettingsWindowControlTests
             var window = fixture.Window;
             window.Top = 20;
             window.Left = 20;
-            var flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.NonPublic;
-            string nav = (string)typeof(SettingsWindow).GetField("NavSection" + section, flags)!.GetRawConstantValue()!;
-            typeof(SettingsWindow).GetField("_activeNav", flags)!.SetValue(window, nav);
+            window.NavigateToSection(section);
             int closing = 0;
             bool closed = false;
             window.AnimatedClosing += (_, _) => closing++;
             window.Closed += (_, _) => closed = true;
             window.WidthSlider.Value = 400;
-            typeof(SettingsWindow).GetMethod("Save_Click", flags)!.Invoke(window, [window, new RoutedEventArgs()]);
-            typeof(SettingsWindow).GetMethod("CloseWithAnimation", flags)!.Invoke(window, null);
+            window.Save_Click(window, new RoutedEventArgs());
+            window.CloseWithAnimation();
             await WpfFrameWaiter.UntilAsync(() => closed && fixture.Service.Applied != null, "settings save and close", ct);
             Assert.Equal(400, fixture.Service.Applied!.Width);
             Assert.Equal(1, closing);
@@ -988,15 +1960,14 @@ public sealed class SettingsWindowControlTests
         var window = fixture.Window;
         window.Top = 20;
         window.Left = 20;
-        Invoke(window, "PlayEntranceAnimation");
+        window.PlayEntranceAnimation();
         int closing = 0;
         bool closed = false;
         window.AnimatedClosing += (_, _) => closing++;
         window.Closed += (_, _) => closed = true;
         window.WidthSlider.Value = 380;
-        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(SettingsWindow).GetMethod("Apply_Click", flags)!.Invoke(window, [window, new RoutedEventArgs()]);
-        typeof(SettingsWindow).GetMethod("CloseWithAnimation", flags)!.Invoke(window, null);
+        window.Apply_Click(window, new RoutedEventArgs());
+        window.CloseWithAnimation();
         await WpfFrameWaiter.UntilAsync(() => closed && fixture.Service.Applied != null, "settings apply and close", ct);
         Assert.Equal(380, fixture.Service.Applied!.Width);
         Assert.Equal(1, closing);
@@ -1017,8 +1988,7 @@ public sealed class SettingsWindowControlTests
         window.Closed += (_, _) => closed = true;
         window.WidthSlider.Value = 400;
         window.ApplyPreview(window.ReadSettingsFromUi());
-        typeof(SettingsWindow).GetMethod("Cancel_Click", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(window, [window, new RoutedEventArgs()]);
+        window.Cancel_Click(window, new RoutedEventArgs());
         await WpfFrameWaiter.UntilAsync(() => closed, "settings cancel and close", ct);
         Assert.Equal(originalWidth, preview!.Width);
         Assert.Null(fixture.Service.Applied);
@@ -1043,13 +2013,12 @@ public sealed class SettingsWindowControlTests
             foreach (string name in new[] { "source_cache.json", "settings.corrupt-test.json", "settings.json", "keep.txt" })
                 System.IO.File.WriteAllText(System.IO.Path.Combine(appData, name), "test");
             System.IO.File.WriteAllText(System.IO.Path.Combine(binary, "vnotch-debug.log.old"), "test");
-            var flags = BindingFlags.Static | BindingFlags.NonPublic;
-            Assert.Equal(5, typeof(SettingsWindow).GetMethod("DeleteCacheDirectories", flags)!.Invoke(null, [appData]));
-            Assert.Equal(2, typeof(SettingsWindow).GetMethod("DeleteExplicitCacheFiles", flags)!.Invoke(null, [appData, binary]));
+            Assert.Equal(5, SettingsWindow.DeleteCacheDirectories(appData));
+            Assert.Equal(2, SettingsWindow.DeleteExplicitCacheFiles(appData, binary));
             Assert.True(System.IO.File.Exists(System.IO.Path.Combine(appData, "settings.corrupt-test.json")));
             Assert.True(System.IO.File.Exists(System.IO.Path.Combine(appData, "settings.json")));
             Assert.True(System.IO.File.Exists(System.IO.Path.Combine(appData, "keep.txt")));
-            Assert.Equal(0, typeof(SettingsWindow).GetMethod("DeleteCacheDirectories", flags)!.Invoke(null, [appData]));
+            Assert.Equal(0, SettingsWindow.DeleteCacheDirectories(appData));
         }
         finally
         {
@@ -1092,7 +2061,7 @@ public sealed class SettingsWindowControlTests
         foreach (string language in new[] { "vi", "ja", "en" })
         {
             Loc.SetLanguage(language);
-            Invoke(window, "ApplyLiquidGlassLocalization");
+            window.ApplyLiquidGlassLocalization();
             Assert.Equal(9, window.GlassPresetCombo.Items.Count);
             Assert.Equal(preset, ((ComboBoxItem)window.GlassPresetCombo.SelectedItem).Tag);
             Assert.Equal(blur, window.ReadSettingsFromUi().LiquidGlass.BlurAmount, 5);
@@ -1108,34 +2077,56 @@ public sealed class SettingsWindowControlTests
     });
 
     [Theory]
-    [InlineData("GlassBlurSlider", "BlurAmount", 40, 0.4)]
-    [InlineData("GlassRefractionSlider", "Refraction", 70, 0.7)]
-    [InlineData("GlassEdgeBendSlider", "EdgeBend", 40, 0.4)]
-    [InlineData("GlassChromSlider", "ChromaticAberration", 50, 0.5)]
-    [InlineData("GlassEdgeHighlightSlider", "EdgeHighlight", 50, 0.5)]
-    [InlineData("GlassTouchLightSlider", "TouchLight", 50, 0.5)]
-    [InlineData("GlassSpecularSlider", "Specular", 50, 0.5)]
-    [InlineData("GlassFresnelSlider", "Fresnel", 50, 0.5)]
-    [InlineData("GlassDistortionSlider", "Distortion", 30, 0.3)]
-    [InlineData("GlassGrainSlider", "Noise", 20, 0.2)]
-    [InlineData("GlassZRadiusSlider", "ZRadius", 40, 0.4)]
-    [InlineData("GlassOpacitySlider", "Opacity", 60, 0.6)]
-    [InlineData("GlassSaturationSlider", "Saturation", 30, 0.3)]
-    [InlineData("GlassBrightnessSlider", "Brightness", 20, 0.2)]
-    [InlineData("GlassShadowOpacitySlider", "ShadowOpacity", 40, 0.4)]
-    [InlineData("GlassShadowSpreadSlider", "ShadowSpread", 20, 20)]
-    [InlineData("GlassBevelModeSlider", "BevelMode", 1, 1)]
-    [InlineData("GlassFpsSlider", "TargetFps", 120, 120)]
+    [InlineData("GlassBlurSlider", nameof(LiquidGlassConfig.BlurAmount), 40, 0.4)]
+    [InlineData("GlassRefractionSlider", nameof(LiquidGlassConfig.Refraction), 70, 0.7)]
+    [InlineData("GlassEdgeBendSlider", nameof(LiquidGlassConfig.EdgeBend), 40, 0.4)]
+    [InlineData("GlassChromSlider", nameof(LiquidGlassConfig.ChromaticAberration), 50, 0.5)]
+    [InlineData("GlassEdgeHighlightSlider", nameof(LiquidGlassConfig.EdgeHighlight), 50, 0.5)]
+    [InlineData("GlassTouchLightSlider", nameof(LiquidGlassConfig.TouchLight), 50, 0.5)]
+    [InlineData("GlassSpecularSlider", nameof(LiquidGlassConfig.Specular), 50, 0.5)]
+    [InlineData("GlassFresnelSlider", nameof(LiquidGlassConfig.Fresnel), 50, 0.5)]
+    [InlineData("GlassDistortionSlider", nameof(LiquidGlassConfig.Distortion), 30, 0.3)]
+    [InlineData("GlassGrainSlider", nameof(LiquidGlassConfig.Noise), 20, 0.2)]
+    [InlineData("GlassZRadiusSlider", nameof(LiquidGlassConfig.ZRadius), 40, 0.4)]
+    [InlineData("GlassOpacitySlider", nameof(LiquidGlassConfig.Opacity), 60, 0.6)]
+    [InlineData("GlassSaturationSlider", nameof(LiquidGlassConfig.Saturation), 30, 0.3)]
+    [InlineData("GlassBrightnessSlider", nameof(LiquidGlassConfig.Brightness), 20, 0.2)]
+    [InlineData("GlassShadowOpacitySlider", nameof(LiquidGlassConfig.ShadowOpacity), 40, 0.4)]
+    [InlineData("GlassShadowSpreadSlider", nameof(LiquidGlassConfig.ShadowSpread), 20, 20)]
+    [InlineData("GlassBevelModeSlider", nameof(LiquidGlassConfig.BevelMode), 1, 1)]
+    [InlineData("GlassFpsSlider", nameof(LiquidGlassConfig.TargetFps), 120, 120)]
     public void GlassControlsRoundTripDisplayUnitsAndHiddenOptics(string control, string property, double value, double expected) => SharedStaTestRunner.Run(() =>
     {
+        double Read(LiquidGlassConfig settings) => property switch
+        {
+            nameof(LiquidGlassConfig.BlurAmount) => settings.BlurAmount,
+            nameof(LiquidGlassConfig.Refraction) => settings.Refraction,
+            nameof(LiquidGlassConfig.EdgeBend) => settings.EdgeBend,
+            nameof(LiquidGlassConfig.ChromaticAberration) => settings.ChromaticAberration,
+            nameof(LiquidGlassConfig.EdgeHighlight) => settings.EdgeHighlight,
+            nameof(LiquidGlassConfig.TouchLight) => settings.TouchLight,
+            nameof(LiquidGlassConfig.Specular) => settings.Specular,
+            nameof(LiquidGlassConfig.Fresnel) => settings.Fresnel,
+            nameof(LiquidGlassConfig.Distortion) => settings.Distortion,
+            nameof(LiquidGlassConfig.Noise) => settings.Noise,
+            nameof(LiquidGlassConfig.ZRadius) => settings.ZRadius,
+            nameof(LiquidGlassConfig.Opacity) => settings.Opacity,
+            nameof(LiquidGlassConfig.Saturation) => settings.Saturation,
+            nameof(LiquidGlassConfig.Brightness) => settings.Brightness,
+            nameof(LiquidGlassConfig.ShadowOpacity) => settings.ShadowOpacity,
+            nameof(LiquidGlassConfig.ShadowSpread) => settings.ShadowSpread,
+            nameof(LiquidGlassConfig.BevelMode) => settings.BevelMode,
+            nameof(LiquidGlassConfig.TargetFps) => settings.TargetFps,
+            _ => throw new ArgumentOutOfRangeException(nameof(property))
+        };
         using var fixture = new Fixture();
         var window = fixture.Window;
-        Field<RangeBase>(window, control).Value = value;
+        Assert.IsAssignableFrom<RangeBase>(window.FindName(control)).Value = value;
         var snapshot = window.ReadSettingsFromUi();
-        Assert.Equal(expected, Convert.ToDouble(typeof(LiquidGlassConfig).GetProperty(property)!.GetValue(snapshot.LiquidGlass)), 5);
+        Assert.Equal(expected, Read(snapshot.LiquidGlass), 5);
         Assert.Equal("custom", snapshot.LiquidGlassPreset);
         window.ApplyPreview(snapshot);
-        Assert.Equal(value, Field<RangeBase>(window, control).Value);
+        Assert.Equal(value, Assert.IsAssignableFrom<RangeBase>(window.FindName(control)).Value);
     });
 
     [Theory]
@@ -1154,16 +2145,12 @@ public sealed class SettingsWindowControlTests
         expected.RemoveAt(from);
         expected.Insert(to, moved);
         var row = rows[from];
-        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        typeof(SettingsWindow).GetField("_settingsNavDragRow", flags)!.SetValue(window, row);
-        typeof(SettingsWindow).GetField("_isSettingsNavRowDragging", flags)!.SetValue(window, true);
-        typeof(SettingsWindow).GetField("_settingsNavInitialSlot", flags)!.SetValue(window, from);
-        typeof(SettingsWindow).GetField("_settingsNavTargetSlot", flags)!.SetValue(window, from);
+        window.BeginSettingsNavDragForTest(row, from);
         ((TransformGroup)row.RenderTransform).Children.OfType<TranslateTransform>().Single().Y = (to - from) * 44;
-        Invoke(window, "UpdateSettingsNavNeighborDisplacements");
-        Assert.Equal(to, Field<int>(window, "_settingsNavTargetSlot"));
-        Invoke(window, "UpdateSettingsNavNeighborDisplacements");
-        Invoke(window, "EndSettingsNavRowDrag");
+        window.UpdateSettingsNavNeighborDisplacements();
+        Assert.Equal(to, window.DragTargetSlot);
+        window.UpdateSettingsNavNeighborDisplacements();
+        window.EndSettingsNavRowDrag();
         await WpfFrameWaiter.UntilAsync(() => previewed?.NavTabOrder == string.Join(',', expected), "settings tab order previewed", ct);
         Assert.Equal(expected, window.NavTabsSettingsContainer.Children.OfType<Border>().Select(child => child.Tag.ToString()!));
         foreach (var restored in window.NavTabsSettingsContainer.Children.OfType<Border>().ToList())
@@ -1206,11 +2193,10 @@ public sealed class SettingsWindowControlTests
             timer.Stop();
             BackgroundTestWindows.ProtectInput(dialog);
             answered = true;
-            typeof(VNotch.Windows.ConfirmationDialog).GetMethod(confirm ? "ConfirmButton_Click" : "CancelButton_Click", Private)!
-                .Invoke(dialog, new object[] { dialog, new RoutedEventArgs() });
+            (confirm ? dialog.ConfirmButton : dialog.CancelButton).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         };
         timer.Start();
-        try { Invoke(window, "Reset_Click", window, new RoutedEventArgs()); }
+        try { window.Reset_Click(window, new RoutedEventArgs()); }
         finally { timer.Stop(); }
         Assert.True(answered);
         var result = window.ReadSettingsFromUi();
@@ -1242,7 +2228,7 @@ public sealed class SettingsWindowControlTests
         var previews = new List<double>();
         window.SettingsChanged += (_, settings) => previews.Add(settings.Opacity);
         window.OpacitySlider.Value = 40;
-        var schedule = Field<UiScheduledTimer>(window, "_livePreviewDebounce");
+        var schedule = window.PreviewDebounce ?? throw new InvalidOperationException("Expected a scheduled preview.");
         long deadline = schedule.DueTimestamp;
         for (int value = 41; value <= 75; value++) window.OpacitySlider.Value = value;
         Assert.Equal(deadline, schedule.DueTimestamp);
@@ -1264,22 +2250,19 @@ public sealed class SettingsWindowControlTests
         var title = new TextBlock { Text = "perfcachealpha" };
         var row = new ParentTrackingBorder { Style = (Style)window.FindResource("SettingRowBorder"), Child = title };
         window.PanelAppearance.Children.Add(row);
-        Invoke(window, "ExecuteSearch", "perfcachealpha");
+        window.ExecuteSearch("perfcachealpha");
         Assert.Contains(row, window.SearchResultsStack.Children.Cast<UIElement>());
         int parentChanges = row.ParentChanges;
-        var entry = Field<System.Collections.IEnumerable>(window, "_searchRows").Cast<object>()
-            .Single(item => ReferenceEquals(item.GetType().GetProperty("Row")!.GetValue(item), row));
-        var textProperty = entry.GetType().GetProperty("NormalizedSearchText")!;
-        var indexedText = textProperty.GetValue(entry);
-        Invoke(window, "ExecuteSearch", "perfcachealpha");
+        var indexedText = window.IndexedSearchText(row);
+        window.ExecuteSearch("perfcachealpha");
         Assert.Equal(parentChanges, row.ParentChanges);
-        Assert.Same(indexedText, textProperty.GetValue(entry));
+        Assert.Same(indexedText, window.IndexedSearchText(row));
 
         title.Text = "perfcacherenamed";
-        Invoke(window, "ExecuteSearch", "perfcacherenamed");
+        window.ExecuteSearch("perfcacherenamed");
         Assert.Contains(row, window.SearchResultsStack.Children.Cast<UIElement>());
-        Assert.NotEqual(indexedText, textProperty.GetValue(entry));
-        Invoke(window, "ExecuteSearch", "perfcachealpha");
+        Assert.NotEqual(indexedText, window.IndexedSearchText(row));
+        window.ExecuteSearch("perfcachealpha");
         Assert.DoesNotContain(row, window.SearchResultsStack.Children.Cast<UIElement>());
     });
 
@@ -1288,21 +2271,21 @@ public sealed class SettingsWindowControlTests
     {
         using var fixture = new Fixture();
         var window = fixture.Window;
-        Invoke(window, "ExecuteSearch", "clock");
+        window.ExecuteSearch("clock");
         var combo = window.WidgetCombo;
         var retired = combo.Items.Cast<ComboBoxItem>().Select(item => new WeakReference(item)).ToArray();
         Assert.NotEmpty(retired);
-        Invoke(window, "RepopulateWidgetComboPreservingSelection");
+        window.RepopulateWidgetComboPreservingSelection();
         await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
         Assert.All(retired, item => Assert.False(item.IsAlive));
 
-        Invoke(window, "ExecuteSearch", "newwidgetlabel");
+        window.ExecuteSearch("newwidgetlabel");
         Assert.Empty(window.SearchResultsStack.Children);
         ((ComboBoxItem)combo.Items[0]).Content = "newwidgetlabel";
-        Invoke(window, "ExecuteSearch", "newwidgetlabel");
+        window.ExecuteSearch("newwidgetlabel");
         Assert.NotEmpty(window.SearchResultsStack.Children);
     });
 
@@ -1321,17 +2304,17 @@ public sealed class SettingsWindowControlTests
         foreach (UIElement child in new UIElement[] { first, spacer, second, third }) window.PanelAppearance.Children.Add(child);
         var original = window.PanelAppearance.Children.Cast<UIElement>().ToArray();
 
-        Invoke(window, "ExecuteSearch", "perfdiff");
+        window.ExecuteSearch("perfdiff");
         Assert.Equal(Visibility.Visible, second.Visibility);
         second.Visibility = Visibility.Collapsed;
         choices.Items.Clear();
         choices.Items.Add("perfdiffupdated");
-        Invoke(window, "ExecuteSearch", "perfdiffupdated");
+        window.ExecuteSearch("perfdiffupdated");
         Assert.Contains(second, window.SearchResultsStack.Children.Cast<UIElement>());
-        Invoke(window, "ExecuteSearch", "perfdiffalpha");
+        window.ExecuteSearch("perfdiffalpha");
         Assert.Same(window.PanelAppearance, second.Parent);
         Assert.Equal(Visibility.Collapsed, second.Visibility);
-        Invoke(window, "ExitSearchMode");
+        window.ExitSearchMode();
         Assert.Equal(original, window.PanelAppearance.Children.Cast<UIElement>());
         Assert.Equal(Visibility.Collapsed, second.Visibility);
     });
@@ -1354,7 +2337,7 @@ public sealed class SettingsWindowControlTests
             Assert.True(window.IsVisible);
             Assert.Equal(expectedOpacity, window.Opacity);
             Assert.Equal(expectedActivation, window.ShowActivated);
-            Assert.Equal("Shown", typeof(SettingsWindow).GetField("_firstShowState", Private)!.GetValue(window)!.ToString());
+            Assert.True(window.HasCompletedFirstShow);
         }
         finally { window.Close(); }
     });

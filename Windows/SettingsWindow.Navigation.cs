@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,9 +25,15 @@ public partial class SettingsWindow
 {
     #region Navigation
 
+    internal string ActiveSection => _activeNav;
     private string _activeNav = NavSectionAppearance;
+    internal string? HoveredSection => _hoveredNav;
     private string? _hoveredNav;
     private int _lastNavDirection = 1;
+    internal SettingsNavHoverMotion NavHover { get; private set; } = null!;
+    internal SettingsSelectionMotion SelectionMotion => _navPill;
+    private SettingsSelectionMotion _navPill = null!;
+    internal Dictionary<string, StackPanel> NavigationPanels => _navPanels;
     private readonly Dictionary<string, StackPanel> _navPanels = new();
     private readonly Dictionary<string, Border> _navButtons = new();
 
@@ -50,8 +56,19 @@ public partial class SettingsWindow
 
     private void InitializeNavigation()
     {
-        IsVisibleChanged -= NavPillVisibilityChanged;
-        IsVisibleChanged += NavPillVisibilityChanged;
+        NavHover = new(NavHoverIndicatorTranslate, NavHoverIndicator, NavActiveHoverOverlay, () => IsVisible && !_isClosing);
+        _navPill = new SettingsSelectionMotion(NavActiveIndicator, NavItemsStack, NavActiveIndicatorScale, NavActiveIndicatorTranslate);
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) AnimationConfig.ReduceMotionChanged += OnSettingsRevealMotionChanged;
+            else
+            {
+                AnimationConfig.ReduceMotionChanged -= OnSettingsRevealMotionChanged;
+                ResetProgressiveBlurElements(isMenuList: false);
+                ResetProgressiveBlurElements(isMenuList: true);
+                _navPill.Settle();
+            }
+        };
         IsVisibleChanged -= NavHoverVisibilityChanged;
         IsVisibleChanged += NavHoverVisibilityChanged;
         _navPanels[NavSectionSearching] = PanelSearching;
@@ -62,6 +79,7 @@ public partial class SettingsWindow
         _navPanels[NavSectionSystem] = PanelSystem;
         _navPanels[NavSectionPrivacy] = PanelPrivacy;
         _navPanels[NavSectionSpotlight] = PanelSpotlight;
+        _navPanels[NavSectionAiUsage] = PanelAiUsage;
         _navPanels["Translation"] = PanelTranslation;
         _navPanels[NavSectionFileTray] = PanelFileTray;
         _navPanels[NavSectionAdvanced] = PanelAdvanced;
@@ -77,6 +95,7 @@ public partial class SettingsWindow
         _navButtons[NavSectionSystem] = NavSystem;
         _navButtons[NavSectionPrivacy] = NavPrivacy;
         _navButtons[NavSectionSpotlight] = NavSpotlight;
+        _navButtons[NavSectionAiUsage] = NavAiUsage;
         _navButtons["Translation"] = NavTranslation;
         _navButtons[NavSectionFileTray] = NavFileTray;
         _navButtons[NavSectionAdvanced] = NavAdvanced;
@@ -147,7 +166,7 @@ public partial class SettingsWindow
         if (NavActiveIndicator == null || NavActiveIndicatorTranslate == null) return;
         animate &= IsLoaded && !AnimationConfig.ReduceMotion && SystemParameters.ClientAreaAnimation;
         var (targetY, targetHeight) = ResolveNavButtonSlot(targetBtn);
-        StartNavPillMotion(targetY, targetHeight, animate);
+        _navPill.MoveTo(targetY, targetHeight, animate);
     }
     private void AnimateNavHoverIndicator(Border? hoveredBtn)
     {
@@ -156,17 +175,17 @@ public partial class SettingsWindow
 
         bool animate = IsVisible && !AnimationConfig.ReduceMotion && SystemParameters.ClientAreaAnimation;
         bool activeHovered = hoveredBtn?.Tag is string activeTag && activeTag == _activeNav;
-        double targetY = _navHoverTargetY;
+        double targetY = NavHover.TargetY;
         if (hoveredBtn != null)
         {
             var slot = ResolveNavButtonSlot(hoveredBtn);
             targetY = slot.Y;
             NavHoverIndicator.Height = slot.Height;
         }
-        StartNavHoverMotion(targetY, hoveredBtn != null && !activeHovered, activeHovered, animate);
+        NavHover.MoveTo(targetY, hoveredBtn != null && !activeHovered, activeHovered, animate);
     }
 
-    private void NavItemsHost_MouseLeave(object sender, MouseEventArgs e)
+    internal void NavItemsHost_MouseLeave(object sender, MouseEventArgs e)
     {
         if (_hoveredNav != null && _navButtons.TryGetValue(_hoveredNav, out var previous))
         {
@@ -177,7 +196,7 @@ public partial class SettingsWindow
         AnimateNavHoverIndicator(null);
     }
 
-    private void NavButton_MouseEnter(object sender, MouseEventArgs e)
+    internal void NavButton_MouseEnter(object sender, MouseEventArgs e)
     {
         if (sender is not Border btn || btn.Tag is not string section) return;
         if (_isSearchMode && section != NavSectionSearching) return;
@@ -223,10 +242,8 @@ public partial class SettingsWindow
     private static readonly string[] _navOrder =
     {
         NavSectionSearching, NavSectionAppearance, NavSectionSkins, NavSectionBehavior, NavSectionDevices,
-        NavSectionSystem, NavSectionPrivacy, NavSectionSpotlight, "Translation", NavSectionFileTray, NavSectionAdvanced, NavSectionPerformance, NavSectionDonating, NavSectionUpdates
+        NavSectionSystem, NavSectionPrivacy, NavSectionSpotlight, NavSectionAiUsage, "Translation", NavSectionFileTray, NavSectionAdvanced, NavSectionPerformance, NavSectionDonating, NavSectionUpdates
     };
-
-    private int _navTransitionVersion;
 
     private void UpdateNavButtonVisual(Border btn, bool isActive, bool animate = true)
     {
@@ -262,7 +279,7 @@ public partial class SettingsWindow
         }
     }
 
-    private static void ApplyNavIconBrush(UIElement element, Brush targetBrush, bool useAccent = false)
+    internal static void ApplyNavIconBrush(UIElement element, Brush targetBrush, bool useAccent = false)
     {
         if (element is Viewbox vb)
         {
@@ -292,12 +309,18 @@ public partial class SettingsWindow
 
     internal void NavigateToSection(string section)
     {
-        if (section == _activeNav) return;
+        if (section == _activeNav)
+        {
+            HideChangelog(turnBack: true);
+            return;
+        }
 
         string previous = _activeNav;
         int direction = Math.Sign(Array.IndexOf(_navOrder, section) - Array.IndexOf(_navOrder, previous));
         if (direction == 0) direction = 1;
         _lastNavDirection = direction;
+        SettingsPageWave.Capture(SettingsPane, Orientation.Vertical, forward: direction > 0);
+        HideChangelog();
 
         if (_navButtons.TryGetValue(previous, out var oldBtn))
         {
@@ -314,8 +337,6 @@ public partial class SettingsWindow
             RefreshNavHoverIndicator();
         }
 
-        _navTransitionVersion++;
-
         foreach (var kvp in _navPanels)
             if (kvp.Key != section) kvp.Value.Visibility = Visibility.Collapsed;
         if (_navPanels.TryGetValue(section, out var newPanel))
@@ -323,7 +344,7 @@ public partial class SettingsWindow
 
         StopSmoothScroll();
         SettingsScrollViewer.ScrollToTop();
-        AnimateActivePanel(section, direction);
+        AnimateActivePanel(section);
     }
 
     private (FrameworkElement? Card, TranslateTransform? Translate) GetSectionCardParts(string section)
@@ -337,6 +358,7 @@ public partial class SettingsWindow
             NavSectionSystem => SystemCard,
             NavSectionPrivacy => PrivacyCard,
             NavSectionSpotlight => SpotlightCard,
+            NavSectionAiUsage => AiUsageCard,
             "Translation" => TranslationCard,
             NavSectionFileTray => FileTrayCard,
             NavSectionAdvanced => AdvancedCard,
@@ -356,6 +378,7 @@ public partial class SettingsWindow
             NavSectionSystem => SystemCardTranslate,
             NavSectionPrivacy => PrivacyCardTranslate,
             NavSectionSpotlight => SpotlightCardTranslate,
+            NavSectionAiUsage => AiUsageCardTranslate,
             "Translation" => TranslationCardTranslate,
             NavSectionFileTray => FileTrayCardTranslate,
             NavSectionAdvanced => AdvancedCardTranslate,
@@ -369,174 +392,21 @@ public partial class SettingsWindow
         return (card, translate);
     }
 
-    private void AnimateActivePanel(string section, int direction = 1, bool entranceDirection = false)
-    {
-        var (card, translate) = GetSectionCardParts(section);
-        if (card == null || translate == null) return;
 
+    private void SettingsGroup_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is Expander { Content: Panel content } expander)
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (expander.IsExpanded) RevealSettingsRows(content);
+            }, DispatcherPriority.Loaded);
+    }
+
+    private void OnSettingsRevealMotionChanged()
+    {
+        if (!AnimationConfig.ReduceMotion) return;
         ResetProgressiveBlurElements(isMenuList: false);
-
-        if (VNotch.Services.AnimationConfig.ReduceMotion || !SystemParameters.ClientAreaAnimation)
-        {
-            card.BeginAnimation(OpacityProperty, null);
-            card.Opacity = 1;
-            card.Effect = null;
-            translate.BeginAnimation(TranslateTransform.YProperty, null);
-            translate.Y = 0;
-            if (section == NavSectionSystem && BackupCard != null && BackupCardTranslate != null)
-            {
-                BackupCard.BeginAnimation(OpacityProperty, null);
-                BackupCard.Opacity = 1;
-                BackupCard.Effect = null;
-                BackupCardTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-                BackupCardTranslate.Y = 0;
-            }
-            return;
-        }
-
-        if (!entranceDirection)
-        {
-            int tabFps = VNotch.Services.AnimationConfig.TargetFps;
-            double offset = 6.0 * (direction == 0 ? 1 : direction);
-            card.Effect = null;
-            card.Opacity = 0.25;
-            translate.Y = offset;
-
-            var tabFade = new DoubleAnimation(0.25, 1.0, TimeSpan.FromMilliseconds(180)) { EasingFunction = _navEaseOut };
-            var tabSlide = new DoubleAnimation(offset, 0.0, TimeSpan.FromMilliseconds(210)) { EasingFunction = _navEaseOut };
-            Timeline.SetDesiredFrameRate(tabFade, tabFps);
-            Timeline.SetDesiredFrameRate(tabSlide, tabFps);
-            card.BeginAnimation(OpacityProperty, tabFade);
-            translate.BeginAnimation(TranslateTransform.YProperty, tabSlide);
-
-            if (section == NavSectionSystem && BackupCard != null && BackupCardTranslate != null)
-            {
-                BackupCard.Effect = null;
-                BackupCard.Opacity = 0.25;
-                BackupCardTranslate.Y = offset;
-                BackupCard.BeginAnimation(OpacityProperty, tabFade);
-                BackupCardTranslate.BeginAnimation(TranslateTransform.YProperty, tabSlide);
-            }
-            return;
-        }
-
-        int fps = Math.Min(60, VNotch.Services.AnimationConfig.TargetFps);
-        var ease = EntranceEaseOut;
-        int cascadeDir = -1;
-        double fromY = -14;
-        int baseDelayMs = 200;
-
-        card.Effect = null;
-        card.Opacity = 0;
-        translate.Y = fromY;
-
-        var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380))
-        {
-            BeginTime = TimeSpan.FromMilliseconds(baseDelayMs),
-            EasingFunction = ease
-        };
-        var slide = new DoubleAnimation(fromY, 0, TimeSpan.FromMilliseconds(520))
-        {
-            BeginTime = TimeSpan.FromMilliseconds(baseDelayMs),
-            EasingFunction = ease
-        };
-        Timeline.SetDesiredFrameRate(fade, fps);
-        Timeline.SetDesiredFrameRate(slide, fps);
-
-        card.BeginAnimation(OpacityProperty, fade);
-        translate.BeginAnimation(TranslateTransform.YProperty, slide);
-
-        var cascadeItems = CollectPanelProgressiveBlurTargets(card);
-        if (section == NavSectionSystem && BackupCard != null && BackupCardTranslate != null)
-        {
-            BackupCard.Effect = null;
-            BackupCard.Opacity = 0;
-            BackupCardTranslate.Y = fromY;
-
-            var backupDelay = TimeSpan.FromMilliseconds(baseDelayMs + 60);
-            var backupFade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(380)) { EasingFunction = ease, BeginTime = backupDelay };
-            var backupSlide = new DoubleAnimation(fromY, 0, TimeSpan.FromMilliseconds(520)) { EasingFunction = ease, BeginTime = backupDelay };
-
-            Timeline.SetDesiredFrameRate(backupFade, fps);
-            Timeline.SetDesiredFrameRate(backupSlide, fps);
-
-            BackupCard.BeginAnimation(OpacityProperty, backupFade);
-            BackupCardTranslate.BeginAnimation(TranslateTransform.YProperty, backupSlide);
-
-            var backupTargets = CollectPanelProgressiveBlurTargets(BackupCard);
-            for (int i = 0; i < backupTargets.Count; i++)
-            {
-                cascadeItems.Add(backupTargets[i]);
-            }
-        }
-
-        ApplyProgressiveBlurCascade(cascadeItems, baseDelayMs, cascadeDir, isMenuList: false, fps);
-    }
-
-    private static List<UIElement> CollectPanelProgressiveBlurTargets(FrameworkElement card)
-    {
-        const int MaxBlurredChildren = 24;
-        var targets = new List<UIElement>(MaxBlurredChildren);
-
-        if (card is Decorator { Child: Panel innerPanel })
-        {
-            CollectPanelChildrenRecursive(innerPanel, targets, MaxBlurredChildren);
-        }
-
-        if (targets.Count == 0)
-        {
-            targets.Add(card);
-        }
-
-        return targets;
-    }
-
-    private static void CollectPanelChildrenRecursive(Panel panel, List<UIElement> targets, int maxCount)
-    {
-        int count = panel.Children.Count;
-        for (int i = 0; i < count; i++)
-        {
-            if (panel.Children[i] is not UIElement child || child.Visibility != Visibility.Visible)
-            {
-                continue;
-            }
-
-            if (child is StackPanel nestedStack && nestedStack.Children.Count > 0)
-            {
-                if (!nestedStack.IsEnabled || nestedStack.Opacity < 0.99)
-                {
-                    AddOrResetCascadeTarget(nestedStack, targets, maxCount);
-                }
-                else
-                {
-                    CollectPanelChildrenRecursive(nestedStack, targets, maxCount);
-                }
-                continue;
-            }
-
-            if (child is Border { Child: StackPanel borderStack } &&
-                borderStack.Children.Count >= 6)
-            {
-                CollectPanelChildrenRecursive(borderStack, targets, maxCount);
-                continue;
-            }
-
-            AddOrResetCascadeTarget(child, targets, maxCount);
-        }
-    }
-
-    private static void AddOrResetCascadeTarget(UIElement element, List<UIElement> targets, int maxCount)
-    {
-        if (targets.Count < maxCount)
-        {
-            targets.Add(element);
-        }
-        else
-        {
-            element.BeginAnimation(OpacityProperty, null);
-            element.Opacity = ResolveElementRestingOpacity(element);
-            element.Effect = null;
-        }
+        ResetProgressiveBlurElements(isMenuList: true);
     }
 
     #endregion

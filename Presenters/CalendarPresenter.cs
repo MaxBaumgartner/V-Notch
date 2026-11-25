@@ -5,7 +5,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Effects;
 using VNotch.Modules;
 using VNotch.Services;
 using static VNotch.Services.AnimationPrimitives;
@@ -23,7 +22,7 @@ public sealed class CalendarPresenter : IDisposable
     private readonly Border[] _calendarDayBorders = new Border[CalendarScrollMath.TotalDays];
     private readonly TextBlock[] _calendarDayNumbers = new TextBlock[CalendarScrollMath.TotalDays];
     private double _calendarScrollX = 0.0;
-    private int _currentCalendarCenterIdx = 5;
+    private int _currentCalendarCenterIdx = CalendarScrollMath.TodayIndex;
     private double _calendarScrollAccumulator = 0;
     private DateTime _lastCalendarScrollTimeUtc = DateTime.MinValue;
     private DateTime _lastCalendarUpdate = DateTime.MinValue;
@@ -61,6 +60,7 @@ public sealed class CalendarPresenter : IDisposable
         _refs.WeekDaysPanel.Children.Clear();
         _refs.WeekNumbers.Children.Clear();
 
+        double cellInset = (CalendarScrollMath.CellWidth - CalendarScrollMath.HighlightDiameter) / 2;
         for (int i = 0; i < CalendarScrollMath.TotalDays; i++)
         {
             _calendarDayNames[i] = new TextBlock
@@ -76,7 +76,7 @@ public sealed class CalendarPresenter : IDisposable
             TextOptions.SetTextHintingMode(_calendarDayNames[i], TextHintingMode.Animated);
             _refs.WeekDaysPanel.Children.Add(_calendarDayNames[i]);
 
-            _calendarDayNumbers[i] = new TextBlock
+            _calendarDayNumbers[i] = new VNotch.Controls.NumberFlowText
             {
                 Style = _refs.TitleTextStyle,
                 FontSize = 11,
@@ -89,16 +89,16 @@ public sealed class CalendarPresenter : IDisposable
 
             _calendarDayBorders[i] = new Border
             {
-                Width = 24,
-                Height = 24,
-                CornerRadius = new CornerRadius(12),
-                Margin = new Thickness((CalendarScrollMath.CellWidth - 24) / 2, 0, (CalendarScrollMath.CellWidth - 24) / 2, 0),
+                Width = CalendarScrollMath.HighlightDiameter,
+                Height = CalendarScrollMath.HighlightDiameter,
+                CornerRadius = new CornerRadius(CalendarScrollMath.HighlightDiameter / 2),
+                Margin = new Thickness(cellInset, 0, cellInset, 0),
                 Child = _calendarDayNumbers[i]
             };
             _refs.WeekNumbers.Children.Add(_calendarDayBorders[i]);
         }
 
-        _currentCalendarCenterIdx = 5;
+        _currentCalendarCenterIdx = CalendarScrollMath.TodayIndex;
         _calendarScrollX = CalendarScrollMath.GetStripXForIndex(_currentCalendarCenterIdx);
         _refs.CalendarStripTranslate.X = _calendarScrollX;
         _refs.CalendarHighlightTranslate.X = CalendarScrollMath.GetHighlightXForIndex(_currentCalendarCenterIdx);
@@ -122,7 +122,7 @@ public sealed class CalendarPresenter : IDisposable
     {
         if (!_calendarInitialized) InitializeCalendar();
 
-        int scrollOffset = _currentCalendarCenterIdx - 5;
+        int scrollOffset = _currentCalendarCenterIdx - CalendarScrollMath.TodayIndex;
         if (now.Date == _lastCalendarUpdate.Date && scrollOffset == 0)
         {
             _lastCalendarUpdate = now;
@@ -139,10 +139,9 @@ public sealed class CalendarPresenter : IDisposable
     {
         var culture = Loc.GetCulture();
 
-        for (int i = -5; i <= 5; i++)
+        for (int idx = 0; idx < CalendarScrollMath.TotalDays; idx++)
         {
-            int idx = i + 5;
-            var date = now.AddDays(i);
+            var date = now.AddDays(idx - CalendarScrollMath.TodayIndex);
 
             _calendarDayNames[idx].Text = date.ToString("ddd", culture);
             _calendarDayNumbers[idx].Text = date.Day.ToString(culture);
@@ -160,7 +159,7 @@ public sealed class CalendarPresenter : IDisposable
     private void ApplyCalendarCenterVisualState(int centerIdx)
     {
         var culture = Loc.GetCulture();
-        var highlightedDate = _lastCalendarUpdate.AddDays(centerIdx - 5);
+        var highlightedDate = _lastCalendarUpdate.AddDays(centerIdx - CalendarScrollMath.TodayIndex);
         string newMonth = highlightedDate.ToString("MMM", culture);
 
         string currentTargetMonth = _isMonthAnimating ? _targetMonthText : _refs.MonthText.Text;
@@ -378,6 +377,11 @@ public sealed class CalendarPresenter : IDisposable
 
     private void AnimateCalendarWidgetHover(bool isHovered)
     {
+        if (string.Equals(_refs.SettingsProvider().ExpandedWidget, "aiusage", StringComparison.OrdinalIgnoreCase))
+        {
+            ResetWidgetHoverMotion();
+            return;
+        }
         double targetScale = isHovered ? 1.035 : 1.0;
         double targetLiftY = isHovered ? -3.0 : 0.0;
 
@@ -405,13 +409,8 @@ public sealed class CalendarPresenter : IDisposable
 
         AnimateOpacity(_refs.BatterySection, isFocused ? 0.62 : 1.0, duration, easing);
         AnimateOpacity(_refs.SettingsButton, isFocused ? 0.62 : 1.0, duration, easing);
-        AnimateOpacity(_refs.GreetingSection, isFocused ? 0.62 : 1.0, duration, easing);
-
-        if (_refs.CalendarGreetingContextBlur != null)
-        {
-            _refs.CalendarGreetingContextBlur.BeginAnimation(BlurEffect.RadiusProperty, null);
-            _refs.CalendarGreetingContextBlur.Radius = _refs.SettingsProvider().EnableBlurEffects && isFocused ? 3.0 : 0.0;
-        }
+        // Dim the greeting without an offscreen blur on its text.
+        AnimateOpacity(_refs.GreetingSection, isFocused ? 0.85 : 1.0, duration, easing);
     }
 
     private static void AnimateOpacity(UIElement element, double to, Duration duration, IEasingFunction easing)
@@ -429,27 +428,27 @@ public sealed class CalendarPresenter : IDisposable
 
     public void ResetHoverFocusVisualState()
     {
+        ResetWidgetHoverMotion();
+
+        ResetCalendarContextElement(_refs.BatterySection);
+        ResetCalendarContextElement(_refs.SettingsButton);
+        ResetCalendarContextElement(_refs.GreetingSection);
+    }
+
+    private void ResetWidgetHoverMotion()
+    {
         _refs.CalendarWidgetScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         _refs.CalendarWidgetScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
         _refs.CalendarWidgetTranslate.BeginAnimation(TranslateTransform.YProperty, null);
         _refs.CalendarWidgetScale.ScaleX = 1.0;
         _refs.CalendarWidgetScale.ScaleY = 1.0;
         _refs.CalendarWidgetTranslate.Y = 0.0;
-
-        ResetCalendarContextElement(_refs.BatterySection, null);
-        ResetCalendarContextElement(_refs.SettingsButton, null);
-        ResetCalendarContextElement(_refs.GreetingSection, _refs.CalendarGreetingContextBlur);
     }
 
-    private static void ResetCalendarContextElement(UIElement element, BlurEffect? effect)
+    private static void ResetCalendarContextElement(UIElement element)
     {
         element.BeginAnimation(UIElement.OpacityProperty, null);
         element.Opacity = 1.0;
-        if (effect != null)
-        {
-            effect.BeginAnimation(BlurEffect.RadiusProperty, null);
-            effect.Radius = 0.0;
-        }
     }
 
     public void HandleMouseWheel(MouseWheelEventArgs e)
@@ -509,7 +508,7 @@ public sealed class CalendarPresenter : IDisposable
     {
         if (!_calendarInitialized) return;
 
-        _currentCalendarCenterIdx = 5;
+        _currentCalendarCenterIdx = CalendarScrollMath.TodayIndex;
         double targetX = CalendarScrollMath.GetStripXForIndex(_currentCalendarCenterIdx);
 
         if (Math.Abs(_calendarScrollX - targetX) < 0.1) return;

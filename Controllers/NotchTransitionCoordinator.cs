@@ -4,36 +4,6 @@ using VNotch.Services;
 
 namespace VNotch.Controllers;
 
-public enum NotchShapeState
-{
-    Collapsed,
-    Expanding,
-    Expanded,
-    Collapsing,
-    MusicExpanding,
-    MusicExpanded,
-    MusicCollapsing,
-    Hidden
-}
-
-public enum DisplayOwnership
-{
-    Notch,
-    Spotlight
-}
-
-public sealed record NotchTransitionSnapshot(
-    NotchView CurrentView,
-    NotchView TargetView,
-    NotchShapeState ShapeState,
-    long ActiveTransitionId,
-    bool IsTransitionActive,
-    DisplayOwnership Ownership,
-    NotchView ViewToRestoreOnSpotlightClose,
-    bool HasPendingCountdownCompletion,
-    bool IsEffectivelyVisible
-);
-
 public sealed class TransitionRequestEventArgs : EventArgs
 {
     public long TransitionId { get; }
@@ -64,7 +34,7 @@ public sealed class TransitionRequestEventArgs : EventArgs
 /// Quản lý tập trung toàn bộ trạng thái điều hướng notch, phiên chuyển cảnh và quyền hiển thị.
 /// Nguồn chân lý duy nhất cho Navigation State theo Workstream A (implement.md).
 /// </summary>
-public sealed class NotchTransitionCoordinator : IDisposable
+public sealed class NotchTransitionCoordinator : INotchNavigation, IDisposable
 {
     private const string LogTag = "NOTCH-COORDINATOR";
 
@@ -91,7 +61,6 @@ public sealed class NotchTransitionCoordinator : IDisposable
 
     public event EventHandler<NotchTransitionSnapshot>? StateChanged;
     public event EventHandler<TransitionRequestEventArgs>? TransitionRequested;
-    public event EventHandler? CountdownCompletionDisplayRequested;
 
     public NotchTransitionSnapshot Snapshot
     {
@@ -269,6 +238,13 @@ public sealed class NotchTransitionCoordinator : IDisposable
 
         lock (_lock)
         {
+            if (_isTransitionActive)
+            {
+                ++_activeTransitionId;
+                _isTransitionActive = false;
+                _currentView = _targetView;
+                _shapeState = _stableShape = _targetStableShape;
+            }
             _viewToRestoreOnSpotlightClose = _currentView;
             _shapeToRestoreOnSpotlightClose = _stableShape;
 
@@ -319,7 +295,6 @@ public sealed class NotchTransitionCoordinator : IDisposable
 
         if (showDeferredCountdown)
         {
-            CountdownCompletionDisplayRequested?.Invoke(this, EventArgs.Empty);
             RequestView(NotchView.Timer, "CountdownCompletion");
         }
         else if (restoreView.HasValue)

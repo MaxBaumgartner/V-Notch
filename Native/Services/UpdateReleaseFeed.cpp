@@ -18,16 +18,6 @@ std::wstring Quote(std::wstring_view text) {
     }
     return result + L'"';
 }
-std::wstring PlainText(std::wstring_view html) {
-    std::wstring result;
-    bool tag = false;
-    for (wchar_t ch : html) {
-        if (ch == L'<') { tag = true; result += L'\n'; }
-        else if (ch == L'>') tag = false;
-        else if (!tag) result += ch;
-    }
-    return result;
-}
 }
 
 VN_EXPORT int32_t __stdcall vn_update_parse_atom(const uint8_t* data, int32_t size,
@@ -42,7 +32,8 @@ VN_EXPORT int32_t __stdcall vn_update_parse_atom(const uint8_t* data, int32_t si
         reader->SetProperty(XmlReaderProperty_DtdProcessing, DtdProcessing_Prohibit);
         if (FAILED(reader->SetInput(stream.Get()))) return VN_ERR_FAIL;
         std::wstring json = L"[", id, date, content, field;
-        bool entry = false, first = true;
+        bool entry = false, first = true, content_is_html = false;
+        int32_t entry_depth = 0;
         XmlNodeType type;
         HRESULT status;
         while ((status = reader->Read(&type)) == S_OK) {
@@ -52,23 +43,48 @@ VN_EXPORT int32_t __stdcall vn_update_parse_atom(const uint8_t* data, int32_t si
                 if (FAILED(reader->GetLocalName(&value, &length))) return VN_ERR_FAIL;
                 std::wstring_view name(value, length);
                 if (type == XmlNodeType_Element) {
-                    if (name == L"entry") { entry = true; id.clear(); date.clear(); content.clear(); }
-                    field = name;
-                } else {
-                    if (name == L"entry" && entry) {
+                    const BOOL is_empty = reader->IsEmptyElement();
+                    if (!entry) {
+                        if (name == L"entry" && !is_empty) {
+                            entry = true;
+                            entry_depth = 0;
+                            id.clear();
+                            date.clear();
+                            content.clear();
+                            content_is_html = false;
+                            field.clear();
+                        }
+                    } else if (!is_empty) {
+                        ++entry_depth;
+                        if (entry_depth == 1) field = name;
+                        else field.clear();
+                        if (field == L"content" && reader->MoveToAttributeByName(L"type", nullptr) == S_OK) {
+                            if (FAILED(reader->GetValue(&value, &length))) return VN_ERR_FAIL;
+                            content_is_html = std::wstring_view(value, length) == L"html";
+                            if (FAILED(reader->MoveToElement())) return VN_ERR_FAIL;
+                        }
+                    } else {
+                        field.clear();
+                    }
+                } else if (entry) {
+                    if (entry_depth == 0 && name == L"entry") {
                         auto slash = id.find_last_of(L'/');
                         auto tag = slash == std::wstring::npos ? id : id.substr(slash + 1);
                         if (!tag.empty() && !date.empty()) {
                             if (!first) json += L',';
                             first = false;
                             json += L"{\"tag_name\":" + Quote(tag) + L",\"published_at\":" + Quote(date)
-                                + L",\"body\":" + Quote(PlainText(content)) + L",\"assets\":[]}";
+                                + L",\"body\":" + Quote(content);
+                            if (content_is_html) json += L",\"body_format\":\"html\"";
+                            json += L",\"assets\":[]}";
                         }
                         entry = false;
+                    } else if (entry_depth > 0) {
+                        --entry_depth;
                     }
                     field.clear();
                 }
-            } else if (entry && (type == XmlNodeType_Text || type == XmlNodeType_CDATA)) {
+            } else if (entry && entry_depth == 1 && (type == XmlNodeType_Text || type == XmlNodeType_CDATA)) {
                 if (FAILED(reader->GetValue(&value, &length))) return VN_ERR_FAIL;
                 if (field == L"id") id.append(value, length);
                 else if (field == L"updated") date.append(value, length);

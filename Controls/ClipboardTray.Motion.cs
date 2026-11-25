@@ -53,20 +53,11 @@ public sealed partial class ClipboardTray
         out double outOffsetX,
         out byte outShouldAnimate);
 
-    [LibraryImport("VNotch.Native")]
-    private static partial int vn_clipboard_motion_step_scroll_physics(
-        ref double ioPosition,
-        ref double ioVelocity,
-        double minBound,
-        double maxBound,
-        double dt,
-        double friction,
-        double springStiffness,
-        double springDamping,
-        out byte outIsSettled);
-
+    internal bool AnimateResults { get => _animateResults; set => _animateResults = value; }
     private bool _animateResults = true;
     private int _motionVersion;
+    internal bool IsLeaving => _trayLeaving;
+    internal int EntranceStaggerVersion => _entranceStaggerVersion;
     private bool _trayLeaving;
     private bool _entranceWasHidden = true;
     private int _entranceStaggerVersion;
@@ -106,13 +97,10 @@ public sealed partial class ClipboardTray
         bool hasText = SearchBox.Text.Length != 0;
         bool changed = hasText != _searchHasText;
         _searchHasText = hasText;
-        if (hasText) DismissTransientLayer(SearchHint);
-        else ShowTransientLayer(SearchHint);
         if (hasText) ShowTransientLayer(ClearSearchButton);
         else DismissTransientLayer(ClearSearchButton);
         if (!changed || !IsLoaded || !IsVisible || _trayLeaving) return;
-        // Animate only entering/leaving a query, keeping the caret steady while typing.
-        AnimateLayer(SearchTextSurface, true, 0, true, MotionStandard, 3);
+        // Keep the input and caret steady when a query starts or clears.
         if (hasText) AnimateLayer(ClearSearchButton, true, 0, true, MotionStandard, 3);
     }
 
@@ -133,7 +121,9 @@ public sealed partial class ClipboardTray
             AnimateLayer(EmptyText, true, 0, true, MotionStandard, 4);
     }
 
-    public void BeginEntrance(bool animate = true)
+    public void BeginEntrance(bool animate = true) => BeginEntrance(null, animate);
+
+    internal void BeginEntrance(Action? searchEntranceCompleted, bool animate = true)
     {
         bool reversing = _trayLeaving && !_entranceWasHidden && IsVisible && Opacity > 0.01;
         _entranceWasHidden = false;
@@ -152,15 +142,18 @@ public sealed partial class ClipboardTray
                 LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette, StatusPanel,
                 DeleteConfirmationPanel, LabelEditorPanel })
             {
-                Motion.Stop(layer, OpacityProperty, 1);
+                Motion.Forget(layer, OpacityProperty);
+                layer.BeginAnimation(OpacityProperty, null);
+                if (layer.ReadLocalValue(OpacityProperty) is double) layer.Opacity = 1;
                 layer.RenderTransform = Transform.Identity;
             }
+            searchEntranceCompleted?.Invoke();
             return;
         }
 
         // Fluid, organic Apple waterfall fade:
         // Header components land first with subtle upward drift.
-        AnimateLayer(SearchSurface, true, 0, !reversing, 300, 6);
+        AnimateLayer(SearchSurface, true, 0, !reversing, 300, 6, searchEntranceCompleted);
         if (ToolbarSurface.Visibility == Visibility.Visible) AnimateLayer(ToolbarSurface, true, 20, !reversing, 300, 6);
         // Category pill track slides in right after the header.
         AnimateLayer(CategoryScroll, true, 40, !reversing, 320, 8);
@@ -270,16 +263,22 @@ public sealed partial class ClipboardTray
         });
     }
 
-    private static void AnimateLayer(FrameworkElement element, bool entering, int delay, bool fresh = false, int customDuration = 0, double driftY = 6, Action? completed = null)
+    internal static void AnimateLayer(FrameworkElement element, bool entering, int delay, bool fresh = false, int customDuration = 0, double driftY = 6, Action? completed = null)
     {
         if (element.Name == "LockPanel") { delay = 0; driftY = 6; }
         var (scale, translate) = LayerTransforms(element);
         double opacity = fresh ? 0 : element.Opacity;
-        double targetOpacity = entering ? 1 : 0;
-        element.Opacity = targetOpacity;
+        // Leave style and binding values, such as the disabled search opacity, in control.
+        bool ownsOpacity = element.ReadLocalValue(OpacityProperty) is double;
+        double restingOpacity = ownsOpacity ? 1 : (double)element.GetAnimationBaseValue(OpacityProperty);
+        double targetOpacity = entering ? restingOpacity : 0;
+        element.BeginAnimation(OpacityProperty, null);
+        if (ownsOpacity) element.Opacity = targetOpacity;
         if (AnimationConfig.ReduceMotion)
         {
-            element.BeginAnimation(OpacityProperty, null);
+            if (!entering && !ownsOpacity)
+                element.BeginAnimation(OpacityProperty,
+                    new DoubleAnimation(0, new Duration(TimeSpan.Zero)) { FillBehavior = FillBehavior.HoldEnd });
             Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
             Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
             Motion.Stop(translate, TranslateTransform.XProperty, 0);
@@ -297,6 +296,7 @@ public sealed partial class ClipboardTray
         Motion.To(translate, TranslateTransform.YProperty, entering ? 0 : driftY, spring,
             from: fresh ? driftY : null, delay: wait);
         var fade = CreateLayerAnimation(opacity, targetOpacity, (int)wait.TotalMilliseconds, entering ? 180 : 140);
+        if (!entering && !ownsOpacity) fade.FillBehavior = FillBehavior.HoldEnd;
         if (completed != null) fade.Completed += (_, _) => completed();
         element.BeginAnimation(OpacityProperty, fade, HandoffBehavior.SnapshotAndReplace);
     }
@@ -326,7 +326,6 @@ public sealed partial class ClipboardTray
         Timeline.SetDesiredFrameRate(animation, AnimationConfig.TargetFps);
         return animation;
     }
-
 
     private static void AnimateValue(Animatable target, DependencyProperty property, double value, int milliseconds)
     {
@@ -408,8 +407,8 @@ public sealed partial class ClipboardTray
         AnimateValue(scale, ScaleTransform.ScaleYProperty, value, duration);
     }
 
-
     private readonly HashSet<Guid> _arrivingCards = [];
+    internal Dictionary<Guid, double>? PendingCardPositions => _pendingCardPositions;
     private Dictionary<Guid, double>? _pendingCardPositions;
     private Dictionary<Guid, (double X, Transform Motion)>? _capturedCardLayouts;
     private Dictionary<Guid, (double X, Transform Motion)>? _pendingCardLayouts;
@@ -424,7 +423,7 @@ public sealed partial class ClipboardTray
         catch (InvalidOperationException) { return false; }
     }
 
-    private Dictionary<Guid, double> CaptureCardPositions()
+    internal Dictionary<Guid, double> CaptureCardPositions()
     {
         var positions = new Dictionary<Guid, double>();
         _capturedCardLayouts = null;
@@ -442,7 +441,7 @@ public sealed partial class ClipboardTray
         return positions;
     }
 
-    private void AnimateCardPositions(Dictionary<Guid, double> positions)
+    internal void AnimateCardPositions(Dictionary<Guid, double> positions)
     {
         var layouts = _capturedCardLayouts;
         CancelCardPositionAnimation();
@@ -550,15 +549,20 @@ public sealed partial class ClipboardTray
                 // rendered positions. Moving them before layout creates a second
                 // slide when the actual item slots change.
                 await Task.Delay(160, cancellation);
+                cancellation.ThrowIfCancellationRequested();
             }
-            finally
+            catch (OperationCanceledException)
             {
                 foreach (var (item, entryId) in removing)
                     if (item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card && card.Entry.Id == entryId)
                     {
-                        ResetCardMotion(item);
+                        // Reverse from the rendered state instead of flashing back to opaque.
+                        AnimateCardLifecycle(item, entering: true);
                     }
+                throw;
             }
+            // Keep completed exits hidden until reconciliation removes them.
+            // Container cleanup resets motion before a recycled card is reused.
         }
     }
 
@@ -710,7 +714,7 @@ public sealed partial class ClipboardTray
     {
         element.RenderTransform = Transform.Identity;
         element.BeginAnimation(OpacityProperty, null);
-        element.Opacity = 1;
+        if (element.ReadLocalValue(OpacityProperty) is double) element.Opacity = 1;
     }
 
     private static void AnimateCardPress(FrameworkElement element, bool pressed)

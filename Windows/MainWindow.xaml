@@ -1,7 +1,9 @@
 <Window xmlns:fonts="clr-namespace:VNotch.Services"
         x:Class="VNotch.MainWindow"
+        xmlns:presenters="clr-namespace:VNotch.Presenters"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:flow="clr-namespace:VNotch.Controls"
         xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options"
         xmlns:tb="http://www.hardcodet.net/taskbar"
         Title="V-Notch"
@@ -12,12 +14,12 @@
         ResizeMode="NoResize"
         WindowStartupLocation="Manual"
         PreviewKeyDown="Window_PreviewKeyDown"
-        UseLayoutRounding="True"
-        SnapsToDevicePixels="True"
+        UseLayoutRounding="False"
+        SnapsToDevicePixels="False"
         TextOptions.TextFormattingMode="Ideal"
         TextOptions.TextRenderingMode="Grayscale"
         TextOptions.TextHintingMode="Animated"
-        RenderOptions.ClearTypeHint="Enabled"
+        RenderOptions.ClearTypeHint="Auto"
         RenderOptions.BitmapScalingMode="HighQuality"
         xmlns:ctrl="clr-namespace:VNotch.Controls"
         xmlns:svc="clr-namespace:VNotch.Services"
@@ -26,6 +28,14 @@
 
     <!-- Grayscale filtering softens glyph edges on transparent surfaces. -->
     <Window.Resources>
+
+        <ControlTemplate x:Key="AskChipTemplate" TargetType="Button">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="1" CornerRadius="14" Padding="11,0"
+                    TextElement.Foreground="{TemplateBinding Foreground}">
+                <ContentPresenter VerticalAlignment="Center"/>
+            </Border>
+        </ControlTemplate>
 
         <!-- A microphone struck through (24×24, drawn as strokes). -->
         <StreamGeometry x:Key="MicMutedGeometry" po:Freeze="True">M12,3 A3,3 0 0 0 9,6 V11 A3,3 0 0 0 15,11 V6 A3,3 0 0 0 12,3 Z M6,11 A6,6 0 0 0 18,11 M12,17 V21 M8.5,21 H15.5 M4,4 L20,20</StreamGeometry>
@@ -132,12 +142,12 @@
 
         <Style x:Key="ProgressTimeText" TargetType="TextBlock" BasedOn="{StaticResource SmallText}">
             <Setter Property="FontSize" Value="10.5"/>
-            <Setter Property="FontWeight" Value="ExtraBold"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
             <Setter Property="Typography.NumeralStyle" Value="Lining"/>
             <Setter Property="Effect">
                 <Setter.Value>
-                    <DropShadowEffect BlurRadius="4" ShadowDepth="1" Direction="270" Opacity="0.55" Color="Black" RenderingBias="Performance"/>
+                    <DropShadowEffect BlurRadius="3" ShadowDepth="0.8" Direction="270" Opacity="0.35" Color="Black" RenderingBias="Quality"/>
                 </Setter.Value>
             </Setter>
         </Style>
@@ -239,7 +249,7 @@
                                 <Border.Effect>
                                     <DropShadowEffect BlurRadius="22" ShadowDepth="5" Direction="270" Color="Black" Opacity="0.48" RenderingBias="Performance"/>
                                 </Border.Effect>
-                                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" UseLayoutRounding="True" SnapsToDevicePixels="True"/>
+                                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" UseLayoutRounding="False" SnapsToDevicePixels="False"/>
                             </Border>
                         </Grid>
                     </ControlTemplate>
@@ -263,7 +273,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="MenuItem">
-                        <Grid Margin="0,1" SnapsToDevicePixels="True">
+                        <Grid Margin="0,1" SnapsToDevicePixels="False">
                             <Border x:Name="MenuRow"
                                     CornerRadius="8"
                                     Padding="{TemplateBinding Padding}"
@@ -271,7 +281,7 @@
                                     ctrl:TrayMotion.Background="Transparent"
                                     ctrl:TrayMotion.BorderBrush="Transparent"
                                     BorderThickness="1"
-                                    SnapsToDevicePixels="True">
+                                    SnapsToDevicePixels="False">
                                 <Grid x:Name="MenuContent" ctrl:TrayMotion.Opacity="0.72">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="18"/>
@@ -395,7 +405,7 @@
                         </MenuItem.Header>
                     </MenuItem>
                     <Separator Style="{StaticResource TraySeparatorStyle}"/>
-                    <MenuItem Style="{StaticResource TrayMenuItemStyle}"
+                    <MenuItem x:Name="MenuSettings" Style="{StaticResource TrayMenuItemStyle}"
                               Icon="{StaticResource TraySettingsIconGeometry}"
                               MouseEnter="TraySettingsTargeted"
                               GotKeyboardFocus="TraySettingsTargeted"
@@ -626,6 +636,21 @@
                                 </Path>
                             </Canvas>
                         </Viewbox>
+                        <Viewbox x:Name="BubbleJobFace" Visibility="Collapsed">
+                            <Canvas Width="100" Height="100">
+                                <Ellipse Width="84" Height="84" Canvas.Left="8" Canvas.Top="8"
+                                         Stroke="#407FA6CC" StrokeThickness="12"/>
+                                <Path x:Name="BubbleJobArc" Stroke="#7FA6CC" StrokeThickness="12"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                                <Grid Width="100" Height="100">
+                                    <TextBlock x:Name="BubbleJobGlyph" FontFamily="Segoe MDL2 Assets" FontSize="53"
+                                               Foreground="#E0FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="BubbleJobUploadGlyph" Text="&#xE74A;" FontFamily="Segoe MDL2 Assets"
+                                               FontSize="25" Foreground="#E0FFFFFF" Margin="0,7,0,0"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed"/>
+                                </Grid>
+                            </Canvas>
+                        </Viewbox>
                         <!-- Charging: a ring that fills with the battery around a bolt; a light leaves it towards the cable.
                              Fills the whole orb, so its colours are set in MainWindow.ChargeOrb. -->
                         <Viewbox x:Name="BubbleChargeFace" Visibility="Collapsed">
@@ -741,6 +766,7 @@
                   MouseLeftButtonDown="NotchBorder_MouseLeftButtonDown"
                   MouseMove="NotchWrapper_MouseMove"
                   MouseLeftButtonUp="NotchWrapper_MouseLeftButtonUp"
+                  LostMouseCapture="NotchWrapper_LostMoveCapture"
                   MouseEnter="NotchWrapper_MouseEnter"
                   MouseLeave="NotchWrapper_MouseLeave"
                   MouseWheel="NotchWrapper_MouseWheel"
@@ -1113,7 +1139,7 @@
                                                FontFamily="{StaticResource IconFont}"
                                                Visibility="Collapsed"
                                                IsHitTestVisible="False"/>
-                                    <TextBlock x:Name="VolumeIndicatorPercentText"
+                                    <flow:NumberFlowText x:Name="VolumeIndicatorPercentText"
                                                Text="0%"
                                                Foreground="#FAFFFFFF"
                                                FontFamily="{StaticResource MainSystemFont}"
@@ -1130,13 +1156,13 @@
                                                VerticalAlignment="Center"
                                                Margin="0,1,0,0"
                                                RenderTransformOrigin="0.5,0.5">
-                                        <TextBlock.RenderTransform>
+                                        <flow:NumberFlowText.RenderTransform>
                                             <TransformGroup>
                                                 <ScaleTransform x:Name="VolumeIndicatorPercentScale" ScaleX="1" ScaleY="1"/>
                                                 <TranslateTransform x:Name="VolumeIndicatorPercentTranslate" X="30"/>
                                             </TransformGroup>
-                                        </TextBlock.RenderTransform>
-                                    </TextBlock>
+                                        </flow:NumberFlowText.RenderTransform>
+                                    </flow:NumberFlowText>
                                     <TextBlock x:Name="VolumeIndicatorMicWord"
                                                Visibility="Collapsed" IsHitTestVisible="False"
                                                Foreground="White" FontFamily="{StaticResource MainSystemFont}"
@@ -1275,18 +1301,18 @@
                         </Border.RenderTransform>
                         <Viewbox Width="16.2" Height="16.2" Stretch="Uniform"
                                  RenderTransformOrigin="0.5,0.5"
-                                 SnapsToDevicePixels="True"
-                                 UseLayoutRounding="True">
+                                 SnapsToDevicePixels="False"
+                                 UseLayoutRounding="False">
                             <Viewbox.RenderTransform>
                                 <RotateTransform x:Name="SettingsRotate" Angle="45"/>
                             </Viewbox.RenderTransform>
                             <Canvas Width="56" Height="56"
-                                    SnapsToDevicePixels="True"
-                                    UseLayoutRounding="True">
+                                    SnapsToDevicePixels="False"
+                                    UseLayoutRounding="False">
                                 <Path Data="M 28.0000 50.8281 C 28.6094 50.8281 29.1719 50.7578 29.8047 50.7110 L 31.1641 53.2891 C 31.4219 53.8047 31.9375 54.0859 32.5704 53.9922 C 33.1563 53.8750 33.5782 53.4532 33.6485 52.8203 L 34.0704 49.9844 C 35.2188 49.6797 36.3672 49.2344 37.4922 48.7422 L 39.6016 50.6406 C 40.0469 51.0625 40.6094 51.1563 41.1953 50.8281 C 41.7110 50.5469 41.9219 49.9844 41.8047 49.3750 L 41.2188 46.5625 C 42.1797 45.8828 43.1407 45.1094 44.0078 44.2422 L 46.6328 45.3438 C 47.2189 45.5781 47.7579 45.4610 48.2034 44.9219 C 48.6018 44.5000 48.6483 43.8906 48.3205 43.3750 L 46.7970 40.9375 C 47.5002 39.9532 48.0627 38.8984 48.6018 37.7735 L 51.4611 37.9141 C 52.0703 37.9375 52.5858 37.6094 52.7970 37.0235 C 52.9842 36.4375 52.7970 35.8750 52.3045 35.5 L 50.0783 33.7188 C 50.3831 32.5937 50.6173 31.3750 50.7109 30.1094 L 53.4296 29.2657 C 54.0157 29.0547 54.3906 28.6094 54.3906 27.9766 C 54.3906 27.3672 54.0157 26.9219 53.4296 26.7110 L 50.7109 25.8437 C 50.6173 24.5781 50.3831 23.4063 50.0783 22.2578 L 52.3045 20.4532 C 52.7970 20.1016 52.9842 19.5625 52.7970 18.9766 C 52.5858 18.3906 52.0703 18.0625 51.4611 18.0859 L 48.6018 18.2032 C 48.0627 17.0781 47.5002 16.0235 46.7970 15.0391 L 48.3205 12.6016 C 48.6483 12.1094 48.6018 11.5000 48.2034 11.0781 C 47.7579 10.5391 47.2189 10.3984 46.6328 10.6563 L 44.0078 11.7110 C 43.1407 10.8906 42.1797 10.0937 41.2188 9.4141 L 41.8047 6.6250 C 41.9219 5.9922 41.7110 5.4297 41.1953 5.1484 C 40.6094 4.8437 40.0469 4.8906 39.6016 5.3594 L 37.4922 7.2110 C 36.3672 6.7188 35.2188 6.3203 34.0704 5.9922 L 33.6485 3.1563 C 33.5782 2.5469 33.1563 2.1016 32.5704 2.0078 C 31.9375 1.9141 31.4219 2.1719 31.1641 2.6875 L 29.8047 5.2657 C 29.1719 5.2188 28.6094 5.1719 28.0000 5.1719 C 27.3672 5.1719 26.8047 5.2188 26.1485 5.2657 L 24.8126 2.6875 C 24.5547 2.1719 24.0391 1.9141 23.3829 2.0078 C 22.7969 2.1016 22.3985 2.5469 22.3047 3.1563 L 21.9063 5.9688 C 20.7344 6.3203 19.5860 6.7188 18.4844 7.2110 L 16.3751 5.3594 C 15.9063 4.8906 15.3438 4.8437 14.7813 5.1484 C 14.2657 5.4297 14.0547 5.9922 14.1719 6.6250 L 14.7578 9.4141 C 13.7735 10.0937 12.8126 10.8906 11.9453 11.7110 L 9.3438 10.6563 C 8.7578 10.3984 8.1953 10.5391 7.7500 11.0781 C 7.3751 11.5000 7.3282 12.1094 7.6329 12.5781 L 9.1797 15.0391 C 8.4766 16.0235 7.9141 17.0781 7.3751 18.2032 L 4.4922 18.0859 C 3.8829 18.0625 3.3672 18.3906 3.1797 18.9766 C 2.9922 19.5625 3.1563 20.1016 3.6485 20.4532 L 5.8985 22.2578 C 5.5938 23.4063 5.3360 24.5781 5.2657 25.8437 L 2.5469 26.7110 C 1.9375 26.8984 1.6094 27.3437 1.6094 27.9766 C 1.6094 28.6094 1.9375 29.0547 2.5469 29.2657 L 5.2657 30.1328 C 5.3360 31.3750 5.5938 32.5937 5.8985 33.7188 L 3.6485 35.5 C 3.1563 35.8750 2.9922 36.4375 3.1797 37.0235 C 3.3672 37.6094 3.8829 37.9375 4.4922 37.9141 L 7.3751 37.7735 C 7.9141 38.8984 8.4766 39.9532 9.1563 40.9375 L 7.6563 43.3750 C 7.3047 43.8906 7.3516 44.5000 7.7500 44.9219 C 8.1953 45.4610 8.7578 45.5781 9.3438 45.3438 L 11.9453 44.2422 C 12.8126 45.1094 13.7735 45.8828 14.7578 46.5625 L 14.1719 49.3750 C 14.0547 49.9844 14.2657 50.5469 14.7813 50.8281 C 15.3672 51.1563 15.9297 51.0625 16.3751 50.6406 L 18.4610 48.7422 C 19.5860 49.2344 20.7344 49.6797 21.9063 49.9844 L 22.3047 52.8203 C 22.3985 53.4532 22.7969 53.8750 23.3829 53.9922 C 24.0391 54.0859 24.5547 53.8047 24.8126 53.2891 L 26.1485 50.7110 C 26.7813 50.7578 27.3672 50.8281 28.0000 50.8281 Z M 33.8829 26.5000 C 32.7813 23.5469 30.6251 21.9297 27.9297 21.9297 C 27.5313 21.9297 27.0626 21.9766 26.3126 22.1406 L 19.5860 10.6563 C 22.0938 9.4141 24.9531 8.7344 28.0000 8.7344 C 38.2188 8.7344 46.2344 16.4922 46.9611 26.5000 Z M 8.9688 28.0000 C 8.9688 21.4844 12.0391 15.7422 16.8907 12.2735 L 23.6641 23.8281 C 22.3985 25.1406 21.8126 26.5703 21.8126 28.0937 C 21.8126 29.5703 22.3751 30.9297 23.6641 32.2891 L 16.7266 43.6328 C 11.9922 40.1406 8.9688 34.4688 8.9688 28.0000 Z M 25.1172 28.0703 C 25.1172 26.4766 26.4766 25.2344 27.9766 25.2344 C 29.5704 25.2344 30.8829 26.4766 30.8829 28.0703 C 30.8829 29.6406 29.5704 30.9297 27.9766 30.9297 C 26.4766 30.9297 25.1172 29.6406 25.1172 28.0703 Z M 28.0000 47.2656 C 24.8829 47.2656 21.9766 46.5391 19.4219 45.2735 L 26.3126 34 C 27.0391 34.1875 27.5313 34.2344 27.9297 34.2344 C 30.6485 34.2344 32.8047 32.5703 33.8829 29.5469 L 46.9611 29.5469 C 46.2109 39.5078 38.1953 47.2656 28.0000 47.2656 Z"
                                       Fill="#CCFFFFFF"
-                                      SnapsToDevicePixels="True"
-                                      UseLayoutRounding="True"/>
+                                      SnapsToDevicePixels="False"
+                                      UseLayoutRounding="False"/>
                             </Canvas>
                         </Viewbox>
                     </ctrl:ActionBorder>
@@ -1588,13 +1614,40 @@
                                           Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
                                 </Viewbox>
                             </ctrl:ActionBorder>
+                            <ctrl:ActionBorder x:Name="AiUsageIconButton" AutomationProperties.Name="AI Usage"
+                                    Tag="AiUsage"
+                                    Width="22" Height="22"
+                                    Background="Transparent"
+                                    Cursor="Hand"
+                                    Margin="0,0,4,0"
+                                    Opacity="0.45"
+                                    RenderTransformOrigin="0.5,0.5"
+                                    PreviewMouseLeftButtonDown="NavIcon_PreviewMouseLeftButtonDown"
+                                    PreviewMouseMove="NavIcon_PreviewMouseMove"
+                                    PreviewMouseLeftButtonUp="NavIcon_PreviewMouseLeftButtonUp"
+                                    LostMouseCapture="NavIcon_LostMouseCapture"
+                                    Click="AiUsageIconButton_Click">
+                                <Border.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                        <TranslateTransform X="0" Y="0"/>
+                                    </TransformGroup>
+                                </Border.RenderTransform>
+                                <Border.Effect>
+                                    <DropShadowEffect Color="Black" BlurRadius="8" ShadowDepth="0" Opacity="0.9"/>
+                                </Border.Effect>
+                                <Viewbox Width="15" Height="15" Stretch="Uniform"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Path Data="F0 M 11.2,2.0 C 6.2,2.0 3.05,5.6 3.05,9.9 C 3.05,13.6 5.4,16.6 6.0,20.2 L 6.0,21.1 C 6.0,21.65 6.45,22.0 7.0,22.0 L 14.0,22.0 C 14.55,22.0 15.0,21.65 15.0,21.1 L 15.0,20.2 L 16.5,20.2 C 18.1,20.2 19.0,19.1 19.0,17.4 L 19.0,15.2 C 19.0,14.8 19.3,14.5 19.7,14.4 L 20.9,14.0 C 21.6,13.75 21.65,12.8 21.25,12.2 L 19.4,9.2 C 19.25,8.9 19.15,8.5 19.1,8.1 C 18.7,4.5 15.6,2.0 11.2,2.0 Z M 9.5,5.45 C 9.75,5.45 9.9,5.65 10.05,6.1 L 10.6,7.6 L 12.1,8.15 C 12.6,8.3 12.6,8.7 12.1,8.85 L 10.6,9.4 L 10.05,10.9 C 9.9,11.35 9.75,11.55 9.5,11.55 C 9.25,11.55 9.1,11.35 8.95,10.9 L 8.4,9.4 L 6.9,8.85 C 6.4,8.7 6.4,8.3 6.9,8.15 L 8.4,7.6 L 8.95,6.1 C 9.1,5.65 9.25,5.45 9.5,5.45 Z M 14.25,9.95 C 14.45,9.95 14.6,10.1 14.7,10.45 L 15.1,11.5 L 16.15,11.9 C 16.55,12.05 16.55,12.45 16.15,12.6 L 15.1,13.0 L 14.7,14.05 C 14.6,14.4 14.45,14.55 14.25,14.55 C 14.05,14.55 13.9,14.4 13.8,14.05 L 13.4,13.0 L 12.35,12.6 C 11.95,12.45 11.95,12.05 12.35,11.9 L 13.4,11.5 L 13.8,10.45 C 13.9,10.1 14.05,9.95 14.25,9.95 Z"
+                                          Fill="{x:Static svc:UiPalette.PrimaryBrush}"/>
+                                </Viewbox>
+                            </ctrl:ActionBorder>
                         </StackPanel>
                     </Grid>
 
                     <Grid x:Name="CollapsedContent"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch">
-                        <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition><BlurEffect x:Name="CollapsedContentBlur" Radius="0" RenderingBias="Performance"/></ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                         <!-- Claude Code at work without music: the star takes the cover's slot at the cover's size and
                              turns (pulses yellow while it waits); the turn's time sits where the visualizer would. -->
                         <Grid x:Name="ClaudeLive"
@@ -1980,7 +2033,7 @@
                             <StackPanel Grid.Column="1"
                                         Orientation="Horizontal"
                                         VerticalAlignment="Center">
-                                <TextBlock x:Name="ChargingPercentText"
+                                <flow:NumberFlowText x:Name="ChargingPercentText"
                                            Text="100%"
                                            Foreground="#30D158"
                                            FontSize="11.5"
@@ -1994,7 +2047,7 @@
                                            VerticalAlignment="Center"
                                            Margin="0,0,5,0"/>
 
-                                <TextBlock x:Name="ChargingWattText"
+                                <flow:NumberFlowText x:Name="ChargingWattText"
                                            Text=""
                                            Foreground="#A0FFFFFF"
                                            FontSize="10.5"
@@ -2058,7 +2111,8 @@
                           RenderTransformOrigin="0.5,0.2"
                           TextElement.FontFamily="{StaticResource SFProDisplay}"
                           TextElement.FontWeight="Bold"
-                          TextOptions.TextFormattingMode="Display"
+                          TextOptions.TextFormattingMode="Ideal"
+                          TextOptions.TextRenderingMode="Grayscale"
                           TextOptions.TextHintingMode="Animated"
                           MouseLeftButtonDown="AppNotificationBanner_MouseLeftButtonDown"
                           MouseLeftButtonUp="AppNotificationBanner_MouseLeftButtonUp"
@@ -2173,7 +2227,7 @@
                                             <TranslateTransform x:Name="AppNotificationTitleTranslate"/>
                                         </TextBlock.RenderTransform>
                                     </TextBlock>
-                                    <TextBlock x:Name="AppNotificationTimeText"
+                                    <flow:NumberFlowText x:Name="AppNotificationTimeText"
                                                Grid.Column="1"
                                                Text="now"
                                                Foreground="#8A8A92"
@@ -2213,6 +2267,7 @@
                             </Border>
                         </Border>
                         </Grid>
+                        <ctrl:AiQuotaBanner x:Name="AiQuotaBannerContent" Visibility="Collapsed"/>
                         <Canvas IsHitTestVisible="False" Panel.ZIndex="1">
                             <Image x:Name="AppNotificationBlurCover"
                                    Width="{Binding ActualWidth, ElementName=AppNotificationContent}"
@@ -2232,7 +2287,7 @@
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Top"
                           Margin="8,4"
-                          RenderOptions.ClearTypeHint="Enabled">
+                          RenderOptions.ClearTypeHint="Auto">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
@@ -2416,7 +2471,7 @@
                           VerticalAlignment="Top"
                           Background="{StaticResource NotchGradient}"
                           ClipToBounds="False"
-                          RenderOptions.ClearTypeHint="Enabled"
+                          RenderOptions.ClearTypeHint="Auto"
                           UseLayoutRounding="False"
                           SnapsToDevicePixels="False">
                         <Grid.ColumnDefinitions>
@@ -2425,9 +2480,11 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <Grid x:Name="StatusBar" Grid.Column="0" Grid.ColumnSpan="3"
-                              HorizontalAlignment="Right" VerticalAlignment="Top"
-                              Margin="0,0,5,0" Panel.ZIndex="100">
+                        <ContentControl x:Name="ExpandedStatusBarHost" Grid.Column="0" Grid.ColumnSpan="3"
+                                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                                        Margin="0,0,5,0" Panel.ZIndex="100"
+                                        HorizontalContentAlignment="Right" VerticalContentAlignment="Top">
+                        <Grid x:Name="StatusBar" HorizontalAlignment="Right" VerticalAlignment="Top">
                             <Grid.RenderTransform>
 
                                 <TranslateTransform x:Name="StatusBarTranslate" Y="0"/>
@@ -2464,7 +2521,7 @@
                                                   Data="M17.71,7.71L12,2h-1v7.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L11,14.41V22h1l5.71-5.71L13.41,12L17.71,7.71z M13,5.83l1.88,1.88L13,9.59V5.83z M14.88,16.29L13,18.17v-3.76L14.88,16.29z"/>
                                         </Canvas>
                                     </Viewbox>
-                                    <TextBlock x:Name="BatteryPercent"
+                                    <flow:NumberFlowText x:Name="BatteryPercent"
                                                Text="{Binding Secondary.BatteryPercentText}"
                                                Style="{StaticResource SubtitleText}"
                                                FontSize="12"
@@ -2474,9 +2531,7 @@
                                                TextOptions.TextHintingMode="Animated"
                                                VerticalAlignment="Center"/>
                                     <!-- Reserve the battery terminal plus the same 4-DIP inset as adjacent action glyphs. -->
-                                    <Grid Margin="4.51,0,6.71,0"
-                                          SnapsToDevicePixels="True"
-                                          UseLayoutRounding="True">
+                                    <Grid Margin="4.51,0,6.71,0">
 
                                         <Border x:Name="BatteryIcon"
                                                 Width="27.08" Height="14.44"
@@ -2568,6 +2623,7 @@
                             <!-- Reserve the shared 24-DIP Settings action with the same 4-DIP gap. -->
                             <Border Grid.Column="2" Width="28" Height="24" IsHitTestVisible="False"/>
                         </Grid>
+                        </ContentControl>
 
                         <Border x:Name="MediaBackground"
                                 Grid.ColumnSpan="3"
@@ -2663,6 +2719,8 @@
                             <Grid x:Name="LyricsCanvasViewport"
                                   Background="Transparent"
                                   ClipToBounds="True">
+                                <!-- Players are added on first Canvas use. Even an empty
+                                     MediaElement initializes the native video subsystem. -->
                                 <Rectangle x:Name="LyricsCanvasBrightnessOverlay"
                                            Fill="Black"
                                            Opacity="0.3"
@@ -2684,7 +2742,7 @@
                                     CornerRadius="16"
                                     Padding="12,12,4,2"
                                     MouseWheel="MediaWidget_MouseWheel"
-                                    RenderOptions.ClearTypeHint="Enabled">
+                                    RenderOptions.ClearTypeHint="Auto">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
@@ -3110,7 +3168,7 @@
                                                 HorizontalAlignment="Left"
                                                 Margin="-1,0,5,0"
                                                 Panel.ZIndex="10">
-                                        <TextBlock x:Name="MonthText"
+                                        <flow:NumberFlowText x:Name="MonthText"
                                                    Text="Dec"
                                                    Style="{StaticResource TitleText}"
                                                    FontSize="15"
@@ -3118,14 +3176,14 @@
                                                    RenderTransformOrigin="0.5,0.5"
                                                    TextOptions.TextRenderingMode="Grayscale"
                                                    TextOptions.TextHintingMode="Animated">
-                                            <TextBlock.RenderTransform>
+                                            <flow:NumberFlowText.RenderTransform>
                                                 <TransformGroup>
                                                     <ScaleTransform x:Name="MonthTextScale" ScaleX="1" ScaleY="1"/>
                                                     <TranslateTransform x:Name="MonthTextTranslate" X="0" Y="0"/>
                                                 </TransformGroup>
-                                            </TextBlock.RenderTransform>
-                                        </TextBlock>
-                                        <TextBlock x:Name="DayText"
+                                            </flow:NumberFlowText.RenderTransform>
+                                        </flow:NumberFlowText>
+                                        <flow:NumberFlowText x:Name="DayText"
                                                    Text="14"
                                                    Style="{StaticResource TitleText}"
                                                    FontSize="16.5"
@@ -3156,21 +3214,21 @@
 
                                                     <StackPanel x:Name="WeekDaysPanel" Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4"/>
 
-                                                    <Border x:Name="CalendarMainHighlight"
+                                                    <Ellipse x:Name="CalendarMainHighlight"
                                                             Grid.Row="1"
-                                                            Width="24" Height="24"
-                                                            Background="White"
-                                                            CornerRadius="12"
+                                                            Width="{x:Static presenters:CalendarScrollMath.HighlightDiameter}"
+                                                            Height="{x:Static presenters:CalendarScrollMath.HighlightDiameter}"
+                                                            Fill="White"
                                                             RenderTransformOrigin="0.5,0.5"
                                                             HorizontalAlignment="Left"
                                                             VerticalAlignment="Center">
-                                                        <Border.RenderTransform>
+                                                        <Ellipse.RenderTransform>
                                                             <TransformGroup>
                                                                 <ScaleTransform x:Name="CalendarHighlightScale" ScaleX="1" ScaleY="1"/>
                                                                 <TranslateTransform x:Name="CalendarHighlightTranslate" X="0"/>
                                                             </TransformGroup>
-                                                        </Border.RenderTransform>
-                                                    </Border>
+                                                        </Ellipse.RenderTransform>
+                                                    </Ellipse>
 
                                                     <StackPanel x:Name="WeekNumbers" Grid.Row="1" Orientation="Horizontal"/>
                                                 </Grid>
@@ -3241,6 +3299,11 @@
                                                         Margin="2,0,0,0"
                                                         Visibility="Collapsed"/>
 
+                                    <ctrl:AiUsageStatWidget x:Name="AiUsageWidgetView"
+                                                               Grid.Column="0" Grid.ColumnSpan="2"
+                                                               VerticalAlignment="Center" HorizontalAlignment="Left"
+                                                               Margin="2,0,0,0" Visibility="Collapsed"/>
+
                                     <Grid x:Name="SystemMonitorWidgetContent"
                                           Grid.Column="0" Grid.ColumnSpan="2"
                                           VerticalAlignment="Center"
@@ -3260,7 +3323,7 @@
                                                                VerticalAlignment="Bottom"
                                                                TextOptions.TextRenderingMode="Grayscale"
                                                                TextOptions.TextHintingMode="Animated"/>
-                                                    <TextBlock x:Name="SysMonCpuValueText"
+                                                    <flow:NumberFlowText x:Name="SysMonCpuValueText"
                                                                Text="0%"
                                                                FontFamily="{StaticResource MainSystemFont}"
                                                                FontSize="13"
@@ -3295,7 +3358,7 @@
                                                                VerticalAlignment="Bottom"
                                                                TextOptions.TextRenderingMode="Grayscale"
                                                                TextOptions.TextHintingMode="Animated"/>
-                                                    <TextBlock x:Name="SysMonRamValueText"
+                                                    <flow:NumberFlowText x:Name="SysMonRamValueText"
                                                                Text="—"
                                                                FontFamily="{StaticResource MainSystemFont}"
                                                                FontSize="13"
@@ -3331,7 +3394,7 @@
                                                                   Data="M12 21l-7-7h4V3h6v11h4z"/>
                                                         </Canvas>
                                                     </Viewbox>
-                                                    <TextBlock x:Name="SysMonNetDownText"
+                                                    <flow:NumberFlowText x:Name="SysMonNetDownText"
                                                                Text="0 B/s"
                                                                FontFamily="{StaticResource MainSystemFont}"
                                                                FontSize="10.5"
@@ -3348,7 +3411,7 @@
                                                                   Data="M12 3l7 7h-4v11H9V10H5z"/>
                                                         </Canvas>
                                                     </Viewbox>
-                                                    <TextBlock x:Name="SysMonNetUpText"
+                                                    <flow:NumberFlowText x:Name="SysMonNetUpText"
                                                                Text="0 B/s"
                                                                FontFamily="{StaticResource MainSystemFont}"
                                                                FontSize="10.5"
@@ -3365,9 +3428,6 @@
                             </Border>
 
                             <Grid x:Name="GreetingSection" Grid.Row="1" Margin="4,-6,0,0">
-                                <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition>
-                                    <BlurEffect x:Name="CalendarGreetingContextBlur" Radius="0" RenderingBias="Performance"/>
-                                </ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"
                                                       MinWidth="40"
@@ -3551,6 +3611,24 @@
                     <Grid x:Name="SecondaryContent" Opacity="0" Visibility="Collapsed" Margin="8,0,8,8" HorizontalAlignment="Center" VerticalAlignment="Stretch" Width="888" MouseLeftButtonDown="SecondaryContent_Click">
                         <ContentControl x:Name="ClipboardTrayHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
                     </Grid>
+                    <ctrl:GlassClipGrid x:Name="AiUsageContent"
+                                        Opacity="0"
+                                        Visibility="Collapsed"
+                                        Margin="8,2,8,8"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Top"
+                                        Width="464"
+                                        Height="137"
+                                        Background="Transparent"
+                                        ClipToBounds="False"
+                                        RenderOptions.ClearTypeHint="Auto"
+                                        UseLayoutRounding="False"
+                                        SnapsToDevicePixels="False">
+                        <ContentControl x:Name="AiUsageStatusBarHost"
+                                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                                        Margin="0,0,5,0" Panel.ZIndex="100"
+                                        HorizontalContentAlignment="Right" VerticalContentAlignment="Top"/>
+                    </ctrl:GlassClipGrid>
                     <Grid x:Name="CameraContent" Opacity="0" Visibility="Collapsed" Margin="16,36,16,16" HorizontalAlignment="Center" VerticalAlignment="Stretch" Width="488">
                         <ctrl:ActionBorder x:Name="CameraSection"
                                 Background="#1A1A1A"
@@ -3655,7 +3733,7 @@
                           Width="420"
                           Height="122"
                           MouseLeftButtonDown="SecondaryContent_Click"
-                          RenderOptions.ClearTypeHint="Enabled"
+                          RenderOptions.ClearTypeHint="Auto"
                           UseLayoutRounding="False"
                           SnapsToDevicePixels="False">
                         <Grid.RowDefinitions>
@@ -3714,7 +3792,7 @@
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
 
-                                <TextBlock x:Name="ClockViewMonthText"
+                                <flow:NumberFlowText x:Name="ClockViewMonthText"
                                            Grid.Row="0"
                                            Text="APRIL"
                                            FontFamily="{StaticResource MainSystemFont}"
@@ -3744,7 +3822,11 @@
                         <Grid Grid.Row="1" VerticalAlignment="Center" Visibility="Collapsed">
                             <StackPanel>
                                 <ctrl:CountdownView x:Name="CountdownWidget"/>
-                                <ctrl:WhiteNoiseStrip x:Name="WhiteNoiseWidget" Margin="0,8,0,0"/>
+                                <ContentPresenter x:Name="WhiteNoiseWidget" Margin="0,8,0,0">
+                                    <ContentPresenter.ContentTemplate>
+                                        <DataTemplate><ctrl:WhiteNoiseStrip/></DataTemplate>
+                                    </ContentPresenter.ContentTemplate>
+                                </ContentPresenter>
                             </StackPanel>
                         </Grid>
 
@@ -3789,7 +3871,7 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
 
-                            <TextBlock x:Name="CountdownCompleteText"
+                            <flow:NumberFlowText x:Name="CountdownCompleteText"
                                        Grid.Column="0"
                                        Text="00:00"
                                        FontSize="15"
@@ -3804,13 +3886,13 @@
                                        FontFamily="{StaticResource MainSystemFont}"
                                        Typography.NumeralAlignment="Tabular"
                                        Typography.NumeralStyle="Lining">
-                                <TextBlock.RenderTransform>
+                                <flow:NumberFlowText.RenderTransform>
                                     <TransformGroup>
                                         <ScaleTransform x:Name="CountdownCompleteTextScale" ScaleX="0.82" ScaleY="0.82"/>
                                         <TranslateTransform x:Name="CountdownCompleteTextTranslate" Y="-10"/>
                                     </TransformGroup>
-                                </TextBlock.RenderTransform>
-                            </TextBlock>
+                                </flow:NumberFlowText.RenderTransform>
+                            </flow:NumberFlowText>
 
                             <Grid x:Name="CountdownRestartHost"
                                   Grid.Column="1"
@@ -4180,7 +4262,7 @@
                                        FontWeight="SemiBold"
                                        FontFamily="{StaticResource MainSystemFont}"/>
                         </DockPanel>
-                        <TextBlock x:Name="UpdateInlineStatusText"
+                        <flow:NumberFlowText x:Name="UpdateInlineStatusText"
                                    Text="Version v-"
                                    Foreground="#CCFFFFFF"
                                    FontSize="10.5"

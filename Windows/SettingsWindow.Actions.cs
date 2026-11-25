@@ -17,6 +17,7 @@ using VNotch.Models;
 using VNotch.Modules;
 using VNotch.Presenters;
 using VNotch.Services;
+using VNotch.Services.AiUsage;
 
 namespace VNotch;
 
@@ -24,7 +25,7 @@ public partial class SettingsWindow
 {
     #region Button Handlers
 
-    private void Reset_Click(object sender, RoutedEventArgs e)
+    internal void Reset_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -112,7 +113,7 @@ public partial class SettingsWindow
 
     private bool _hasRevertedLivePreview;
 
-    private void Cancel_Click(object sender, RoutedEventArgs e)
+    internal void Cancel_Click(object sender, RoutedEventArgs e)
     {
         RevertLivePreviewIfNeeded();
         CloseWithAnimation();
@@ -127,20 +128,23 @@ public partial class SettingsWindow
         base.OnClosing(e);
     }
 
-    private bool HasUncommittedLivePreview()
+    internal bool HasUncommittedLivePreview()
     {
         var baseline = _editSession.Baseline;
-        return !baseline.ValueEquals(_editSession.Applied)
+        return (_hasAiUsageAppearancePreview && AiUsageAppearance.Current != AiUsageAppearance.From(baseline))
+            || !baseline.ValueEquals(_editSession.Applied)
             || !baseline.ValueEquals(_settings)
             || !string.Equals(Loc.CurrentLanguage, baseline.Language, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void RevertLivePreviewIfNeeded()
+    internal void RevertLivePreviewIfNeeded()
     {
         _livePreviewDebounce?.Stop();
         _hasRevertedLivePreview = true;
         var baseline = _editSession.Revert();
         _settings = baseline.Clone();
+        AiUsageAppearance.Apply(baseline);
+        _hasAiUsageAppearancePreview = false;
         AccentTheme.Apply(baseline.AccentColor, animate: IsLoaded);
         ApplyGpuPreference(GetEffectiveGpuPreference(baseline));
         InteractionSounds.Configure(baseline.EnableInteractionSounds, baseline.InteractionSoundVolume);
@@ -255,7 +259,7 @@ public partial class SettingsWindow
         return count;
     }
 
-    private static int DeleteExplicitCacheFiles(string appData, string baseDir)
+    internal static int DeleteExplicitCacheFiles(string appData, string baseDir)
     {
         int count = 0;
         var filesToDelete = new[]
@@ -283,11 +287,13 @@ public partial class SettingsWindow
         return count;
     }
 
-    private async void Apply_Click(object sender, RoutedEventArgs e)
+    internal async void Apply_Click(object sender, RoutedEventArgs e)
     {
         await ApplyWithoutClosingAsync();
     }
 
+    internal bool IsSaving => _isSaving;
+    internal bool IsClosing => _isClosing;
     private bool _isSaving;
 
     internal Task<bool> ApplyAndCloseAsync(Action<Exception>? showError = null) =>
@@ -319,11 +325,12 @@ public partial class SettingsWindow
         finally { _isSaving = false; }
     }
 
-    private async void Save_Click(object sender, RoutedEventArgs e) => await ApplyAndCloseAsync();
-    private void CloseWithAnimation()
+    internal async void Save_Click(object sender, RoutedEventArgs e) => await ApplyAndCloseAsync();
+    internal void CloseWithAnimation()
     {
         if (_isClosing) return;
         _isClosing = true;
+        _navPill.Settle();
 
         AnimatedClosing?.Invoke(this, EventArgs.Empty);
 
@@ -374,6 +381,7 @@ public partial class SettingsWindow
         MainShell.RenderTransformOrigin = new Point(0.5, 0.0);
 
         MainShell.Effect = null;
+        if (MainShellShadow != null) MainShellShadow.Effect = null;
 
         MainShell.SnapsToDevicePixels = false;
         MainShell.UseLayoutRounding = false;
@@ -446,33 +454,7 @@ public partial class SettingsWindow
             Left = targetLeft;
         }
 
-        if (Math.Abs(currentTranslateY) >= 0.5)
-        {
-            var resetTranslateY = new DoubleAnimation(currentTranslateY, 0.0, totalDur)
-            {
-                EasingFunction = easeInStrong
-            };
-            Timeline.SetDesiredFrameRate(resetTranslateY, fps);
-            ShellTranslate.BeginAnimation(TranslateTransform.YProperty, resetTranslateY);
-        }
-        else
-        {
-            ShellTranslate.Y = 0.0;
-        }
-
-        if (Math.Abs(currentTranslateX) >= 0.5)
-        {
-            var resetTranslateX = new DoubleAnimation(currentTranslateX, 0.0, totalDur)
-            {
-                EasingFunction = easeInStrong
-            };
-            Timeline.SetDesiredFrameRate(resetTranslateX, fps);
-            ShellTranslate.BeginAnimation(TranslateTransform.XProperty, resetTranslateX);
-        }
-        else
-        {
-            ShellTranslate.X = 0.0;
-        }
+        ResetExitTranslation(currentTranslateX, currentTranslateY, totalDur, easeInStrong, fps);
 
         squishX.Completed += (s, e) =>
         {
@@ -583,6 +565,7 @@ public partial class SettingsWindow
 
         snapshot.EnableHoverExpand = HoverExpandCheck.IsChecked ?? true;
         snapshot.ShowCodexJobsInNotch = ShowCodexJobsInNotchCheck.IsChecked ?? true;
+        snapshot.ShowScriptJobsInNotch = ShowScriptJobsInNotchCheck.IsChecked ?? true;
         snapshot.HoverExpandDelay = (int)HoverDelaySlider.Value;
         snapshot.DisableMouseLeaveAutoClose = DisableMouseLeaveAutoCloseCheck.IsChecked ?? false;
         snapshot.KeepMediaPinnedOnTrackChange = KeepMediaPinnedCheck.IsChecked ?? true;
@@ -599,11 +582,13 @@ public partial class SettingsWindow
             snapshot.VisualizerAudioDeviceId = selectedAudioDevice.Id;
         snapshot.ShowMutedMicGlyph = ShowMutedMicGlyphCheck.IsChecked ?? true;
         snapshot.AutoStart = AutoStartCheck.IsChecked ?? false;
+        snapshot.AllowNotchDragging = AllowNotchDraggingCheck.IsChecked == true;
         snapshot.StayBehindWindows = StayBehindWindowsCheck.IsChecked ?? false;
         snapshot.EnableHelloGreeting = HelloGreetingCheck.IsChecked ?? true;
         snapshot.EnableSpotlight = EnableSpotlightCheck.IsChecked ?? true;
         snapshot.PreviewFilesWithQuickLook = QuickLookCheck.IsChecked ?? true;
         ReadSpotlightAiSettings(snapshot);
+        ReadAiUsageSettings(snapshot);
         ReadTranslationSettings(snapshot);
         snapshot.EnableDebugMode = EnableDebugModeCheck.IsChecked ?? false;
         snapshot.HideOnExclusiveFullscreen = HideOnExclusiveFullscreenCheck.IsChecked ?? true;
@@ -687,6 +672,7 @@ public partial class SettingsWindow
 
         bool hasChanges = _editSession.Preview(snapshot);
         _settings = snapshot.Clone();
+        RefreshPerformancePresetSelectionUi(_settings);
 
         if (hasChanges)
         {
@@ -733,4 +719,36 @@ public partial class SettingsWindow
     }
 
     #endregion
+
+    private void ResetExitTranslation(double currentTranslateX, double currentTranslateY, TimeSpan totalDur, IEasingFunction easeInStrong, int fps)
+    {
+        if (Math.Abs(currentTranslateY) >= 0.5)
+        {
+            var resetTranslateY = new DoubleAnimation(currentTranslateY, 0.0, totalDur)
+            {
+                EasingFunction = easeInStrong
+            };
+            Timeline.SetDesiredFrameRate(resetTranslateY, fps);
+            ShellTranslate.BeginAnimation(TranslateTransform.YProperty, resetTranslateY);
+        }
+        else
+        {
+            ShellTranslate.Y = 0.0;
+        }
+
+        if (Math.Abs(currentTranslateX) >= 0.5)
+        {
+            var resetTranslateX = new DoubleAnimation(currentTranslateX, 0.0, totalDur)
+            {
+                EasingFunction = easeInStrong
+            };
+            Timeline.SetDesiredFrameRate(resetTranslateX, fps);
+            ShellTranslate.BeginAnimation(TranslateTransform.XProperty, resetTranslateX);
+        }
+        else
+        {
+            ShellTranslate.X = 0.0;
+        }
+    }
+
 }

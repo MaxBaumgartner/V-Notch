@@ -32,6 +32,7 @@ public partial class MainWindow : IClockWidgetHost
             DigitalClockWidget = DigitalClockWidget,
             WeatherWidgetContent = WeatherWidgetView,
             SystemMonitorWidgetContent = SystemMonitorWidgetContent,
+            AiUsageWidgetContent = AiUsageWidgetView,
             CalendarStripContainer = CalendarStripContainer,
             MonthText = MonthText,
             DayText = DayText,
@@ -73,11 +74,6 @@ public partial class MainWindow : IClockWidgetHost
         return presenter;
     }
 
-    internal void BuildClockViewCalendar()
-    {
-        EnsureClockViewFeatureLoaded();
-    }
-
     private void RefreshClockView() => EnsureClockViewFeatureLoaded().RefreshClockView();
 
     private void RefreshClockViewLocale() => _clockWidgetPresenter?.RefreshClockViewLocale();
@@ -114,7 +110,16 @@ public partial class MainWindow : IClockWidgetHost
     NotchSettings IClockWidgetHost.Settings => _settings;
     void IClockWidgetHost.SaveSettings() => _settingsService.SaveAsync(_settings).SafeFireAndForget("SETTINGS-SAVE");
 
-    bool IClockWidgetHost.IsAnimating { get => _isAnimating; set => _isAnimating = value; }
+    private int? _clockResizeGeneration;
+    bool IClockWidgetHost.IsAnimating
+    {
+        get => _isAnimating;
+        set
+        {
+            _clockResizeGeneration = value ? _viewTransitionGeneration : null;
+            UpdateGlassMotionState();
+        }
+    }
     bool IClockWidgetHost.IsSecondaryView => _isSecondaryView;
     bool IClockWidgetHost.IsExpanded => _isExpanded;
     bool IClockWidgetHost.IsTimerView => _isTimerView;
@@ -125,11 +130,17 @@ public partial class MainWindow : IClockWidgetHost
     Brush IClockWidgetHost.WhiteBrush => VNotch.Services.UiPalette.PrimaryBrush;
 
     void IClockWidgetHost.SwitchToTimerView() => SwitchToTimerView();
+    void IClockWidgetHost.SwitchToAiUsageView() => SwitchToAiUsageView();
     void IClockWidgetHost.CollapseNotch() => CollapseNotch();
     void IClockWidgetHost.OpenWeatherSettings()
     {
         OpenAppSettings();
-        _activeSettingsWindow?.NavigateToSection(!_settings.EnableWeather ? "System" : "Privacy");
+        SettingsPreparation.Active?.NavigateToSection(!_settings.EnableWeather ? "System" : "Privacy");
+    }
+    void IClockWidgetHost.OpenAiUsageSettings()
+    {
+        OpenAppSettings();
+        SettingsPreparation.Active?.NavigateToAiUsage();
     }
 
     IntPtr IClockWidgetHost.Hwnd => _hwnd;

@@ -44,6 +44,7 @@ public partial class MainWindow
     private bool _isSecondaryView { get; set; }
 
     private bool _isCameraView;
+    private bool _isAiUsageView;
     private double ClipboardTrayWidth
     {
         get
@@ -54,6 +55,7 @@ public partial class MainWindow
     }
     private const double ClipboardTrayHeight = 268;
     private const double CameraViewWidth = 520;
+    private const double AiUsageViewWidth = 480;
     private const double CameraViewHeight = 328;
 
     private void InitializeClipboardHistory(VNotch.Services.Clipboard.ClipboardHistoryStore? store)
@@ -82,6 +84,12 @@ public partial class MainWindow
     }
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && _askSheetOpen)
+        {
+            FoldAskSheet();
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Escape && (SchoolCenter?.CloseSchoolPreview() == true || ActiveDrawer?.DismissDrawer() == true))
         {
             e.Handled = true;

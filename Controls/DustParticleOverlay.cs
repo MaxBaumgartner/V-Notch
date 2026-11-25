@@ -40,7 +40,6 @@ public sealed partial class DustParticleOverlay : FrameworkElement
         remove => RemoveHandler(DissolveRequestedEvent, value);
     }
 
-    private const int MinParticles = 24;
     private const int MaxParticles = 180;
     private const int AlphaLevels = 20;
     private const int TintVariants = 3;
@@ -197,6 +196,7 @@ public sealed partial class DustParticleOverlay : FrameworkElement
 
     private void OnLifecycleStateChanged(object sender, RoutedEventArgs e)
     {
+        TrackViewport();
         if (IsActive && !_isDissolving)
         {
             ResetSiblingBlur(IsDissolved ? 0.0 : MaskedBlurRadius);
@@ -206,6 +206,7 @@ public sealed partial class DustParticleOverlay : FrameworkElement
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
+        StopTrackingViewport();
         StopRendering();
     }
 
@@ -289,6 +290,7 @@ public sealed partial class DustParticleOverlay : FrameworkElement
     private void UpdateRenderingState()
     {
         bool shouldAnimate = IsActive && IsLoaded && IsVisible &&
+                             (_inViewport || _isDissolving || _isReforming) &&
                              (!IsDissolved || _isDissolving) &&
                              (!AnimationConfig.ReduceMotion || _isDissolving || _isReforming);
 
@@ -568,7 +570,7 @@ public sealed partial class DustParticleOverlay : FrameworkElement
     protected override void OnRender(DrawingContext drawingContext)
     {
         base.OnRender(drawingContext);
-        if (!IsActive || (IsDissolved && !_isDissolving) || ActualWidth <= 0 || ActualHeight <= 0) return;
+        if (!IsActive || !_inViewport || (IsDissolved && !_isDissolving) || ActualWidth <= 0 || ActualHeight <= 0) return;
 
         if (!_particlesInitialized)
         {

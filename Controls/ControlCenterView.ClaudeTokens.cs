@@ -135,16 +135,20 @@ public partial class ControlCenterView
         return "≈ " + percent.ToString(percent < 10 ? "0.0" : "0", culture) + " %";
     }
 
-    private void StartTokenClock()
+    private void UpdateTokenClock(ClaudeSession? lead)
     {
-        if (_claude == null) return;
+        if (!IsVisible || lead?.Id != _tokenRow?.SessionId || lead?.TranscriptPath is not { Length: > 0 } ||
+            lead.Status is not (ClaudeSessionStatus.Working or ClaudeSessionStatus.Waiting))
+        {
+            StopTokenClock();
+            return;
+        }
         if (_tokenTimer == null)
         {
             _tokenTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TokenRefreshInterval };
             _tokenTimer.Tick += (_, _) => RefreshTokens();
         }
-        _tokenTimer.Start();
-        RefreshTokens();
+        if (!_tokenTimer.IsEnabled) _tokenTimer.Start();
     }
 
     private void StopTokenClock() => _tokenTimer?.Stop();
@@ -152,7 +156,7 @@ public partial class ControlCenterView
     /// <summary>Reads the big card's session off the UI thread and rolls its figures to what it finds.</summary>
     private async void RefreshTokens()
     {
-        if (_tokenRow is not { } row || _tokenReading || _claude == null || _disposed) return;
+        if (!IsVisible || _tokenRow is not { } row || _tokenReading || _claude == null || _disposed) return;
         ClaudeSession? session = null;
         foreach (var s in _claude.GetSessions())
             if (s.Id == row.SessionId) session = s;
@@ -164,7 +168,7 @@ public partial class ControlCenterView
         try
         {
             var tokens = await Task.Run(() => ledger.Read(path, turnStart, fiveHour, DateTime.UtcNow));
-            if (tokens == null || _disposed) return;
+            if (tokens == null || _disposed || !IsVisible) return;
             _tokensSeen[row.SessionId] = tokens;
             // The card may have been rebuilt meanwhile: fill whichever row shows this session now.
             if (_tokenRow is { } now && now.SessionId == row.SessionId)

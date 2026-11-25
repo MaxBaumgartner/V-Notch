@@ -16,22 +16,11 @@ internal sealed partial class TranslationSelectionService : IDisposable
         int textLen,
         out byte outCanSend);
 
-    [LibraryImport(NativeDll)]
-    private static partial int vn_translation_selection_can_preserve_recent_snapshot(
-        byte manual,
-        byte protectedInput,
-        byte sameWindow,
-        long nowTick,
-        long lastValidTick,
-        out byte outCanPreserve);
-
     private readonly Thread _thread;
     private Dispatcher? _dispatcher;
     private readonly TaskCompletionSource<Dispatcher> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _manualRequestVersion;
     private UiScheduledTimer? _debounce;
-    private readonly AutomationEventHandler _selectionChanged;
-    private AutomationElement? _root, _eventElement;
     private NativeSelectionState? _nativeSelection;
     private TranslationSelection? _snapshot;
     private long _nextId;
@@ -111,7 +100,6 @@ internal sealed partial class TranslationSelectionService : IDisposable
     {
         _isBlocked = isBlocked;
         _automaticWatching = automaticWatching;
-        _selectionChanged = (sender, _) => { _eventElement = sender as AutomationElement; QueueCapture(); };
         _foregroundChanged = (_, hwnd) =>
         {
             if (hwnd == IntPtr.Zero || IsOwnWindow(hwnd)) return;
@@ -212,9 +200,6 @@ internal sealed partial class TranslationSelectionService : IDisposable
         }
     }
 
-    private TranslationSelection? _lastValidSnapshot;
-    private long _lastValidTick;
-
     private void Capture(bool manual = false)
     {
         try
@@ -223,7 +208,7 @@ internal sealed partial class TranslationSelectionService : IDisposable
             if (window == IntPtr.Zero || IsOwnWindow(window)) return;
             if (_isBlocked?.Invoke(window) == true)
             {
-                DetachSelection(); _lastValidSnapshot = null; Publish(null, !manual); return;
+                DetachSelection(); Publish(null, !manual); return;
             }
             _lastExternalWindow = window;
             if (!manual && !_automaticWatching) return;
@@ -231,36 +216,17 @@ internal sealed partial class TranslationSelectionService : IDisposable
             if (window != _watchedWindow)
             {
                 DetachSelection();
-                _lastValidSnapshot = null;
                 Publish(null, !manual);
-                _root = AutomationElement.FromHandle(window);
                 _watchedWindow = window;
-                try { if (_automaticWatching) Automation.AddAutomationEventHandler(TextPattern.TextSelectionChangedEvent, _root, TreeScope.Subtree, _selectionChanged); }
-                catch (Exception ex) when (ex is InvalidOperationException or COMException or ElementNotAvailableException) { /* Selection worker shutting down or UIA provider unavailable. */ }
             }
-            var result = SelectionTextReader.Read(window, _eventElement, manual, out bool protectedInput, rootElement: _root, previousSelection: _nativeSelection);
+            var result = SelectionTextReader.Read(window, null, manual, out bool protectedInput, previousSelection: _nativeSelection);
             if (Win32Interop.GetForegroundWindow() != window) { result?.Dispose(); return; }
             if (result == null)
             {
                 var native = protectedInput ? null : NativeSelectionReader.Read(window);
                 if (Win32Interop.GetForegroundWindow() != window) return;
-                if (native == null &&
-                    vn_translation_selection_can_preserve_recent_snapshot(
-                        manual ? (byte)1 : (byte)0,
-                        protectedInput ? (byte)1 : (byte)0,
-                        _lastValidSnapshot?.Window == window ? (byte)1 : (byte)0,
-                        Environment.TickCount64,
-                        _lastValidTick,
-                        out byte canPreserve) == 0 && canPreserve != 0)
-                {
-                    // Preserve a selection captured moments before Shift key-down cleared or unfocused the provider.
-                    native = _lastValidSnapshot;
-                }
-                if (native != null)
-                {
-                    _lastValidSnapshot = native;
-                    _lastValidTick = Environment.TickCount64;
-                }
+                // Empty reads must retry the live provider. A snapshot from the
+                // same HWND can belong to a previous channel, tab, or selection.
                 if (native != null && _snapshot?.Window == native.Window && _snapshot.Text == native.Text && !_snapshot.CanReplace) return;
                 _nativeSelection?.Dispose(); _nativeSelection = null;
                 Publish(native, !manual);
@@ -270,15 +236,11 @@ internal sealed partial class TranslationSelectionService : IDisposable
                 _nativeSelection.SameSelection(result.Native))
             {
                 result.Dispose();
-                _lastValidSnapshot = _snapshot;
-                _lastValidTick = Environment.TickCount64;
                 return;
             }
             _nativeSelection?.Dispose();
             _nativeSelection = result.Native;
             var published = new TranslationSelection(++_nextId, result.Text, result.Bounds, window, result.Editable) { InputTruncated = result.InputTruncated };
-            _lastValidSnapshot = published;
-            _lastValidTick = Environment.TickCount64;
             Publish(published, !manual);
         }
         catch (Exception ex) when (ex is InvalidOperationException or COMException or ElementNotAvailableException or ArgumentException)
@@ -325,9 +287,7 @@ internal sealed partial class TranslationSelectionService : IDisposable
 
     private void DetachSelection()
     {
-        if (_root != null)
-            try { Automation.RemoveAutomationEventHandler(TextPattern.TextSelectionChangedEvent, _root, _selectionChanged); } catch (Exception) { /* Window or UIA element may have closed before handler removal. */ }
-        _root = null; _eventElement = null; _watchedWindow = IntPtr.Zero;
+        _watchedWindow = IntPtr.Zero;
         _nativeSelection?.Dispose(); _nativeSelection = null;
     }
 

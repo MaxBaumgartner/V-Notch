@@ -6,6 +6,12 @@
 V-Notch includes third-party components and assets listed below. Their licenses
 apply to those components and assets.
 
+## 7-Zip installer extraction module
+
+Installers built with 7-Zip use its console self-extraction module, copyright
+Igor Pavlov, under the GNU LGPL. The corresponding distribution notice ships
+in `licenses/7-Zip.txt`. [7-Zip source releases](https://www.7-zip.org/download.html)
+
 ## YOLOX-Nano ONNX model
 
 `Models/yolox_nano.onnx` is the unmodified YOLOX-Nano asset published by
@@ -20,6 +26,20 @@ The former Ultralytics `yolo11n.onnx` has been removed from the current tree and
 installer payload. Earlier Git history/releases remain a separate review item.
 Removal does not retroactively resolve obligations for previous distributions.
 
+## Thinking Orbs
+
+`Controls/ThinkingOrbGeometry*.cs`, `Controls/AgentOrbGeometry*.cs` and
+`Controls/ThinkingOrb.Agent.cs` adapt the Working, Composing, Searching,
+Listening, Shaping and Solving particle geometry, presets and transitions from
+[Thinking Orbs by Jakub Antalik](https://github.com/Jakubantalik/thinking-orbs/tree/de85557ca220332586d070d8788c0e1d6e877a0d),
+as demonstrated in [Details.so Orb 01](https://www.details.so/vault/orb-01).
+The renderer is adapted for WPF, with visibility-aware scheduling and reduced
+motion support. Chat uses the Details demo's interpolated 40px presets and
+480ms blur/fade transition; its golden vectors are recorded in
+`Tests/Fixtures/agent-orb-details-golden.json`. Copyright (c) 2026 Jakub Antalik,
+MIT; the full license is bundled
+as `licenses/ThinkingOrbs-MIT.txt`.
+
 ## SVG and icon assets
 
 `Assets/*.svg` and `Services/icons/*.svg` include locally modified vector
@@ -29,6 +49,25 @@ is implied. Verify **each file** against its original source URL, creator, preci
 
 ## NuGet libraries
 
+### AI provider logos
+
+`Assets/Brands/claude.svg` uses the unmodified spark path from the inline Claude
+wordmark on [Claude's official website](https://claude.com/), rendered in monochrome.
+Claude and its spark are trademarks of Anthropic.
+
+`Assets/Brands/codex.svg` is the Codex cloud-terminal mark distributed by
+[Lobe Icons](https://github.com/lobehub/lobe-icons/blob/63c800e3db6427b3f156f7b88d426ccb3f7277a1/packages/static-svg/icons/codex.svg)
+under MIT. Its full upstream license is bundled as `licenses/LobeIcons-MIT.txt`.
+Codex and its mark remain trademarks of OpenAI. Source URLs, retrieval date, and
+SHA-256 hashes are recorded in `Assets/Brands/sources.json`. The marks identify
+the connected services; no sponsorship or endorsement is implied.
+
+Spotlight also bundles the unmodified monochrome `openai.svg`, `gemini.svg`,
+and `deepseek.svg` marks from the same pinned Lobe Icons revision under MIT.
+The existing `licenses/LobeIcons-MIT.txt` covers these assets. Their source URLs,
+retrieval dates and SHA-256 hashes are recorded in `Assets/Brands/sources.json`.
+OpenAI, Gemini and DeepSeek remain trademarks of their respective owners.
+
 | Library | License | Source |
 | --- | --- | --- |
 | CommunityToolkit.Mvvm 8.4.0 | MIT | <https://github.com/CommunityToolkit/dotnet> |
@@ -37,6 +76,8 @@ is implied. Verify **each file** against its original source URL, creator, preci
 | LLamaSharp 0.27.0 | MIT | <https://github.com/SciSharp/LLamaSharp/tree/v0.27.0> |
 | LLamaSharp.Backend.Cpu / LLamaSharp.Backend.Vulkan.Windows 0.27.0 | MIT core; included native dependency notices in `Assets/Translation/Licenses/` | <https://github.com/SciSharp/LLamaSharp/tree/v0.27.0> |
 | Markdig 0.41.3 | BSD-2-Clause | <https://github.com/xoofx/markdig> |
+| ReverseMarkdown 6.3.0 | MIT | <https://www.nuget.org/packages/ReverseMarkdown/6.3.0> |
+| AngleSharp 1.5.2 | MIT | <https://www.nuget.org/packages/AngleSharp/1.5.2> |
 | Microsoft.Extensions.DependencyInjection 8.0.1 | MIT | <https://dot.net/> |
 | Microsoft.ML.OnnxRuntime.DirectML 1.24.4 | MIT | <https://github.com/microsoft/onnxruntime> |
 | Microsoft.AI.DirectML 1.15.4 | Microsoft Software License; bundled terms in `licenses/DirectML-1.15.4.txt` | <https://github.com/microsoft/DirectML> |
@@ -73,6 +114,58 @@ Canvas is experimental, off by default and requires explicit in-app acknowledgem
 This document is a factual inventory and risk notice, not legal advice or a substitute for third-party licenses.
 
 ## Complete licenses and copyright notices for added components
+
+### Release notes formatting
+
+ReverseMarkdown 6.3.0 and AngleSharp 1.5.2 convert release feed HTML to Markdown.
+
+#### ReverseMarkdown
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Babu Annamalai
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+#### AngleSharp
+
+The MIT License (MIT)
+
+Copyright (c) 2013 - 2026 AngleSharp
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ### Offline translation runtime and optional model
 

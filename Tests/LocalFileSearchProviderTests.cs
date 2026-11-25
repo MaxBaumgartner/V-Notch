@@ -10,9 +10,7 @@ namespace VNotch.Tests;
 
 public sealed class LocalFileSearchProviderTests : IDisposable
 {
-    private readonly string _root = Path.Combine(AppContext.BaseDirectory, "local-search-tests", Guid.NewGuid().ToString("N"));
-
-    public LocalFileSearchProviderTests() => Directory.CreateDirectory(_root);
+    private readonly string _root = SearchFixtureDirectory.Create();
 
     private string FileAt(string relative)
     {
@@ -57,6 +55,21 @@ public sealed class LocalFileSearchProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task DefaultVisibilityHidesLocalAppDataFromOrdinaryQueries()
+    {
+        string root = SearchFixtureDirectory.Create(Environment.SpecialFolder.LocalApplicationData);
+        try
+        {
+            string file = Path.Combine(root, "private-report.txt");
+            File.WriteAllText(file, "fixture");
+            var provider = new LocalFileSearchProvider([root]);
+            Assert.Empty(await provider.SearchAsync("private-report", 10, CancellationToken.None));
+            Assert.Equal(file, Assert.Single(await provider.SearchAsync(file, 10, CancellationToken.None)).Target);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task NormalSearchSkipsCachesButExplicitPathsStillWork()
     {
         string visible = FileAt(@"documents\unique-report.txt");
@@ -87,6 +100,65 @@ public sealed class LocalFileSearchProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task LargeDirectoryCacheObservesRenamesAndAttributeChangesBetweenQueries()
+    {
+        for (int index = 0; index < 2500; index++) FileAt($"document-{index:D4}.txt");
+        string original = FileAt("Báo cáo quarterly.txt");
+        var provider = new LocalFileSearchProvider([_root]);
+        Assert.Equal(original, Assert.Single(await provider.SearchAsync("bao cao", 10, CancellationToken.None)).Target);
+        Assert.Equal(original, Assert.Single(await provider.SearchAsync("quarterly", 10, CancellationToken.None)).Target);
+
+        string renamed = Path.Combine(_root, "Báo cáo annual.txt");
+        File.Move(original, renamed);
+        Assert.Empty(await provider.SearchAsync("quarterly", 10, CancellationToken.None));
+        Assert.Equal(renamed, Assert.Single(await provider.SearchAsync("annual", 10, CancellationToken.None)).Target);
+        File.SetAttributes(renamed, FileAttributes.Hidden);
+        try
+        {
+            Assert.Empty(await provider.SearchAsync("annual", 10, CancellationToken.None));
+            Assert.Equal(renamed, Assert.Single(await provider.SearchAsync(renamed, 10, CancellationToken.None)).Target);
+        }
+        finally { File.SetAttributes(renamed, FileAttributes.Normal); }
+        Assert.Equal(renamed, Assert.Single(await provider.SearchAsync("annual", 10, CancellationToken.None)).Target);
+        File.Delete(renamed);
+        Assert.Empty(await provider.SearchAsync("annual", 10, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WarmTraversalKeepsNonmatchingParentsAndReevaluatesExclusions()
+    {
+        string path = FileAt(@"documents\nested\needle-report.txt");
+        string folder = Path.Combine(_root, "needle-folder");
+        Directory.CreateDirectory(folder);
+        IReadOnlyList<string> excluded = Array.Empty<string>();
+        var provider = new LocalFileSearchProvider([_root]) { ExcludedFolders = () => excluded };
+        Assert.Empty(await provider.SearchAsync("not-present", 10, CancellationToken.None));
+        var results = await provider.SearchAsync("needle", 10, CancellationToken.None);
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, item => item.Target == path && item.Kind == SpotlightResultKind.File);
+        Assert.Contains(results, item => item.Target == folder && item.Kind == SpotlightResultKind.Folder);
+
+        excluded = [Path.Combine(_root, "documents")];
+        Assert.Equal(folder, Assert.Single(await provider.SearchAsync("needle", 10, CancellationToken.None)).Target);
+        excluded = [];
+        Assert.Contains(await provider.SearchAsync("needle", 10, CancellationToken.None), item => item.Target == path);
+    }
+
+    [Fact]
+    public async Task WarmCachePreservesExactFilenameVisibilityAndExplicitPathPrefixes()
+    {
+        string temporary = FileAt(@"documents\needle.tmp");
+        string visible = FileAt(@"documents\needle.txt");
+        var provider = new LocalFileSearchProvider([_root]);
+        Assert.Equal(visible, Assert.Single(await provider.SearchAsync("needle", 10, CancellationToken.None)).Target);
+        Assert.Equal(temporary, Assert.Single(await provider.SearchAsync("needle.tmp", 10, CancellationToken.None)).Target);
+        var results = await provider.SearchAsync(Path.Combine(_root, @"documents\nee"), 10, CancellationToken.None);
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, item => item.Target == temporary);
+        Assert.Contains(results, item => item.Target == visible);
+    }
+
+    [Fact]
     public async Task CancellationAndTimeBudgetDoNotLeaveTheProviderBlocked()
     {
         FileAt("budget-report.txt");
@@ -110,8 +182,8 @@ public sealed class LocalFileSearchProviderTests : IDisposable
         usage.Preferences.SetExcludedFolders([Path.GetDirectoryName(hidden)!]);
         var service = new SpotlightSearchService([provider], usage);
         Assert.True(service.IsWindowsSearchAvailable);
-        Assert.Empty(await service.SearchInstantAsync("search-report", 10, CancellationToken.None));
-        Assert.Equal(visible, Assert.Single(await service.SearchDeferredAsync("search-report", 10, CancellationToken.None)).Target);
+        Assert.False(provider.IsInstant);
+        Assert.Equal(visible, Assert.Single(await service.SearchAsync("search-report", 10, CancellationToken.None)).Target);
     }
 
     [Fact]
@@ -177,11 +249,7 @@ public sealed class LocalFileSearchProviderTests : IDisposable
 
     public void Dispose()
     {
-        string parent = Path.GetDirectoryName(Path.GetFullPath(_root))!;
-        if (parent == Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "local-search-tests")))
-        {
-            try { Directory.Delete(_root, recursive: true); }
-            catch (IOException) { /* An asynchronous preference save may still be finishing. */ }
-        }
+        try { Directory.Delete(_root, recursive: true); }
+        catch (IOException) { /* An asynchronous preference save may still be finishing. */ }
     }
 }

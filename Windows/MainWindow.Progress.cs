@@ -50,7 +50,7 @@ public partial class MainWindow
         if (IsScreenCaptureActive) return;
         if (IsGreetingInteractionBlocked) return;
         if (_cleanedUp || _spotlightMorphSessionActive || _spotlightMorphOwnsNotchVisibility ||
-            (!_isExpanded && !_isMusicExpanded)) return;
+            (!_isExpanded && !_isMusicExpanded && !_askSheetOpen)) return;
         // Capture against the visible shell at mouse-down, before queued layout
         // or animation work can move/resize it under this click.
         _outsideClicks.Enqueue(new OutsideClickSnapshot(pt));
@@ -81,7 +81,11 @@ public partial class MainWindow
         // state while Spotlight temporarily owns the notch surface.
         if (_spotlightMorphSessionActive || _spotlightMorphOwnsNotchVisibility) return;
 
-
+        if (_askSheetOpen)
+        {
+            if (!IsScreenPointInsideNotchVisual(pt, padding: 0)) FoldAskSheet();
+            return;
+        }
 
         if ((_transitionCoordinator.TargetView != VNotch.Models.NotchView.Compact || _isMusicExpanded) && !_isGestureActive)
         {
@@ -111,7 +115,7 @@ public partial class MainWindow
 
 
 
-    private bool IsScreenPointInsideNotchVisual(InputMonitorService.POINT pt)
+    private bool IsScreenPointInsideNotchVisual(InputMonitorService.POINT pt, double padding = 8)
     {
         if (_hwnd == IntPtr.Zero || NotchWrapper == null || NotchWrapper.ActualWidth <= 0 || NotchWrapper.ActualHeight <= 0)
             return false;
@@ -124,8 +128,8 @@ public partial class MainWindow
             var bounds = NotchWrapper.TransformToAncestor(this)
                 .TransformBounds(new Rect(0, 0, NotchWrapper.ActualWidth, NotchWrapper.ActualHeight));
             var dpi = VisualTreeHelper.GetDpi(this);
-            double padX = 8 * dpi.DpiScaleX;
-            double padY = 8 * dpi.DpiScaleY;
+            double padX = padding * dpi.DpiScaleX;
+            double padY = padding * dpi.DpiScaleY;
             double left = windowRect.Left + bounds.Left * dpi.DpiScaleX - padX;
             double top = windowRect.Top + bounds.Top * dpi.DpiScaleY - padY;
             double right = windowRect.Left + bounds.Right * dpi.DpiScaleX + padX;
@@ -150,8 +154,6 @@ public partial class MainWindow
 
     private void UpdateProgressTimerState()
     {
-        bool isExpanded = _isExpanded || _isMusicExpanded;
-
         bool shouldRunLyrics = _isExpanded && !_isMusicExpanded;
         bool shouldRunVolumeSync = ShouldRunVolumeSyncTimer;
 
@@ -160,7 +162,12 @@ public partial class MainWindow
         if (!shouldRunLyrics) _lyricWords.Suspend();
         SetTimerEnabled(_volumeSyncTimer, shouldRunVolumeSync);
 
-        if (isExpanded)
+        UpdateOutsideClickMonitoring();
+    }
+
+    private void UpdateOutsideClickMonitoring()
+    {
+        if (_isExpanded || _isMusicExpanded || _askSheetOpen)
         {
             InputMonitorService.Start(_hwnd);
         }

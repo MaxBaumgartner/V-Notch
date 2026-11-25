@@ -73,20 +73,6 @@ public sealed partial class CountdownView : UserControl, IDisposable
 
     public void RefreshProgress() => SetCountdownProgress(false);
     public void CancelEditing() => CancelTimerEditingInstant();
-    public void StopRepeat() => _presenter?.StopRepeat();
-
-    public void RestorePresentation()
-    {
-        foreach (UIElement element in new UIElement[] { CountdownDisplay, CountdownProgressFill,
-            CountdownDisplayPanel, CountdownStartBtn, CountdownResetBtn })
-        {
-            element.BeginAnimation(OpacityProperty, null);
-            element.Opacity = 1;
-        }
-        CountdownStepperCapsule.BeginAnimation(OpacityProperty, null);
-        CountdownStepperCapsule.Opacity = _controller?.IsRunning == true ? 0.4 : 1;
-    }
-
     public void Dispose()
     {
         if (_disposed) return;
@@ -149,13 +135,6 @@ public sealed partial class CountdownView : UserControl, IDisposable
     private static void PlayTimerButtonPress(Border button)
     {
         PlayButtonPressAnimation(button);
-    }
-
-    // Trigger digit scale bump on soft spring, glyph amber flash, and capsule
-    // border pulse on state changes.
-    private void AnimateCountdownDigitBump(double magnitude = 1.0)
-    {
-        CountdownPresenter.AnimateDigitBump(magnitude);
     }
 
     private void AnimateCountdownDigitFlash()
@@ -228,7 +207,7 @@ public sealed partial class CountdownView : UserControl, IDisposable
         if (CountdownController.AdjustDuration(direction))
         {
             SetCountdownProgress(animate: true);
-            AnimateCountdownDigitBump();
+            AnimateCountdownPanelBorderFlash();
         }
     }
 
@@ -293,7 +272,7 @@ public sealed partial class CountdownView : UserControl, IDisposable
         CountdownController.Reset();
         SetCountdownStartVisual(false);
         SetCountdownProgress(animate: true);
-        AnimateCountdownDigitBump(1.2);
+        AnimateCountdownPanelBorderFlash();
     }
 
     private void UpdateTimerDisplay()

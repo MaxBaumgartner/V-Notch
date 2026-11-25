@@ -6,9 +6,10 @@
         Background="Transparent" ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True"
         WindowStartupLocation="CenterOwner" Loaded="Window_Loaded"
         FontFamily="{fonts:AppFont Fallbacks='Nirmala UI, Segoe UI'}"
-        Foreground="#F2F2F2" UseLayoutRounding="True" TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="Grayscale" TextOptions.TextHintingMode="Animated">
+        Foreground="#EAECEF" UseLayoutRounding="False" SnapsToDevicePixels="False" TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="Grayscale" TextOptions.TextHintingMode="Animated">
     <Window.Resources>
         <Style x:Key="DialogButton" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="MinHeight" Value="42"/>
             <Setter Property="MinWidth" Value="96"/>
             <Setter Property="Padding" Value="18,10"/>
@@ -35,7 +36,7 @@
                                 <Setter TargetName="Surface" Property="Opacity" Value="0.65"/>
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="Surface" Property="BorderBrush" Value="#FFFFFF"/>
+                                <Setter TargetName="Surface" Property="Opacity" Value="0.82"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="Surface" Property="Opacity" Value="0.4"/>
@@ -46,6 +47,7 @@
             </Setter>
         </Style>
         <Style x:Key="EditorStyle" TargetType="TextBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             <Setter Property="Background" Value="#141414"/>
             <Setter Property="Foreground" Value="#F2F2F2"/>
             <Setter Property="CaretBrush" Value="#FFFFFF"/>
@@ -65,10 +67,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Surface" Property="BorderBrush" Value="#505050"/>
+                                <Setter TargetName="Surface" Property="Background" Value="#1D1D1D"/>
                             </Trigger>
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                                <Setter TargetName="Surface" Property="BorderBrush" Value="#B8B8B8"/>
+                                <Setter TargetName="Surface" Property="Background" Value="#242424"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -76,11 +78,24 @@
             </Setter>
         </Style>
     </Window.Resources>
+    <Grid SnapsToDevicePixels="False" UseLayoutRounding="False">
+        <Border x:Name="ShellShadow"
+                Margin="16"
+                CornerRadius="24"
+                Background="#050505"
+                Opacity="{Binding Opacity, ElementName=Shell}"
+                Visibility="{Binding Visibility, ElementName=Shell}"
+                IsHitTestVisible="False"
+                SnapsToDevicePixels="False"
+                UseLayoutRounding="False">
+            <Border.RenderTransform><TranslateTransform X="{Binding X, ElementName=EntranceOffset}" Y="{Binding Y, ElementName=EntranceOffset}"/></Border.RenderTransform>
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.35" Color="Black" RenderingBias="Performance"/>
+            </Border.Effect>
+        </Border>
     <Border x:Name="Shell" Margin="16" CornerRadius="24" Background="#050505"
-            BorderBrush="#24FFFFFF" BorderThickness="1">
-        <Border.Effect>
-            <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.35" Color="Black" RenderingBias="Performance"/>
-        </Border.Effect>
+            BorderBrush="#24FFFFFF" BorderThickness="1"
+            SnapsToDevicePixels="False" UseLayoutRounding="False">
         <Border.RenderTransform><TranslateTransform x:Name="EntranceOffset"/></Border.RenderTransform>
         <Grid>
             <Grid.RowDefinitions>
@@ -130,4 +145,5 @@
             </Border>
         </Grid>
     </Border>
+    </Grid>
 </Window>

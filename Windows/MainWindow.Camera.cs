@@ -32,10 +32,7 @@ public partial class MainWindow
     private Storyboard? _cameraPreviewExitStoryboard;
 
     private WriteableBitmap? _cameraWriteableBitmap;
-    // Tracks the bitmap's allocated pixel dimensions so we can reuse oversized bitmaps.
-    private int _cameraBitmapAllocW;
-    private int _cameraBitmapAllocH;
-    private bool _cameraFrameDispatchPending = false;
+    private int _cameraFrameDispatchPending;
 
     private bool _isCameraActive => _camera.IsActive;
     private bool IsCameraPreviewLifecycleActive => _camera.IsLifecycleActive;
@@ -43,6 +40,7 @@ public partial class MainWindow
     private void InitializeCameraController()
     {
         _camera.PresentNativeFrame = PresentNativeCameraFrame;
+        _camera.PresentSurfaceFrame = PresentCameraSurface;
         _camera.FrameAvailable -= OnCameraFrameAvailable;
         _camera.FrameAvailable += OnCameraFrameAvailable;
     }
@@ -59,6 +57,23 @@ public partial class MainWindow
         if (presenter?.FitsWebcam(width, height, token) == true)
             return presenter.UploadWebcam(bitmap, token);
 
+        QueueCameraPresenter(width, height, token);
+        return true;
+    }
+
+    private WebcamCaptureController.SurfaceFrameResult PresentCameraSurface(global::Windows.Media.Capture.Frames.MediaFrameReference frame, int token)
+    {
+        if (_cleanedUp || _cameraFallbackToken == token) return WebcamCaptureController.SurfaceFrameResult.Fallback;
+        var description = frame.VideoMediaFrame.Direct3DSurface.Description;
+        var presenter = _cameraPresenter;
+        if (presenter?.FitsWebcam(description.Width, description.Height, token) == true)
+            return presenter.UploadWebcamSurface(frame, token);
+        QueueCameraPresenter(description.Width, description.Height, token);
+        return WebcamCaptureController.SurfaceFrameResult.Dropped;
+    }
+
+    private void QueueCameraPresenter(int width, int height, int token)
+    {
         if (System.Threading.Interlocked.Exchange(ref _cameraSetupQueued, 1) == 0)
         {
             Dispatcher.BeginInvoke(() =>
@@ -101,7 +116,6 @@ public partial class MainWindow
                 finally { System.Threading.Volatile.Write(ref _cameraSetupQueued, 0); }
             });
         }
-        return true;
     }
 
     private void DisposeCameraPresenter()
@@ -308,8 +322,6 @@ public partial class MainWindow
         _cameraPreviewMorphPending = false;
         _cameraPresenter?.SuspendPresentation();
         _cameraWriteableBitmap = null;
-        _cameraBitmapAllocW = 0;
-        _cameraBitmapAllocH = 0;
 
         var (reader, capture, initializingCapture) = _camera.DetachForSafeStop();
 
@@ -355,8 +367,6 @@ public partial class MainWindow
         _cameraPreviewMorphPending = false;
         _cameraPresenter?.SuspendPresentation();
         _cameraWriteableBitmap = null;
-        _cameraBitmapAllocW = 0;
-        _cameraBitmapAllocH = 0;
 
         var (reader, capture, initializingCapture) = _camera.DetachForSafeStop();
 
@@ -386,32 +396,28 @@ public partial class MainWindow
 
     private void OnCameraFrameAvailable(byte[] buffer, int w, int h, int frameToken)
     {
-        if (_cameraFrameDispatchPending)
+        // Only the queued dispatcher operation may release the controller's single buffer.
+        if (Interlocked.CompareExchange(ref _cameraFrameDispatchPending, 1, 0) != 0) return;
+        int released = 0;
+        void ReleaseFrame()
         {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            Volatile.Write(ref _cameraFrameDispatchPending, 0);
             _camera.ReleaseFrameBuffer();
-            return;
         }
-
-        _cameraFrameDispatchPending = true;
         try
         {
-            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, () =>
+            var dispatch = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, () =>
             {
                 try
                 {
-                    if (!_isCameraActive || frameToken != _camera.FadeToken) return;
+                    if (!_isCameraActive || frameToken != _camera.FadeToken ||
+                        w <= 0 || h <= 0 || (long)w * h > buffer.Length / 4) return;
 
                     var wbmp = _cameraWriteableBitmap;
-                    // Reuse bitmap if large enough (grow-only) to eliminate LOH allocations
-                    // during webcam resolution negotiation.
-                    if (wbmp == null || _cameraBitmapAllocW < w || _cameraBitmapAllocH < h)
+                    if (wbmp == null || wbmp.PixelWidth != w || wbmp.PixelHeight != h)
                     {
-                        wbmp = new WriteableBitmap(
-                            Math.Max(w, _cameraBitmapAllocW > 0 ? _cameraBitmapAllocW : w),
-                            Math.Max(h, _cameraBitmapAllocH > 0 ? _cameraBitmapAllocH : h),
-                            96, 96, PixelFormats.Bgra32, null);
-                        _cameraBitmapAllocW = wbmp.PixelWidth;
-                        _cameraBitmapAllocH = wbmp.PixelHeight;
+                        wbmp = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
                         _cameraWriteableBitmap = wbmp;
                         CameraPreviewImage.Source = wbmp;
                         ApplyAppearanceOpacity();
@@ -430,15 +436,15 @@ public partial class MainWindow
                 }
                 finally
                 {
-                    _cameraFrameDispatchPending = false;
-                    _camera.ReleaseFrameBuffer();
+                    ReleaseFrame();
                 }
             });
+            dispatch.Aborted += (_, _) => ReleaseFrame();
+            if (dispatch.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted) ReleaseFrame();
         }
         catch (Exception ex)
         {
-            _cameraFrameDispatchPending = false;
-            _camera.ReleaseFrameBuffer();
+            ReleaseFrame();
             RuntimeLog.Error(CameraLogTag, ex, "Frame dispatch failed");
         }
     }
@@ -514,8 +520,6 @@ public partial class MainWindow
         {
             _cameraPreviewMorphPending = false;
             _cameraWriteableBitmap = null;
-            _cameraBitmapAllocW = 0;
-            _cameraBitmapAllocH = 0;
 
             _cameraPresenter?.SuspendPresentation();
             AnimateCameraPreviewMorphOut(fadeToken);

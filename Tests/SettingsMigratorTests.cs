@@ -43,6 +43,8 @@ public class SettingsMigratorTests
     [InlineData(13, 1)] // Even an injected consent field in a legacy file is reset.
     [InlineData(14, 0)]
     [InlineData(14, 2)]
+    [InlineData(15, 0)]
+    [InlineData(15, 2)]
     public void MigrationNeverInfersConsentFromEnabledFlags(int version, int consentVersion)
     {
         string json = $$"""
@@ -65,7 +67,7 @@ public class SettingsMigratorTests
         string json = $$"""{ "SettingsVersion": 14, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
-        Assert.Equal(expected, settings.NavTabOrder);
+        Assert.Equal(expected + ",AiUsage", settings.NavTabOrder);
         Assert.Equal(expected, settings.VisibleNavTabs);
     }
 
@@ -78,7 +80,7 @@ public class SettingsMigratorTests
         string json = $$"""{ "SettingsVersion": 15, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
-        Assert.Equal(expected, settings.NavTabOrder);
+        Assert.Equal(expected + ",AiUsage", settings.NavTabOrder);
         Assert.Equal(expected, settings.VisibleNavTabs);
     }
 
@@ -91,7 +93,7 @@ public class SettingsMigratorTests
         string json = $$"""{ "SettingsVersion": 16, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
-        Assert.Equal(expected, settings.NavTabOrder);
+        Assert.Equal(expected + ",AiUsage", settings.NavTabOrder);
         Assert.Equal(expected, settings.VisibleNavTabs);
     }
 
@@ -104,7 +106,7 @@ public class SettingsMigratorTests
         string json = $$"""{ "SettingsVersion": 17, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
-        Assert.Equal(expected, settings.NavTabOrder);
+        Assert.Equal(expected + ",AiUsage", settings.NavTabOrder);
         Assert.Equal(expected, settings.VisibleNavTabs);
     }
 
@@ -117,7 +119,7 @@ public class SettingsMigratorTests
         string json = $$"""{ "SettingsVersion": 18, "NavTabOrder": "{{saved}}", "VisibleNavTabs": "{{saved}}" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
-        Assert.Equal(expected, settings.NavTabOrder);
+        Assert.Equal(expected + ",AiUsage", settings.NavTabOrder);
         Assert.Equal(expected, settings.VisibleNavTabs);
     }
 
@@ -127,7 +129,7 @@ public class SettingsMigratorTests
         const string json = """{ "SettingsVersion": 19, "NavTabOrder": " Weather,Media,wEATHER,Pi ", "VisibleNavTabs": "Media,weather" }""";
         var (settings, migrated) = SettingsMigrator.Migrate(json);
         Assert.True(migrated);
-        Assert.Equal("Media,Pi", settings.NavTabOrder);
+        Assert.Equal("Media,Pi,AiUsage", settings.NavTabOrder);
         Assert.Equal("Media", settings.VisibleNavTabs);
     }
 
@@ -315,5 +317,43 @@ public class SettingsMigratorTests
         var (settings, migrated) = SettingsMigrator.Migrate(rawJson);
         Assert.False(migrated);
         Assert.Equal(310, settings.DynamicIslandWidth);
+    }
+
+    [Fact]
+    public void Migrate_Version20_AppendsAiUsageTabAndKeepsAiUsageWidget()
+    {
+        const string rawJson = """
+            {
+              "SettingsVersion": 20,
+              "NavTabOrder": "Media,Secondary,Timer,AudioMixer,Camera",
+              "VisibleNavTabs": "Media,Secondary,Timer,AudioMixer,Camera",
+              "ExpandedWidget": "aiusage"
+            }
+            """;
+
+        var (settings, migrated) = SettingsMigrator.Migrate(rawJson);
+
+        Assert.True(migrated);
+        Assert.Equal(SettingsMigrator.CurrentVersion, settings.SettingsVersion);
+        Assert.Equal("Media,Secondary,Timer,AudioMixer,Camera,AiUsage", settings.NavTabOrder);
+        Assert.Equal("Media,Secondary,Timer,AudioMixer,Camera", settings.VisibleNavTabs);
+        Assert.Equal("aiusage", settings.ExpandedWidget);
+    }
+
+    [Fact]
+    public void CurrentSettings_PreserveExplicitAiUsageTabOptOut()
+    {
+        string rawJson = $$"""
+            {
+              "SettingsVersion": {{SettingsMigrator.CurrentVersion}},
+              "NavTabOrder": "Media,Secondary,Timer,AudioMixer,Camera,AiUsage",
+              "VisibleNavTabs": "Media,Secondary,Timer"
+            }
+            """;
+
+        var (settings, migrated) = SettingsMigrator.Migrate(rawJson);
+
+        Assert.False(migrated);
+        Assert.Equal("Media,Secondary,Timer", settings.VisibleNavTabs);
     }
 }

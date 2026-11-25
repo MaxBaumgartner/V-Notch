@@ -293,7 +293,7 @@ extern "C" VN_EXPORT int32_t __stdcall vn_morph_settings_icon_sample_contour(
         !out_sampled_xy || !out_center_x || !out_center_y || !out_min_x || !out_bbox_area)
         return VN_ERR_INVALID_ARG;
 
-    if (out_cap_doubles < sample_count * 2)
+    if (out_cap_doubles < sample_count * 2LL)
         return VN_ERR_BUFFER_TOO_SMALL;
 
     // shortcut: stack contour buffer caps at 2048 flattened vertices per figure, upgrade if complex SVG paths exceed 2048 segments
@@ -416,7 +416,7 @@ extern "C" VN_EXPORT int32_t __stdcall vn_morph_settings_icon_compute_points(
     if (sample_count <= 0 || !out_xy || !out_point_count)
         return VN_ERR_INVALID_ARG;
 
-    if (out_cap_doubles < sample_count * 2)
+    if (out_cap_doubles < sample_count * 2LL)
         return VN_ERR_BUFFER_TOO_SMALL;
 
     if (from_xy != nullptr || to_xy != nullptr)
@@ -534,59 +534,6 @@ extern "C" VN_EXPORT int32_t __stdcall vn_clipboard_motion_compute_reflow_offset
     return VN_OK;
 }
 
-extern "C" VN_EXPORT int32_t __stdcall vn_clipboard_motion_step_scroll_physics(
-    double* io_position,
-    double* io_velocity,
-    double min_bound,
-    double max_bound,
-    double dt,
-    double friction,
-    double spring_stiffness,
-    double spring_damping,
-    uint8_t* out_is_settled) noexcept
-{
-    if (!io_position || !io_velocity || !out_is_settled)
-        return VN_ERR_INVALID_ARG;
-
-    const double clamped_dt = std::clamp(dt, 0.0, 0.050);
-    double pos = *io_position;
-    double vel = *io_velocity;
-
-    const double lo = std::min(min_bound, max_bound);
-    const double hi = std::max(min_bound, max_bound);
-
-    double overscroll = 0.0;
-    if (pos < lo) overscroll = pos - lo;
-    else if (pos > hi) overscroll = pos - hi;
-
-    if ( std::abs(overscroll) > 1e-5 )
-    {
-        const double accel = -spring_stiffness * overscroll - spring_damping * vel;
-        vel += accel * clamped_dt;
-    }
-    else
-    {
-        vel *= std::exp(-std::max(0.0, friction) * clamped_dt);
-    }
-
-    pos += vel * clamped_dt;
-
-    if (std::abs(overscroll) < 0.25 && std::abs(vel) < 1.0)
-    {
-        pos = std::clamp(pos, lo, hi);
-        vel = 0.0;
-        *out_is_settled = 1u;
-    }
-    else
-    {
-        *out_is_settled = 0u;
-    }
-
-    *io_position = pos;
-    *io_velocity = vel;
-    return VN_OK;
-}
-
 extern "C" VN_EXPORT int32_t __stdcall vn_visualizer_step_bars(
     const double* current_heights,
     const double* smoothed_heights,
@@ -609,7 +556,7 @@ extern "C" VN_EXPORT int32_t __stdcall vn_visualizer_step_bars(
     if (bar_count <= 0)
         return VN_ERR_INVALID_ARG;
 
-    if (out_bar_rects_xywh && out_rects_cap_doubles < bar_count * 4)
+    if (out_bar_rects_xywh && out_rects_cap_doubles < bar_count * 4LL)
         return VN_ERR_BUFFER_TOO_SMALL;
 
     uint8_t settled = 1u;
@@ -620,6 +567,7 @@ extern "C" VN_EXPORT int32_t __stdcall vn_visualizer_step_bars(
             if (std::abs(smoothed_heights[i] - current_heights[i]) > 0.0012)
             {
                 settled = 0u;
+                break;
             }
         }
     }
@@ -648,12 +596,14 @@ extern "C" VN_EXPORT int32_t __stdcall vn_visualizer_step_bars(
 
     if (out_bar_rects_xywh && draw_heights)
     {
+        const double step_x = bar_width + spacing;
+        const double half_h_container = height / 2.0;
         for (int32_t i = 0; i < bar_count; ++i)
         {
-            const double x = start_x + i * (bar_width + spacing);
+            const double x = start_x + i * step_x;
             const double half_height = draw_heights[i] * height / 2.0;
-            const double top = std::rint((height / 2.0 - half_height) * safe_dpi_y) / safe_dpi_y;
-            const double bottom = std::rint((height / 2.0 + half_height) * safe_dpi_y) / safe_dpi_y;
+            const double top = std::rint((half_h_container - half_height) * safe_dpi_y) / safe_dpi_y;
+            const double bottom = std::rint((half_h_container + half_height) * safe_dpi_y) / safe_dpi_y;
             const double rx = std::rint(x * safe_dpi_x) / safe_dpi_x;
             const double rh = std::max(0.0, bottom - top);
 
@@ -681,13 +631,20 @@ extern "C" VN_EXPORT int32_t __stdcall vn_visualizer_compute_morph_quads(
     if (!bar_rects_xywh || bar_count <= 0 || !out_quad_points_xy)
         return VN_ERR_INVALID_ARG;
 
-    if (out_cap_doubles < bar_count * 8)
+    if (out_cap_doubles < bar_count * 8LL)
         return VN_ERR_BUFFER_TOO_SMALL;
 
     const double size = std::min(width, height);
     const double offset_x = (width - size) / 2.0;
     const double offset_y = (height - size) / 2.0;
     const double scale = size / 24.0;
+    const double bar_count_d = static_cast<double>(bar_count);
+
+    struct EdgeHoriz {
+        double icon_x;
+        double play_half_height;
+        double check_y_base;
+    };
 
     for (int32_t i = 0; i < bar_count; ++i)
     {
@@ -696,43 +653,49 @@ extern "C" VN_EXPORT int32_t __stdcall vn_visualizer_compute_morph_quads(
         const double bar_right = bar_left + bar_rects_xywh[i * 4 + 2];
         const double bar_bottom = bar_top + bar_rects_xywh[i * 4 + 3];
 
+        const int32_t slice = i < 3 ? i : (i - 3);
+        const double slices_d = i < 3 ? 3.0 : 2.0;
+        const double pause_base = i < 3 ? 6.0 : 14.0;
+        const bool left_arm = i < 2;
+        const int32_t check_slice = left_arm ? i : (i - 2);
+
+        EdgeHoriz edges[2]{};
+        for (int32_t r = 0; r < 2; ++r)
+        {
+            const double play_x = 7.0 + 13.0 * static_cast<double>(i + r) / bar_count_d;
+            const double play_half_height = 8.0 * (20.0 - play_x) / 13.0;
+            const double pause_x = pause_base + 4.0 * static_cast<double>(slice + r) / slices_d;
+            double ix = pause_x + (play_x - pause_x) * play_mix;
+
+            const double check_x = left_arm
+                ? (3.0 + 6.0 * static_cast<double>(check_slice + r) / 2.0)
+                : (9.0 + 12.0 * static_cast<double>(check_slice + r) / 3.0);
+            const double check_y_base = left_arm ? (check_x + 9.0) : (27.0 - check_x);
+
+            ix += (check_x - ix) * check_mix;
+            ix = offset_x + ix * scale;
+            edges[r] = EdgeHoriz{ ix, play_half_height, check_y_base };
+        }
+
         for (int32_t corner = 0; corner < 4; ++corner)
         {
             const bool right = (corner == 1 || corner == 2);
             const bool bottom = (corner >= 2);
-            const int32_t right_offset = right ? 1 : 0;
+            const EdgeHoriz& edge = edges[right ? 1 : 0];
 
-            const double play_x = 7.0 + 13.0 * static_cast<double>(i + right_offset) / static_cast<double>(bar_count);
-            const double play_half_height = 8.0 * (20.0 - play_x) / 13.0;
-            const double play_y = 12.0 + (bottom ? play_half_height : -play_half_height);
-
-            const int32_t slice = i < 3 ? i : (i - 3);
-            const int32_t slices = i < 3 ? 3 : 2;
-            const double pause_x = (i < 3 ? 6.0 : 14.0) + 4.0 * static_cast<double>(slice + right_offset) / static_cast<double>(slices);
+            const double play_y = 12.0 + (bottom ? edge.play_half_height : -edge.play_half_height);
             const double pause_y = bottom ? 20.0 : 4.0;
-
-            double icon_x = pause_x + (play_x - pause_x) * play_mix;
             double icon_y = pause_y + (play_y - pause_y) * play_mix;
+            const double check_y = edge.check_y_base + (bottom ? 1.7 : -1.7);
 
-            const bool left_arm = i < 2;
-            const int32_t check_slice = left_arm ? i : (i - 2);
-            const double check_x = left_arm
-                ? (3.0 + 6.0 * static_cast<double>(check_slice + right_offset) / 2.0)
-                : (9.0 + 12.0 * static_cast<double>(check_slice + right_offset) / 3.0);
-            const double check_y_base = left_arm ? (check_x + 9.0) : (27.0 - check_x);
-            const double check_y = check_y_base + (bottom ? 1.7 : -1.7);
-
-            icon_x += (check_x - icon_x) * check_mix;
             icon_y += (check_y - icon_y) * check_mix;
-
-            icon_x = offset_x + icon_x * scale;
             icon_y = offset_y + icon_y * scale;
 
             const double bar_cx = right ? bar_right : bar_left;
             const double bar_cy = bottom ? bar_bottom : bar_top;
 
             const int32_t idx = (i * 4 + corner) * 2;
-            out_quad_points_xy[idx] = bar_cx + (icon_x - bar_cx) * icon_mix;
+            out_quad_points_xy[idx] = bar_cx + (edge.icon_x - bar_cx) * icon_mix;
             out_quad_points_xy[idx + 1] = bar_cy + (icon_y - bar_cy) * icon_mix;
         }
     }

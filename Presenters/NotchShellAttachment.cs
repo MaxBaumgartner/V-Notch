@@ -56,6 +56,13 @@ internal sealed class NotchShellAttachment : IDisposable
         foreach (var compact in _compact) compact.Opacity = Math.Clamp(1 - 4 * p, 0, 1);
     }
 
+    internal void SetOpenHeight(double height)
+    {
+        if (!IsAttached || _openHeight == height) return;
+        _openHeight = _content.Height = height;
+        Render(null, EventArgs.Empty);
+    }
+
     internal void Detach(bool open)
     {
         if (!IsAttached) return;

@@ -37,6 +37,7 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isSearching;
     [ObservableProperty] private bool _hasNoResults;
     [ObservableProperty] private bool _isWindowsSearchUnavailable;
+    [ObservableProperty] private bool _isFileSearchPartial;
 
     partial void OnSelectedResultChanged(SpotlightSearchItem? value)
     {
@@ -70,12 +71,13 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
             IsSearching = false;
             HasNoResults = false;
             IsWindowsSearchUnavailable = false;
+            IsFileSearchPartial = false;
             try
             {
                 var pinned = await Task.Run(() => _usage.Preferences.Search(""), cancellationToken);
                 if (_disposed || generation != Interlocked.Read(ref _queryGeneration)) return;
-                Publish(pinned.Take(ResultLimit).ToArray(), markNoResults: false);
-                StartIconHydration(Results.ToArray(), generation, cancellationToken);
+                Publish(TakeUpTo(pinned, ResultLimit), markNoResults: false);
+                StartIconHydration(Results, generation, cancellationToken);
             }
             catch (OperationCanceledException) { /* Expected when query changes. */ }
             return;
@@ -92,6 +94,8 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
 
         IsSearching = true;
         HasNoResults = false;
+        IsFileSearchPartial = false;
+        IsWindowsSearchUnavailable = false;
         try
         {
             await foreach (var update in _search.SearchUpdatesAsync(query, ResultLimit, cancellationToken))
@@ -103,10 +107,11 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
                 // file query can show its searching status after the grace period.
                 // Only the completed query may declare that it has no results.
                 if (update.Results.Count == 0 && !update.IsImmediateComplete && !update.IsComplete) continue;
+                IsFileSearchPartial = update.FileCompleteness == Services.Spotlight.Providers.SearchCompleteness.Partial;
+                IsWindowsSearchUnavailable = update.FileCompleteness == Services.Spotlight.Providers.SearchCompleteness.Unavailable || !_search.IsWindowsSearchAvailable;
                 Publish(update.Results, markNoResults: update.IsComplete);
                 StartIconHydration(update.Results, generation, cancellationToken);
             }
-            IsWindowsSearchUnavailable = !_search.IsWindowsSearchAvailable;
         }
         catch (OperationCanceledException)
         {
@@ -155,11 +160,33 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
         if (Results.Count == 0 && !string.IsNullOrWhiteSpace(Query)) HasNoResults = true;
     }
 
+    private static IReadOnlyList<SpotlightSearchItem> TakeUpTo(IEnumerable<SpotlightSearchItem> source, int limit)
+    {
+        if (limit <= 0) return Array.Empty<SpotlightSearchItem>();
+        if (source is IReadOnlyList<SpotlightSearchItem> list)
+        {
+            if (list.Count <= limit) return list;
+            var slice = new SpotlightSearchItem[limit];
+            for (int i = 0; i < limit; i++) slice[i] = list[i];
+            return slice;
+        }
+
+        var buffer = new List<SpotlightSearchItem>(limit);
+        foreach (var item in source)
+        {
+            buffer.Add(item);
+            if (buffer.Count >= limit) break;
+        }
+        return buffer;
+    }
+
     private void Publish(IReadOnlyList<SpotlightSearchItem> results, bool markNoResults = true)
     {
         // Keep the personalized rank order, including when file results arrive
         // after apps. Explicit keyboard/mouse selection still wins over reranking.
-        var ordered = results.ToList();
+        IReadOnlyList<SpotlightSearchItem> ordered = ReferenceEquals(results, Results)
+            ? CopySnapshot(results)
+            : results;
 
         if (ordered.Count == 0)
         {
@@ -179,20 +206,46 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
             ApplyDiff(ordered);
             var fallbackResult = Results.Count == 0 ? null : Results[Math.Clamp(selectedIndex, 0, Results.Count - 1)];
             SelectedResult = selectedId == null
-                ? Results.FirstOrDefault()
-                : Results.FirstOrDefault(result => result.Id == selectedId) ?? fallbackResult;
+                ? (Results.Count > 0 ? Results[0] : null)
+                : FindResultById(selectedId) ?? fallbackResult;
         }
         finally { _publishingSelection = false; }
         if (markNoResults) HasNoResults = Results.Count == 0;
         ResultsPublished?.Invoke(this, EventArgs.Empty);
     }
 
+    private static SpotlightSearchItem[] CopySnapshot(IReadOnlyList<SpotlightSearchItem> items)
+    {
+        if (items.Count == 0) return Array.Empty<SpotlightSearchItem>();
+        var copy = new SpotlightSearchItem[items.Count];
+        for (int i = 0; i < items.Count; i++) copy[i] = items[i];
+        return copy;
+    }
+
+    private static bool ContainsResultId(IReadOnlyList<SpotlightSearchItem> items, string id)
+    {
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (items[i].Id == id) return true;
+        }
+        return false;
+    }
+
+    private SpotlightSearchItem? FindResultById(string id)
+    {
+        for (int i = 0; i < Results.Count; i++)
+        {
+            var candidate = Results[i];
+            if (candidate.Id == id) return candidate;
+        }
+        return null;
+    }
+
     private void ApplyDiff(IReadOnlyList<SpotlightSearchItem> ordered)
     {
         for (int i = Results.Count - 1; i >= 0; i--)
         {
-            string id = Results[i].Id;
-            if (!ordered.Any(item => item.Id == id)) Results.RemoveAt(i);
+            if (!ContainsResultId(ordered, Results[i].Id)) Results.RemoveAt(i);
         }
 
         for (int target = 0; target < ordered.Count; target++)
@@ -266,12 +319,19 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
         long generation,
         CancellationToken cancellationToken)
     {
-        var toHydrate = items
-            .Where(item => item.Icon == null && !string.IsNullOrEmpty(item.IconPath))
-            .Where(item => _requestedIcons.Add((item.Id, item.IconPath)))
-            .ToList();
+        List<SpotlightSearchItem>? toHydrate = null;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            if (item.Icon == null &&
+                !string.IsNullOrEmpty(item.IconPath) &&
+                _requestedIcons.Add((item.Id, item.IconPath)))
+            {
+                (toHydrate ??= new List<SpotlightSearchItem>()).Add(item);
+            }
+        }
 
-        if (toHydrate.Count == 0) return;
+        if (toHydrate == null) return;
 
         Task.Run(async () =>
         {
@@ -336,7 +396,7 @@ internal sealed partial class SpotlightViewModel : ObservableObject, IDisposable
     {
         if (_disposed || Interlocked.Read(ref _queryGeneration) != generation) return;
 
-        var matching = Results.FirstOrDefault(r => r.Id == item.Id);
+        var matching = FindResultById(item.Id);
         if (matching != null && string.Equals(matching.IconPath, item.IconPath, StringComparison.OrdinalIgnoreCase))
         {
             matching.Icon = icon;

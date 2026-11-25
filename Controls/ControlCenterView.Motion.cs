@@ -163,13 +163,16 @@ public partial class ControlCenterView
         public required string Target;
         public required TranslateTransform Shift;
         public bool Leaving;
+        public bool RollUp;
+        public bool CollapseEmpty;
         public Func<bool>? Reparenting;
     }
 
     private static readonly ConditionalWeakTable<TextBlock, DetailTextState> DetailTexts = new();
 
     /// <summary>The newest label replaces the old one at the bottom of a small, interruptible dip.</summary>
-    private static void SetDetailText(TextBlock text, string value)
+    private static void SetDetailText(TextBlock text, string value, bool rollUp = false, bool animate = true,
+        bool collapseEmpty = false)
     {
         var state = DetailTexts.GetValue(text, label =>
         {
@@ -182,7 +185,10 @@ public partial class ControlCenterView
             };
             return created;
         });
-        if (!text.IsVisible || AnimationConfig.ReduceMotion)
+        state.RollUp = rollUp;
+        state.CollapseEmpty = collapseEmpty;
+        if (state.CollapseEmpty && value.Length > 0) text.Visibility = Visibility.Visible;
+        if (!text.IsVisible || AnimationConfig.ReduceMotion || !animate)
         {
             state.Target = value;
             SettleDetailText(text, state);
@@ -193,21 +199,40 @@ public partial class ControlCenterView
         if (text.Text == value)
         {
             state.Leaving = false;
-            Motion.To(text, OpacityProperty, 1, Motion.Press);
-            Motion.To(state.Shift, TranslateTransform.YProperty, 0, Motion.Press);
+            var recover = state.RollUp ? Motion.StatusRollIn : Motion.Press;
+            Motion.To(text, OpacityProperty, 1, recover);
+            Motion.To(state.Shift, TranslateTransform.YProperty, 0, recover);
             return;
         }
         if (state.Leaving) return; // A burst updates the destination without delaying the swap.
+        if (state.RollUp && text.Text.Length == 0)
+        {
+            RevealDetailText(text, state);
+            return;
+        }
         state.Leaving = true;
-        Motion.To(state.Shift, TranslateTransform.YProperty, 2, Motion.PressDown);
-        Motion.To(text, OpacityProperty, 0, Motion.PressDown, done: () =>
+        var exit = state.RollUp ? Motion.StatusRollOut : Motion.PressDown;
+        Motion.To(state.Shift, TranslateTransform.YProperty, state.RollUp ? -4 : 2, exit);
+        Motion.To(text, OpacityProperty, 0, exit, done: () =>
         {
             if (!state.Leaving || text.Opacity > .01) return;
-            state.Leaving = false;
-            text.Text = state.Target;
-            Motion.To(state.Shift, TranslateTransform.YProperty, 0, Motion.Press);
-            Motion.To(text, OpacityProperty, 1, Motion.Press);
+            RevealDetailText(text, state);
         });
+    }
+
+    private static void RevealDetailText(TextBlock text, DetailTextState state)
+    {
+        if (state.CollapseEmpty && state.Target.Length == 0)
+        {
+            SettleDetailText(text, state);
+            return;
+        }
+        state.Leaving = false;
+        double? from = state.RollUp ? 4 : null;
+        var enter = state.RollUp ? Motion.StatusRollIn : Motion.Press;
+        text.Text = state.Target;
+        Motion.To(state.Shift, TranslateTransform.YProperty, 0, enter, from: from);
+        Motion.To(text, OpacityProperty, 1, enter, from: state.RollUp ? 0 : null);
     }
 
     private static void SettleDetailText(TextBlock text, DetailTextState state)
@@ -216,6 +241,7 @@ public partial class ControlCenterView
         text.Text = state.Target;
         Motion.Stop(text, OpacityProperty, 1);
         Motion.Stop(state.Shift, TranslateTransform.YProperty, 0);
+        if (state.CollapseEmpty) text.Visibility = state.Target.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // A numeric roll can arrive during a label swap; let the dip reveal its latest frame.
@@ -430,14 +456,17 @@ public partial class ControlCenterView
             };
         }
 
-        public void To(double value, double ms = 650)
+        public double Value => _tween.Value;
+
+        public void To(double value, double ms = 650, double? from = null)
         {
             if (_shown == value && ms > 0 && !AnimationConfig.ReduceMotion && _owner is not { IsVisible: false }) return;
             // From wherever the roll is right now, so a new value mid-roll just turns it around.
-            double from = double.IsNaN(_shown) ? value : _tween.Value;
+            double start = from ?? (double.IsNaN(_shown) ? value : _tween.Value);
             _shown = value;
-            if (from == value || ms <= 0 || _owner is { IsVisible: false }) _tween.Play(value, value, 0, WeatherMotion.OutQuint);
-            else _tween.To(value);
+            if (from.HasValue) _tween.Stop(start);
+            if (start == value || ms <= 0 || _owner is { IsVisible: false }) _tween.Play(value, value, 0, WeatherMotion.OutQuint);
+            else _tween.To(value, from);
         }
 
         public void Reveal()

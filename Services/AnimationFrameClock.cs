@@ -5,16 +5,21 @@ namespace VNotch.Services;
 // Keep the deadline's phase when the display and target rates do not divide evenly.
 internal struct AnimationFrameClock
 {
-    private long _lastTick;
-    private double _nextTick;
-    private double _targetFps;
+    private struct ClockState
+    {
+        public long LastTick;
+        public double NextTick;
+        public double TargetFps;
+    }
+
+    private ClockState _state;
     private TimeSpan _renderingTime;
 
     internal void Reset(long now)
     {
-        _lastTick = now;
-        _nextTick = now;
-        _targetFps = 0;
+        _state.LastTick = now;
+        _state.NextTick = now;
+        _state.TargetFps = 0;
         _renderingTime = TimeSpan.MinValue;
     }
 
@@ -31,20 +36,21 @@ internal struct AnimationFrameClock
 
     internal bool TryAdvance(long now, double targetFps, out double seconds)
     {
+        // This scalar scheduler owns managed state; crossing P/Invoke for each
+        // overlay/frame costs more work than the arithmetic itself.
         seconds = 0;
         targetFps = double.IsFinite(targetFps) ? Math.Max(1, targetFps) : 60;
-        double interval = Stopwatch.Frequency / (double)targetFps;
-        if (_targetFps != targetFps)
+        double frequency = Stopwatch.Frequency;
+        double interval = frequency / targetFps;
+        if (_state.TargetFps != targetFps)
         {
-            _targetFps = targetFps;
-            _nextTick = _lastTick + interval;
+            _state.TargetFps = targetFps;
+            _state.NextTick = _state.LastTick + interval;
         }
-        if (now <= _lastTick || now + Stopwatch.Frequency * .0001 < _nextTick) return false;
-
-        seconds = Math.Clamp((now - _lastTick) / (double)Stopwatch.Frequency, 0, .05);
-        _lastTick = now;
-        // Drop missed deadlines after a stall; never queue catch-up frames.
-        _nextTick += Math.Max(1, Math.Floor((now - _nextTick) / interval) + 1) * interval;
+        if (now <= _state.LastTick || now + frequency * .0001 < _state.NextTick) return false;
+        seconds = Math.Clamp((now - _state.LastTick) / frequency, 0, .05);
+        _state.LastTick = now;
+        _state.NextTick += Math.Max(1, Math.Floor((now - _state.NextTick) / interval) + 1) * interval;
         return true;
     }
 }

@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using VNotch.Controls;
 using VNotch.Models;
 using VNotch.Services;
 using VNotch.Services.Spotlight;
@@ -50,13 +51,15 @@ public sealed class SpotlightAiPresentationTests
         Assert.Equal(Visibility.Collapsed, window.AiWelcome.Visibility);
         Assert.True(window.AiCopyButton.IsEnabled);
         Assert.Null(Field<object?>(window, "_aiRequest"));
+        Assert.False(window.AiActivityOrb.IsActive);
+        Assert.Equal(Visibility.Collapsed, window.AiActivityOrb.Visibility);
         await WpfFrameWaiter.UntilAsync(() => window.AiStopButton.Visibility == Visibility.Collapsed,
             "Stop button fades out after completion", ct);
         Assert.Equal(Visibility.Collapsed, window.AiStopButton.Visibility);
         await WpfFrameWaiter.UntilAsync(() => window.AiUsageRow.Visibility == Visibility.Visible, "stream usage published", ct);
         var store = new SpotlightChatStore(System.IO.Path.Combine(fixture.DirectoryPath, "chats.enc"));
         await window.FlushPersistenceAsync();
-        Assert.Equal(history, store.Load().Single().Messages);
+        Assert.Equal(history, (await store.LoadAsync((await store.ListAsync(0, 40)).Items.Single().Id))!.Messages);
         string originalId = Field<string>(window, "_chatId");
         Invoke(window, "CreateNewAiChat");
         Assert.Empty(history);
@@ -76,9 +79,9 @@ public sealed class SpotlightAiPresentationTests
     public void FailedRequestRestoresPromptAndCanRetry(int status, string error) => Run(false, async ct =>
     {
         int attempts = 0;
-        using var client = new HttpClient(new Handler((_, _) => Task.FromResult(++attempts == 1
-            ? new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("data: [DONE]\n\n") }
-            : Stream("Retry succeeded"))));
+        using var client = new HttpClient(new Handler((_, _) => Task.FromResult(++attempts == 2
+            ? Stream("Retry succeeded")
+            : new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("data: [DONE]\n\n") })));
         using var fixture = new SpotlightWindowFixture(Settings(), new SpotlightAiService(client));
         var window = fixture.Window;
         window.ShowSpotlight();
@@ -89,11 +92,19 @@ public sealed class SpotlightAiPresentationTests
         Assert.Equal("Retry me", window.SearchBox.Text);
         Assert.Equal(error, Field<string>(window, "_aiStatusKey"));
         Assert.Equal("error", window.AiStatus.Tag);
+        Assert.False(window.AiActivityOrb.IsActive);
+        Assert.Null(Field<ThinkingOrb?>(window, "_aiThinkingOrb"));
         Assert.Equal(Visibility.Visible, window.AiWelcome.Visibility);
         await (Task)Invoke(window, "SendAiAsync")!;
         Assert.Equal(2, attempts);
         Assert.Equal("Retry succeeded", Field<List<SpotlightAiMessage>>(window, "_aiHistory")[1].Content);
         Assert.Null(window.AiStatus.Tag);
+        window.SearchBox.Text = "Follow-up";
+        await (Task)Invoke(window, "SendAiAsync")!;
+        var history = Field<List<SpotlightAiMessage>>(window, "_aiHistory");
+        Assert.Equal(2, history.Count);
+        Assert.Equal("Retry succeeded", history[1].Content);
+        Assert.Equal("Follow-up", window.SearchBox.Text);
         await WpfFrameWaiter.NextAsync(ct);
     });
 
@@ -127,7 +138,11 @@ public sealed class SpotlightAiPresentationTests
         Invoke(window, "ShowAiThinking");
         Assert.Equal(2, window.AiTranscript.Children.Count);
         Invoke(window, "UpdateAiActivity");
-        Assert.Equal(!reducedMotion, Field<bool>(window, "_aiActivityAnimating"));
+        var orb = Field<ThinkingOrb>(window, "_aiThinkingOrb");
+        Assert.True(orb.IsActive);
+        await WpfFrameWaiter.UntilAsync(() => orb.IsLoaded, "working orb loaded", ct);
+        Assert.Equal(!reducedMotion, orb.IsAnimating);
+        Assert.Equal(Visibility.Collapsed, window.AiActivityOrb.Visibility);
         Invoke(window, "AiStop_Click", window.AiStopButton, new RoutedEventArgs());
         await sending;
         Assert.True(cancelled);
@@ -137,7 +152,8 @@ public sealed class SpotlightAiPresentationTests
         Assert.Equal("Pending draft", window.SearchBox.Text);
         Assert.Empty(Field<List<SpotlightAiMessage>>(window, "_aiHistory"));
         Assert.Null(Field<Border?>(window, "_aiThinkingCard"));
-        Assert.False(Field<bool>(window, "_aiActivityAnimating"));
+        Assert.False(orb.IsAnimating);
+        Assert.False(window.AiActivityOrb.IsActive);
         Assert.True(Field<bool>(window, "_aiMode"));
         Invoke(window, "EscapeAiMode");
         await WpfFrameWaiter.UntilAsync(() => !window.IsSpotlightOpen, "Escape dismisses Spotlight", ct);
@@ -156,7 +172,8 @@ public sealed class SpotlightAiPresentationTests
         window.ShowSpotlight();
         Invoke(window, "ToggleAiMode");
         Invoke(window, "ToggleAiHistoryPage");
-        Assert.IsType<TextBlock>(Assert.Single(window.AiHistoryItems.Children.Cast<UIElement>()));
+        await Field<Task>(window, "_historyPageTask");
+        Assert.Equal(Visibility.Visible, window.AiHistoryEmpty.Visibility);
         Invoke(window, "ToggleAiHistoryPage");
         var chat = new SpotlightSavedChat
         {
@@ -166,12 +183,15 @@ public sealed class SpotlightAiPresentationTests
             Messages = [new("user", "First question"), new("assistant", "Saved answer")]
         };
         if (unfinished) chat.Messages.Add(new("user", "Unfinished question"));
-        Field<List<SpotlightSavedChat>>(window, "_savedChats").Add(chat);
+        await fixture.ChatStore.SaveChatAsync(chat);
         Invoke(window, "ToggleAiHistoryPage");
-        var card = Assert.IsType<Border>(Assert.Single(window.AiHistoryItems.Children.Cast<UIElement>()));
+        await Field<Task>(window, "_historyPageTask");
+        window.UpdateLayout();
+        await WpfFrameWaiter.UntilAsync(() => window.AiHistoryItems.ItemContainerGenerator.ContainerFromIndex(0) != null, "history card realized", ct);
+        var card = Assert.IsType<Border>(Assert.IsType<ListBoxItem>(window.AiHistoryItems.ItemContainerGenerator.ContainerFromIndex(0)).Content);
         Assert.Contains(Descendants<TextBlock>(card), t => t.Text == "First question");
         card.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseEnterEvent });
-        Assert.Equal(Color.FromRgb(32, 32, 32), Assert.IsType<SolidColorBrush>(card.Background).Color);
+        Assert.Same(SpotlightChatPalette.Hover, card.Background);
         card.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent });
         card.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent });
         await WpfFrameWaiter.UntilAsync(() => window.AiHistoryPanel.Visibility == Visibility.Collapsed, "saved chat selected", ct);
@@ -180,12 +200,17 @@ public sealed class SpotlightAiPresentationTests
         Assert.Equal(unfinished ? "Unfinished question" : "Saved draft", window.SearchBox.Text);
         Assert.Equal("saved-model", Field<string>(window, "_aiConversationModel"));
         Invoke(window, "ToggleAiHistoryPage");
-        card = Assert.IsType<Border>(Assert.Single(window.AiHistoryItems.Children.Cast<UIElement>()));
-        Descendants<Button>(card).Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        await WpfFrameWaiter.UntilAsync(() => Field<List<SpotlightSavedChat>>(window, "_savedChats").Count == 0 &&
-            window.AiHistoryItems.Children.OfType<TextBlock>().Any(), "deleted chat empty state", ct);
+        await Field<Task>(window, "_historyPageTask");
+        window.UpdateLayout();
+        await WpfFrameWaiter.UntilAsync(() => window.AiHistoryItems.ItemContainerGenerator.ContainerFromIndex(0) != null, "restored history card realized", ct);
+        card = Assert.IsType<Border>(Assert.IsType<ListBoxItem>(window.AiHistoryItems.ItemContainerGenerator.ContainerFromIndex(0)).Content);
+        Descendants<Button>(card).Single(button =>
+            System.Windows.Automation.AutomationProperties.GetName(button) == Loc.Get("spotlight.ai.delete"))
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await WpfFrameWaiter.UntilAsync(() => Field<List<ChatSummary>>(window, "_savedChats").Count == 0 &&
+            window.AiHistoryEmpty.Visibility == Visibility.Visible, "deleted chat empty state", ct);
         Assert.Empty(Field<List<SpotlightAiMessage>>(window, "_aiHistory"));
-        Assert.Empty(new SpotlightChatStore(System.IO.Path.Combine(fixture.DirectoryPath, "chats.enc")).Load());
+        Assert.Empty((await fixture.ChatStore.ListAsync(0, 40)).Items);
     });
 
     [Theory]
@@ -307,8 +332,121 @@ public sealed class SpotlightAiPresentationTests
             Descendants<RichTextBox>(window.AiTranscript).Single().Document.ContentEnd).Text);
         Assert.Null(Field<object?>(window, "_aiRequest"));
         await window.FlushPersistenceAsync();
-        Assert.Equal(history, new SpotlightChatStore(System.IO.Path.Combine(fixture.DirectoryPath, "chats.enc")).Load().Single().Messages);
+        Assert.Equal(history, (await fixture.ChatStore.LoadAsync((await fixture.ChatStore.ListAsync(0, 40)).Items.Single().Id))!.Messages);
     });
+
+    [Fact]
+    public void OrbsFollowWaitingStreamingMotionPreferenceAndVisibility() => Run(false, async ct =>
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var client = new HttpClient(new Handler(async (_, token) =>
+        {
+            await release.Task.WaitAsync(token);
+            return Stream(string.Join(" ", Enumerable.Repeat("The orb follows the response as it is composed.", 8)));
+        }));
+        var settings = Settings();
+        settings.SpotlightAiWordsPerSecond = 30;
+        using var fixture = new SpotlightWindowFixture(settings, new SpotlightAiService(client));
+        var window = fixture.Window;
+        window.ShowSpotlight();
+        Invoke(window, "ToggleAiMode");
+        window.SearchBox.Text = "Explain how the thinking orb works";
+        var sending = (Task)Invoke(window, "SendAiAsync")!;
+        var working = Field<ThinkingOrb>(window, "_aiThinkingOrb");
+        await WpfFrameWaiter.UntilAsync(() => working.IsAnimating && window.ContentRegion.Opacity > .99 &&
+            !Field<bool>(window, "_entranceActive") && !window.ContentRegion.ClipToBounds &&
+            window.ContentRegion.ActualHeight >= window.AiPanel.ActualHeight,
+            "working orb visible after content expansion", ct);
+        Assert.True(working.RandomizeStates);
+        Assert.Contains(working.State, new[] { ThinkingOrbState.Searching, ThinkingOrbState.Shaping,
+            ThinkingOrbState.Listening, ThinkingOrbState.Solving });
+        var agentLabel = Field<AgentOrbLabel>(window, "_aiThinkingLabel");
+        var thinkingLabel = agentLabel.CurrentLabel;
+        Assert.Equal(Loc.Get("spotlight.ai.agent." + working.State.ToString().ToLowerInvariant()), thinkingLabel.Text);
+        var labelSize = thinkingLabel.RenderSize;
+        byte[] initialLabel = TranslationLoadingMotionTests.Pixels(thinkingLabel);
+        await WpfFrameWaiter.UntilAsync(() => !TranslationLoadingMotionTests.Pixels(thinkingLabel).SequenceEqual(initialLabel),
+            "thinking label shimmers while waiting", ct);
+        Assert.Equal(labelSize, thinkingLabel.RenderSize);
+        var firstState = working.State;
+        await WpfFrameWaiter.UntilAsync(() => working.State != firstState,
+            "waiting orb changes to a different reference state", ct);
+        await WpfFrameWaiter.UntilAsync(() => working.AgentTransition.Progress is > .02 and < .95,
+            "orb and text are midway through the same scroll and fade", ct);
+        Assert.Equal(Loc.Get("spotlight.ai.agent." + working.State.ToString().ToLowerInvariant()), thinkingLabel.Text);
+        Assert.Equal(working.AgentTransition.Progress, thinkingLabel.Opacity);
+        Assert.Equal(1 - working.AgentTransition.Progress, agentLabel.OutgoingLabel.Opacity);
+        Assert.True(((TranslateTransform)thinkingLabel.RenderTransform).Y > 0);
+        Assert.True(((TranslateTransform)agentLabel.OutgoingLabel.RenderTransform).Y < 0);
+        Assert.Equal(labelSize, thinkingLabel.RenderSize);
+        CaptureOrbPreview(window, "working");
+        int captureFrames = Environment.GetEnvironmentVariable("VNOTCH_AGENT_ORB_CAPTURE") == "1" ? 400 :
+            Environment.GetEnvironmentVariable("TRANSLATION_ORB_CAPTURE") == "1" ? 45 : 0;
+        if (captureFrames > 0)
+        {
+            for (int frame = 0; frame < captureFrames; frame++)
+            {
+                CaptureOrbPreview(window, $"thinking-{frame:000}");
+                await Task.Delay(40, ct);
+            }
+        }
+
+        AnimationConfig.SetReduceMotion(true);
+        Assert.True(working.IsActive);
+        Assert.False(working.IsAnimating);
+        Assert.Null(thinkingLabel.OpacityMask);
+        AnimationConfig.SetReduceMotion(false);
+        Assert.True(working.IsAnimating);
+        window.HideSpotlight();
+        Assert.False(working.IsAnimating);
+        await WpfFrameWaiter.UntilAsync(() => !window.IsSpotlightOpen, "orb window hidden", ct);
+        window.ShowSpotlight();
+        await WpfFrameWaiter.UntilAsync(() => working.IsAnimating && !Field<bool>(window, "_entranceActive"),
+            "working orb resumed", ct);
+
+        var handoffState = working.State;
+        release.SetResult();
+        await WpfFrameWaiter.UntilAsync(() => window.AiActivityOrb.IsAnimating &&
+            Field<string>(window, "_aiStatusKey") == "spotlight.ai.streaming", "composing orb visible", ct);
+        Assert.False(working.IsAnimating);
+        Assert.Null(Field<ThinkingOrb?>(window, "_aiThinkingOrb"));
+        Assert.True(window.AiActivityOrb.RandomizeStates);
+        Assert.Equal(handoffState, window.AiActivityOrb.State);
+        Assert.Equal(Loc.Get("spotlight.ai.agent." + handoffState.ToString().ToLowerInvariant()), window.AiActivityLabel.CurrentLabel.Text);
+        Assert.Equal(Visibility.Collapsed, window.AiStatus.Visibility);
+        await WpfFrameWaiter.UntilAsync(() => Descendants<RichTextBox>(window.AiTranscript).Any(view =>
+            new TextRange(view.Document.ContentStart, view.Document.ContentEnd).Text.Contains("orb follows")),
+            "response text revealed beside composing orb", ct);
+        CaptureOrbPreview(window, "composing");
+        AnimationConfig.SetReduceMotion(true);
+        Assert.False(window.AiActivityOrb.IsAnimating);
+        Assert.Equal(Visibility.Visible, window.AiActivityOrb.Visibility);
+        AnimationConfig.SetReduceMotion(false);
+        Assert.True(window.AiActivityOrb.IsAnimating);
+        await sending.WaitAsync(ct);
+        Assert.False(window.AiActivityOrb.IsAnimating);
+        Assert.False(window.AiActivityOrb.IsActive);
+        Assert.Equal(Visibility.Collapsed, window.AiActivityOrb.Visibility);
+    });
+
+    private static void CaptureOrbPreview(SpotlightWindow window, string state)
+    {
+        if (Environment.GetEnvironmentVariable("VNOTCH_ORB_PREVIEW") is not { Length: > 0 } directory) return;
+        System.IO.Directory.CreateDirectory(directory);
+        window.UpdateLayout();
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+            (int)Math.Ceiling(window.Shell.ActualWidth), (int)Math.Ceiling(window.Shell.ActualHeight),
+            96, 96, PixelFormats.Pbgra32);
+        var drawing = new DrawingVisual();
+        using (var context = drawing.RenderOpen())
+            context.DrawRectangle(new VisualBrush(window.Shell), null,
+                new Rect(0, 0, window.Shell.ActualWidth, window.Shell.ActualHeight));
+        bitmap.Render(drawing);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+        using var file = System.IO.File.Create(System.IO.Path.Combine(directory, state + ".png"));
+        encoder.Save(file);
+    }
 
     private static NotchSettings Settings()
     {

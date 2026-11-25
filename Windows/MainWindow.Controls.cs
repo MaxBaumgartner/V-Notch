@@ -1,5 +1,5 @@
-using System.Runtime.InteropServices;
 using System;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -36,7 +36,7 @@ public partial class MainWindow
                 DismissVolumeIndicatorImmediate(restoreMedia: true);
             }
 
-            _isPlaying = !_viewModel.IsPlaying;
+            _isPlaying = !_viewModel.Media.IsPlaying;
             UpdatePlayPauseIcon();
 
             if (!_isExpanded && !_isAnimating &&
@@ -56,7 +56,7 @@ public partial class MainWindow
             }
 
             _progressEngine.NotifyUserPlayPause(_isPlaying);
-            await _viewModel.PlayPauseCommand.ExecuteAsync(null);
+            await _viewModel.Media.PlayPauseCommand.ExecuteAsync(null);
         }
         catch (Exception ex)
         {
@@ -107,13 +107,13 @@ public partial class MainWindow
         try
         {
             _lastMediaActionTime = DateTime.UtcNow;
-            _isPlaying = !_viewModel.IsPlaying;
+            _isPlaying = !_viewModel.Media.IsPlaying;
             UpdatePlayPauseIcon();
             PlayButtonPressAnimation(InlinePlayPauseButton);
 
             _progressEngine.NotifyUserPlayPause(_isPlaying);
 
-            await _viewModel.PlayPauseCommand.ExecuteAsync(null);
+            await _viewModel.Media.PlayPauseCommand.ExecuteAsync(null);
         }
         catch (Exception ex)
         {
@@ -130,7 +130,7 @@ public partial class MainWindow
             PlayNextSkipAnimation(InlineNextArrow0, InlineNextArrow1);
 
             OptimisticPrepareForNextTrack();
-            await _viewModel.NextTrackCommand.ExecuteAsync(null);
+            await _viewModel.Media.NextTrackCommand.ExecuteAsync(null);
         }
         catch (Exception ex)
         {
@@ -147,7 +147,7 @@ public partial class MainWindow
             PlayPrevSkipAnimation(InlinePrevArrow0, InlinePrevArrow2);
 
             PrepareForPreviousTrackRequest();
-            await _viewModel.PreviousTrackCommand.ExecuteAsync(null);
+            await _viewModel.Media.PreviousTrackCommand.ExecuteAsync(null);
         }
         catch (Exception ex)
         {
@@ -191,7 +191,7 @@ public partial class MainWindow
     {
         if (sender is Border button && button.RenderTransform is ScaleTransform transform)
         {
-            button.CacheMode ??= new System.Windows.Media.BitmapCache(1.5);
+            button.CacheMode = null;
 
             var animX = new DoubleAnimation(transform.ScaleX, 1.18, _dur150) { EasingFunction = _easeQuadOut };
             var animY = new DoubleAnimation(transform.ScaleY, 1.18, _dur150) { EasingFunction = _easeQuadOut };
@@ -228,9 +228,6 @@ public partial class MainWindow
 
     private float _currentVolume = 0.5f;
     private const float VolumeScrollStep = 0.05f;
-    private const double CompactVolumeImmediateWheelDelta = 120.0;
-    private const double CompactVolumeSmoothActivationDelta = 240.0;
-    private const double CompactVolumeWheelSessionResetMs = 450.0;
     private const double CompactVolumeClickSuppressMs = 600.0;
     private UiScheduledTimer? _volumeIndicatorHideTimer;
     private bool _isVolumeIndicatorActive = false;
@@ -256,55 +253,65 @@ public partial class MainWindow
         _isCompactVolumeWheelActive = false;
     }
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct VnVolumeWheelState
+    {
+        public double Accumulator;
+        public long LastWheelUtcTicks;
+        public long SuppressUntilUtcTicks;
+        public byte IsWheelActive;
+        public byte Reserved0;
+        public byte Reserved1;
+        public byte Reserved2;
+    }
+
+    [LibraryImport("VNotch.Native.dll")]
+    private static partial int vn_mainwindow_step_volume_wheel(
+        ref VnVolumeWheelState ioState,
+        int rawDelta,
+        long nowUtcTicks,
+        byte isIndicatorActive,
+        out int outVolumeDelta,
+        out byte outAccepted,
+        out byte outSuppressed);
+
     private bool TryGetCompactVolumeWheelDelta(int rawDelta, out int volumeDelta)
     {
         volumeDelta = 0;
         if (rawDelta == 0) return false;
 
-        var now = DateTime.UtcNow;
-        if (now < _suppressCompactVolumeWheelUntilUtc)
+        var state = new VnVolumeWheelState
+        {
+            Accumulator = _compactVolumeWheelAccumulator,
+            LastWheelUtcTicks = _lastCompactVolumeWheelUtc.Ticks,
+            SuppressUntilUtcTicks = _suppressCompactVolumeWheelUntilUtc.Ticks,
+            IsWheelActive = _isCompactVolumeWheelActive ? (byte)1 : (byte)0
+        };
+
+        if (vn_mainwindow_step_volume_wheel(
+                ref state,
+                rawDelta,
+                DateTime.UtcNow.Ticks,
+                _isVolumeIndicatorActive ? (byte)1 : (byte)0,
+                out volumeDelta,
+                out byte accepted,
+                out byte suppressed) != 0)
+        {
+            return false;
+        }
+
+        if (suppressed != 0)
         {
             ResetCompactVolumeWheelIntent();
             return false;
         }
 
-        if ((now - _lastCompactVolumeWheelUtc).TotalMilliseconds > CompactVolumeWheelSessionResetMs)
-        {
-            _compactVolumeWheelAccumulator = 0;
-            _isCompactVolumeWheelActive = false;
-        }
-        _lastCompactVolumeWheelUtc = now;
-
-        if (_isVolumeIndicatorActive || _isCompactVolumeWheelActive)
-        {
-            _isCompactVolumeWheelActive = true;
-            volumeDelta = rawDelta;
-            return true;
-        }
-
-        if (Math.Abs(rawDelta) >= CompactVolumeImmediateWheelDelta)
-        {
-            _isCompactVolumeWheelActive = true;
-            volumeDelta = rawDelta;
-            return true;
-        }
-
-        if (_compactVolumeWheelAccumulator != 0 &&
-            Math.Sign(_compactVolumeWheelAccumulator) != Math.Sign(rawDelta))
-        {
-            _compactVolumeWheelAccumulator = 0;
-        }
-
-        _compactVolumeWheelAccumulator += rawDelta;
-        if (Math.Abs(_compactVolumeWheelAccumulator) < CompactVolumeSmoothActivationDelta)
-        {
-            return false;
-        }
-
-        _compactVolumeWheelAccumulator = 0;
-        _isCompactVolumeWheelActive = true;
-        volumeDelta = Math.Sign(rawDelta) * (int)CompactVolumeImmediateWheelDelta;
-        return true;
+        _compactVolumeWheelAccumulator = state.Accumulator;
+        _lastCompactVolumeWheelUtc = state.LastWheelUtcTicks <= 0
+            ? DateTime.MinValue
+            : new DateTime(state.LastWheelUtcTicks, DateTimeKind.Utc);
+        _isCompactVolumeWheelActive = state.IsWheelActive != 0;
+        return accepted != 0;
     }
 
     private bool _volumeBaselinePending;
@@ -631,15 +638,6 @@ public partial class MainWindow
             {
                 VolumeIndicatorPercentText.Text = pctText;
                 VolumeIndicatorPercentText.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                if (animate && !AnimationConfig.ReduceMotion && VolumeIndicatorPercentScale != null)
-                {
-                    var pop = new DoubleAnimationUsingKeyFrames();
-                    pop.KeyFrames.Add(new EasingDoubleKeyFrame(1.12, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(65)), _easeQuadOut));
-                    pop.KeyFrames.Add(new EasingDoubleKeyFrame(1.0, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(200)), _easeSoftSpring));
-                    Timeline.SetDesiredFrameRate(pop, AnimationConfig.TargetFps);
-                    VolumeIndicatorPercentScale.BeginAnimation(ScaleTransform.ScaleXProperty, pop);
-                    VolumeIndicatorPercentScale.BeginAnimation(ScaleTransform.ScaleYProperty, pop);
-                }
             }
             double desiredLabelW = VolumeIndicatorPercentText.DesiredSize.Width > 0 ? VolumeIndicatorPercentText.DesiredSize.Width : approxLabelWidth;
             double measuredLabelW = VolumeIndicatorPercentText.ActualWidth > 0 ? VolumeIndicatorPercentText.ActualWidth : desiredLabelW;
@@ -1430,7 +1428,7 @@ public partial class MainWindow
 
     private void UpdateVolumeIcon(float volume, bool isMuted)
     {
-        _viewModel.UpdateVolumeState(volume, isMuted);
+        _viewModel.AudioMixer.UpdateState(volume, isMuted);
     }
 
     #endregion

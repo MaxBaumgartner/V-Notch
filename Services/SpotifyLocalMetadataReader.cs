@@ -15,7 +15,7 @@ internal sealed partial class SpotifyLocalMetadataReader
         Span<char> outTrackUrl, int urlCap, out int outUrlLen);
 
     internal sealed record Track(string Title, string Artists, string? TrackId = null);
-    private static readonly TimeSpan ReadBudget = TimeSpan.FromMilliseconds(180);
+    private readonly TimeSpan _readBudget = TimeSpan.FromMilliseconds(180);
     private readonly object _gate = new();
     private readonly Func<Track?> _read;
     private Task<Track?>? _pending;
@@ -27,7 +27,11 @@ internal sealed partial class SpotifyLocalMetadataReader
         _includeTrackId = includeTrackId;
         _read = ReadCurrentTrack;
     }
-    internal SpotifyLocalMetadataReader(Func<Track?> read) => _read = read;
+    internal SpotifyLocalMetadataReader(Func<Track?> read, TimeSpan? readBudget = null)
+    {
+        _read = read;
+        if (readBudget.HasValue) _readBudget = readBudget.Value;
+    }
 
     internal void WarmUp() => StartRead();
 
@@ -49,7 +53,7 @@ internal sealed partial class SpotifyLocalMetadataReader
         do
         {
             ct.ThrowIfCancellationRequested();
-            TimeSpan remaining = ReadBudget - Stopwatch.GetElapsedTime(started);
+            TimeSpan remaining = _readBudget - Stopwatch.GetElapsedTime(started);
             if (remaining <= TimeSpan.Zero) return null;
             Track? snapshot;
             try
@@ -63,7 +67,7 @@ internal sealed partial class SpotifyLocalMetadataReader
             // SMTC and the Spotify title can notify in either order. Give the
             // local title a few frames to catch up before falling back online.
             await Task.Delay(8, ct).ConfigureAwait(false);
-        } while (Stopwatch.GetElapsedTime(started) < ReadBudget);
+        } while (Stopwatch.GetElapsedTime(started) < _readBudget);
         return null;
     }
 
@@ -73,14 +77,20 @@ internal sealed partial class SpotifyLocalMetadataReader
         {
             // A stuck accessibility provider must never accumulate workers.
             if (_pending is { IsCompleted: false }) return _pending;
-            return _pending = Task.Run(() =>
+            // UI Automation is blocking native work. Queueing it on the shared
+            // pool can consume the entire read budget before the provider runs
+            // when other media/background work is busy. Keep the single in-flight
+            // read on a dedicated worker without blocking the caller's dispatcher.
+            return _pending = Task.Factory.StartNew(() =>
             {
                 Track? snapshot;
                 try { snapshot = _read(); }
                 catch { snapshot = null; }
                 lock (_gate) { if (snapshot != null) _cached = snapshot; }
                 return snapshot;
-            });
+            }, CancellationToken.None,
+                TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default);
         }
     }
 

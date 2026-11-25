@@ -455,7 +455,7 @@ public sealed class SpotifyRemoteService : IDisposable
 
     private static HttpClient CreateHttpClient()
     {
-        var handler = new NativeWinHttpHandler { AllowAutoRedirect = false };
+        var handler = NetworkPrivacy.CreateHttpHandler();
         var client = new HttpClient(NetworkPrivacy.Handler(NetworkFeature.SpotifyRemote, handler)) { Timeout = RequestTimeout };
         client.DefaultRequestHeaders.UserAgent.ParseAdd(AppVersion.UserAgent);
         return client;

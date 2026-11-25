@@ -24,6 +24,22 @@ public sealed partial class PerformanceDiagnosticService
         out double outSmoothedProcCpu);
 
     [LibraryImport(NativeDll)]
+    private static partial int vn_perf_diag_sample_thread_and_handle_counts(
+        long nowTicks,
+        ref long ioLastThreadTicks,
+        ref int ioCachedThreadCount,
+        long stopwatchFreq,
+        out int outThreadCount,
+        out int outHandleCount);
+
+    [LibraryImport(NativeDll)]
+    private static partial int vn_perf_diag_sample_global_memory(
+        out ulong outRamUsed,
+        out ulong outRamTotal,
+        out ulong outRamAvail,
+        out double outRamPercent);
+
+    [LibraryImport(NativeDll)]
     private static partial int vn_perf_diag_compute_global_cpu(
         ulong idle,
         ulong lastSysIdle,
@@ -51,9 +67,6 @@ public sealed partial class PerformanceDiagnosticService
         new(() => new PerformanceDiagnosticService());
 
     public static PerformanceDiagnosticService Instance => _lazy.Value;
-
-    private static readonly uint MemCountersCb = (uint)Marshal.SizeOf<Win32Interop.PROCESS_MEMORY_COUNTERS_EX>();
-    private static readonly uint MemStatusCb = (uint)Marshal.SizeOf<Win32Interop.MEMORYSTATUSEX_METRICS>();
 
     private readonly IntPtr _currentProcessHandle = Win32Interop.GetCurrentProcess();
     private readonly int _processorCount;
@@ -102,19 +115,10 @@ public sealed partial class PerformanceDiagnosticService
 
     private PerformanceHealthLevel _currentHealthLevel = PerformanceHealthLevel.Nominal;
     private string _currentHealthSummary = "Performance Nominal";
+    private string _currentHealthSummaryKey = "debug.performanceNominal";
+    private object[] _currentHealthSummaryArguments = [];
     private DateTime _lastHealthAlertTime = DateTime.MinValue;
     private readonly long _serviceStartTicks = Stopwatch.GetTimestamp();
-
-    public PerformanceHealthLevel CurrentHealthLevel
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _currentHealthLevel;
-            }
-        }
-    }
 
     public string CurrentHealthSummary
     {
@@ -205,8 +209,6 @@ public sealed partial class PerformanceDiagnosticService
         }
     }
 
-    internal void MeasureDispatcherLag(Dispatcher dispatcher) => PingDispatcher(dispatcher);
-
     public PerformanceDebugSnapshot SampleSnapshot(
         double fps = 0,
         int hz = 0,
@@ -279,7 +281,9 @@ public sealed partial class PerformanceDiagnosticService
                 NetDownBytesPerSec = netDown,
                 NetUpBytesPerSec = netUp,
                 HealthLevel = _currentHealthLevel,
-                HealthStatusSummary = _currentHealthSummary
+                HealthStatusSummary = _currentHealthSummary,
+                HealthStatusKey = _currentHealthSummaryKey,
+                HealthStatusArguments = _currentHealthSummaryArguments
             };
         }
     }
@@ -375,7 +379,7 @@ public sealed partial class PerformanceDiagnosticService
         procPrivateBytes = 0;
         try
         {
-            if (Win32Interop.GetProcessMemoryInfo(_currentProcessHandle, out var memCounters, MemCountersCb))
+            if (Win32Interop.GetProcessMemoryInfo(_currentProcessHandle, out var memCounters))
             {
                 procWorkingSet = memCounters.WorkingSetSize;
                 procPrivateBytes = memCounters.PrivateUsage;
@@ -419,63 +423,37 @@ public sealed partial class PerformanceDiagnosticService
         gen2 = GC.CollectionCount(2);
     }
 
-    private void SampleThreadAndHandleCounts(long nowTicks, out int threadCount, out int handleCount)
+    internal void SampleThreadAndHandleCounts(long nowTicks, out int threadCount, out int handleCount)
     {
-        if (_lastThreadCountTicks == 0 || (double)(nowTicks - _lastThreadCountTicks) / Stopwatch.Frequency >= 2.0)
+        if (vn_perf_diag_sample_thread_and_handle_counts(
+                nowTicks,
+                ref _lastThreadCountTicks,
+                ref _cachedThreadCount,
+                Stopwatch.Frequency,
+                out threadCount,
+                out handleCount) != 0)
         {
-            try
-            {
-                using var proc = Process.GetCurrentProcess();
-                var threads = proc.Threads;
-                _cachedThreadCount = threads.Count;
-                foreach (ProcessThread pt in threads) pt.Dispose();
-            }
-            catch (Exception)
-            {
-                // Best-effort thread count sampling; ignore process inspection errors
-            }
-            _lastThreadCountTicks = nowTicks;
-        }
-        threadCount = _cachedThreadCount;
-
-        handleCount = 0;
-        try
-        {
-            if (Win32Interop.GetProcessHandleCount(_currentProcessHandle, out uint hCount))
-            {
-                handleCount = (int)hCount;
-            }
-        }
-        catch (Exception)
-        {
-            // Best-effort handle count sampling; ignore query errors
+            threadCount = _cachedThreadCount;
+            handleCount = 0;
         }
     }
 
-    private static void SampleGlobalMemory(
+    internal static void SampleGlobalMemory(
         out ulong globalRamUsed,
         out ulong globalRamTotal,
         out ulong globalRamAvail,
         out double globalRamPercent)
     {
-        globalRamUsed = 0;
-        globalRamTotal = 0;
-        globalRamAvail = 0;
-        globalRamPercent = 0;
-        try
+        if (vn_perf_diag_sample_global_memory(
+                out globalRamUsed,
+                out globalRamTotal,
+                out globalRamAvail,
+                out globalRamPercent) != 0)
         {
-            var memStatus = new Win32Interop.MEMORYSTATUSEX_METRICS { dwLength = MemStatusCb };
-            if (Win32Interop.GlobalMemoryStatusEx(ref memStatus))
-            {
-                globalRamTotal = memStatus.ullTotalPhys;
-                globalRamAvail = memStatus.ullAvailPhys;
-                globalRamUsed = memStatus.ullTotalPhys > memStatus.ullAvailPhys ? memStatus.ullTotalPhys - memStatus.ullAvailPhys : 0;
-                globalRamPercent = Math.Clamp(memStatus.dwMemoryLoad, 0, 100);
-            }
-        }
-        catch (Exception)
-        {
-            // Best-effort global memory status query; ignore system info errors
+            globalRamUsed = 0;
+            globalRamTotal = 0;
+            globalRamAvail = 0;
+            globalRamPercent = 0;
         }
     }
 
@@ -498,8 +476,15 @@ public sealed partial class PerformanceDiagnosticService
         else if ((now - _lastHealthAlertTime).TotalSeconds > 5.0)
         {
             _currentHealthLevel = PerformanceHealthLevel.Nominal;
-            _currentHealthSummary = "Performance Nominal";
+            SetHealthSummary("debug.performanceNominal");
         }
+    }
+
+    private void SetHealthSummary(string key, params object[] arguments)
+    {
+        _currentHealthSummaryKey = key;
+        _currentHealthSummaryArguments = arguments;
+        _currentHealthSummary = Loc.Get(key, arguments);
     }
 
     private bool CheckFrameDrops(in AnomalyMetrics m, DateTime now)
@@ -511,7 +496,7 @@ public sealed partial class PerformanceDiagnosticService
         {
             _lastFpsDropAlert = now;
             _currentHealthLevel = PerformanceHealthLevel.Warning;
-            _currentHealthSummary = $"FPS Drop: {m.Fps:0} FPS ({m.FrameTimeMs:0.0}ms frame time)";
+            SetHealthSummary("debug.health.fps", m.Fps, m.FrameTimeMs);
             AddLog(PerformanceHealthLevel.Warning, "BOTTLENECK-FPS",
                 $"Frame drop ({m.Fps:0} FPS, {m.FrameTimeMs:0.0}ms frame time). Cause: Render composition pipeline exceeded target {targetFrameBudgetMs:0.0}ms frame budget (DWM composition or GPU refraction overhead).");
             return true;
@@ -527,7 +512,7 @@ public sealed partial class PerformanceDiagnosticService
             _lastDispatcherAlert = now;
             var level = m.DispatcherLatencyMs > 150 ? PerformanceHealthLevel.Critical : PerformanceHealthLevel.Warning;
             _currentHealthLevel = level;
-            _currentHealthSummary = $"UI Lag: {m.DispatcherLatencyMs:0}ms Dispatcher delay";
+            SetHealthSummary("debug.health.ui", m.DispatcherLatencyMs);
             AddLog(level, "BOTTLENECK-UI",
                 $"UI Dispatcher queue lag ({m.DispatcherLatencyMs:0}ms latency). Cause: Main UI thread was blocked by synchronous layout, window resize, or heavy event callbacks.");
             return true;
@@ -545,7 +530,7 @@ public sealed partial class PerformanceDiagnosticService
             if (heapMb >= 60.0)
             {
                 _currentHealthLevel = PerformanceHealthLevel.Warning;
-                _currentHealthSummary = $"GC Gen 2 Collection ({heapMb:0.0} MB Heap)";
+                SetHealthSummary("debug.health.gc", heapMb);
                 AddLog(PerformanceHealthLevel.Warning, "BOTTLENECK-GC",
                     $"Full GC Gen 2 collection triggered ({heapMb:0.0} MB managed heap). The collection counter does not identify its trigger; inspect an allocation trace for the cause.");
                 _lastGen2 = m.Gen2;
@@ -573,7 +558,7 @@ public sealed partial class PerformanceDiagnosticService
                 {
                     _lastMemSurgeAlert = now;
                     _currentHealthLevel = PerformanceHealthLevel.Warning;
-                    _currentHealthSummary = $"Memory Surge: +{mbPerSec:0.0} MB/s (Private: {currentPrivMb:0} MB, WS: {currentWsMb:0} MB)";
+                    SetHealthSummary("debug.health.memory", mbPerSec, currentPrivMb, currentWsMb);
                     AddLog(PerformanceHealthLevel.Warning, "BOTTLENECK-RAM",
                         $"Rapid memory allocation surge (+{deltaMb:0.0} MB private commit within {deltaSec:0.0}s, +{mbPerSec:0.0} MB/s, total private {currentPrivMb:0.0} MB, working set {currentWsMb:0.0} MB). Private commit includes managed, native and graphics allocations; an allocation trace is needed to identify the source.");
                     // Note: Do NOT trigger working-set trim or forced GC here, as that creates a destructive page-fault thrashing cycle.
@@ -603,7 +588,7 @@ public sealed partial class PerformanceDiagnosticService
             alert = true;
             var level = m.ProcCpu > 50.0 ? PerformanceHealthLevel.Critical : PerformanceHealthLevel.Warning;
             _currentHealthLevel = level;
-            _currentHealthSummary = $"High V-Notch CPU: {m.ProcCpu:0.0}%";
+            SetHealthSummary("debug.health.cpu", m.ProcCpu);
             AddLog(level, "BOTTLENECK-CPU",
                 $"High CPU usage by V-Notch ({m.ProcCpu:0.0}% across {m.ThreadCount} threads). Cause: Active liquid glass refraction, shader convolution, or rapid polling loops.");
         }
@@ -613,7 +598,7 @@ public sealed partial class PerformanceDiagnosticService
             _lastGlobalCpuAlert = now;
             alert = true;
             _currentHealthLevel = PerformanceHealthLevel.Warning;
-            _currentHealthSummary = $"Global CPU Bottleneck: {m.GlobalCpu:0}% (System Busy)";
+            SetHealthSummary("debug.health.systemCpu", m.GlobalCpu);
             AddLog(PerformanceHealthLevel.Warning, "BOTTLENECK-SYS",
                 $"System-wide CPU high load ({m.GlobalCpu:0}%). Cause: External Windows background applications/processes saturating CPU cores.");
         }
@@ -628,7 +613,7 @@ public sealed partial class PerformanceDiagnosticService
         {
             _lastLowRamAlert = now;
             _currentHealthLevel = PerformanceHealthLevel.Critical;
-            _currentHealthSummary = $"Low System RAM: {availGb:0.0} GB Available ({m.GlobalRamPercent:0}%)";
+            SetHealthSummary("debug.health.lowRam", availGb, m.GlobalRamPercent);
             AddLog(PerformanceHealthLevel.Critical, "BOTTLENECK-SYS",
                 $"Critical low system memory ({availGb:0.2} GB available, {m.GlobalRamPercent:0}% utilized). Cause: Global OS physical memory exhaustion across running apps.");
             return true;

@@ -49,9 +49,6 @@ public sealed class SpotlightNotchLocaleThumbnailTests
 
             var remembered = store.GetRememberedItems("doc");
             Assert.Empty(remembered);
-
-            var recent = store.GetRecentItems(10);
-            Assert.Empty(recent);
         }
         finally
         {
@@ -60,7 +57,7 @@ public sealed class SpotlightNotchLocaleThumbnailTests
     }
 
     [Fact]
-    public void GetExcludedFoldersSnapshot_CachesSnapshotAndInvalidatesOnChange()
+    public async Task GetExcludedFoldersSnapshot_CachesSnapshotAndInvalidatesOnChange()
     {
         string tempRoot = Path.Combine(Path.GetTempPath(), "vnotch-prefs-test-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
@@ -69,34 +66,22 @@ public sealed class SpotlightNotchLocaleThumbnailTests
             string prefsPath = Path.Combine(tempRoot, "prefs.json");
             var prefs = new SpotlightPreferences(prefsPath);
 
-            int probeCount = 0;
-            prefs.DirectoryExistsProbe = _ =>
-            {
-                probeCount++;
-                return true;
-            };
+            var empty = prefs.GetExcludedFoldersSnapshot();
+            Assert.Empty(empty);
+            Assert.Same(empty, prefs.GetExcludedFoldersSnapshot());
 
-            for (int i = 0; i < 10; i++)
-            {
-                _ = prefs.GetExcludedFoldersSnapshot();
-            }
-            Assert.Equal(1, probeCount);
+            string folder = Path.Combine(tempRoot, "offline");
+            prefs.AddExcludedFolder(folder);
+            var added = prefs.GetExcludedFoldersSnapshot();
+            Assert.Equal(folder, Assert.Single(added));
+            Assert.Same(added, prefs.GetExcludedFoldersSnapshot());
 
-            prefs.AddExcludedFolder(@"C:\Secret");
-            for (int i = 0; i < 10; i++)
-            {
-                string[] snapshot = prefs.GetExcludedFoldersSnapshot();
-                Assert.Single(snapshot);
-            }
-            Assert.Equal(2, probeCount);
-
-            Assert.True(prefs.RemoveExcludedFolder(@"C:\Secret"));
-            for (int i = 0; i < 10; i++)
-            {
-                string[] snapshot = prefs.GetExcludedFoldersSnapshot();
-                Assert.Empty(snapshot);
-            }
-            Assert.Equal(3, probeCount);
+            Assert.True(prefs.RemoveExcludedFolder(folder));
+            var removed = prefs.GetExcludedFoldersSnapshot();
+            Assert.Empty(removed);
+            Assert.Same(removed, prefs.GetExcludedFoldersSnapshot());
+            Assert.Equal(folder, Assert.Single(added));
+            await prefs.FlushAsync();
         }
         finally
         {
@@ -143,13 +128,12 @@ public sealed class SpotlightNotchLocaleThumbnailTests
             string oversizedFile = Path.Combine(tempRoot, localeCode + ".json");
             using (var fs = new FileStream(oversizedFile, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                fs.SetLength(LocalizationService.MaxExternalLocaleFileBytes + 10);
+                fs.SetLength(Loc.MaxExternalLocaleFileBytes + 10);
             }
 
-            Assert.False(LocalizationService.IsValidExternalLocaleFile(oversizedFile));
             Assert.False(Loc.IsValidExternalLocaleFile(oversizedFile));
 
-            LocalizationService.DiscoverExternalDirectory(tempRoot);
+            Loc.DiscoverExternalDirectory(tempRoot);
 
             var available = Loc.GetAvailableLanguages();
             Assert.DoesNotContain(available, entry => string.Equals(entry.Code, localeCode, StringComparison.OrdinalIgnoreCase));

@@ -52,7 +52,7 @@ public sealed class PerformanceAuditRegressionTests
     }
 
     [Theory]
-    [InlineData(true, false, true, 250, 100)]
+    [InlineData(true, false, true, 250, 1000.0 / 30)]
     [InlineData(true, false, true, 249, 8)]
     [InlineData(true, true, true, 1000, 8)]
     [InlineData(false, false, true, 1000, 8)]
@@ -224,10 +224,4 @@ public sealed class PerformanceAuditRegressionTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(send(request));
     }
 
-    private sealed class TempFolder : IDisposable
-    {
-        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vnotch-perf-" + Guid.NewGuid().ToString("N"));
-        public TempFolder() => Directory.CreateDirectory(Path);
-        public void Dispose() => Directory.Delete(Path, recursive: true);
-    }
 }

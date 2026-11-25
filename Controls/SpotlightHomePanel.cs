@@ -92,6 +92,7 @@ internal sealed class SpotlightHomePanel : StackPanel
 
     private FrameworkElement AppTile(SpotlightSearchItem app)
     {
+        string title = new SpotlightResultPresentation(app).DisplayTitle;
         var icon = new Image
         {
             Width = 38,
@@ -102,7 +103,7 @@ internal sealed class SpotlightHomePanel : StackPanel
         RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
         var name = new TextBlock
         {
-            Text = app.DisplayTitle,
+            Text = title,
             Foreground = NameBrush,
             FontSize = 11,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -118,9 +119,9 @@ internal sealed class SpotlightHomePanel : StackPanel
             Margin = new Thickness(2),
             Cursor = Cursors.Hand,
             Child = new StackPanel { Children = { icon, name } },
-            ToolTip = app.DisplayTitle,
+            ToolTip = title,
         };
-        AutomationName(surface, app.DisplayTitle);
+        AutomationName(surface, title);
         WireClick(surface, HoverBrush, Brushes.Transparent, () => AppActivated?.Invoke(app));
         surface.MouseRightButtonUp += (_, e) =>
         {

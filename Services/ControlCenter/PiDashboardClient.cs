@@ -88,9 +88,9 @@ internal sealed record PiReminder(string Key, string Title, string Message, Date
 internal sealed partial class PiDashboardClient : IDisposable
 {
     private const string LogTag = "PI-DASHBOARD";
-    private readonly HttpClient _http = new(new NativeWinHttpHandler()) { Timeout = TimeSpan.FromSeconds(6) };
+    private readonly HttpClient _http = new(NetworkPrivacy.CreateHttpHandler(allowAutoRedirect: true)) { Timeout = TimeSpan.FromSeconds(6) };
     // Files of an assignment and photo hand-ins go through Moodle on the Pi: they need longer.
-    private readonly HttpClient _transfer = new(new NativeWinHttpHandler()) { Timeout = TimeSpan.FromMinutes(3) };
+    private readonly HttpClient _transfer = new(NetworkPrivacy.CreateHttpHandler(allowAutoRedirect: true)) { Timeout = TimeSpan.FromMinutes(3) };
     private const long MaxAttachmentBytes = 200L * 1024 * 1024;
     private readonly Func<string> _baseUrl;
 

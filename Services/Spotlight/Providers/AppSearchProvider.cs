@@ -1,7 +1,6 @@
 using System.Collections;
 using System.IO;
 using System.Runtime.InteropServices;
-using VNotch.Controllers;
 using VNotch.Models;
 
 namespace VNotch.Services.Spotlight.Providers;
@@ -72,6 +71,8 @@ internal sealed partial class AppSearchProvider : ISpotlightProvider
         matches.CopyTo(0, results, 0, resultCount);
         return results;
     }
+
+    Task ISpotlightProvider.WarmupAsync() => WarmupAsync();
 
     internal Task<IReadOnlyList<SpotlightSearchItem>> WarmupAsync()
     {
