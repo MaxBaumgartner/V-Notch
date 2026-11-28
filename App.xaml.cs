@@ -95,6 +95,7 @@ public partial class App : Application
         try
         {
             RegisterExceptionHandlers();
+            VNotch.Services.ClaudeCode.ClaudeSessionEnvironment.ScrubInherited();
             // The notch explains itself; a tooltip there is a second, white window popping up over it.
             // Settings and the other windows keep theirs.
             System.Windows.EventManager.RegisterClassHandler(typeof(System.Windows.FrameworkElement),

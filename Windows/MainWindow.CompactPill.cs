@@ -113,7 +113,8 @@ public partial class MainWindow
             if (owner != CompactPillSlot.None)
             {
                 if (owner != CompactPillSlot.Clipboard) HideCompactSurface(MusicViz);
-                HideCompactSurface(CompactThumbnailBorder);
+                if (owner != CompactPillSlot.Clipboard || MusicViz.IsCopiedFeedbackActive)
+                    HideCompactSurface(CompactThumbnailBorder);
             }
             if (owner != CompactPillSlot.Clipboard)
             {

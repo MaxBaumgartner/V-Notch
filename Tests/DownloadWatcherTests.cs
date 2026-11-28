@@ -1,3 +1,4 @@
+using System.IO;
 using VNotch.Services;
 using VNotch.Services.ControlCenter;
 using Xunit;
@@ -53,6 +54,68 @@ public sealed class DownloadWatcherTests
     [InlineData("film.mkv.part", "film.mkv")]
     public void BrowserFilesShowTheirFinalName(string partial, string expected) =>
         Assert.Equal(expected, DownloadWatcher.DisplayName(partial));
+
+    [Theory]
+    [InlineData(".crdownload")]
+    [InlineData(".part")]
+    [InlineData(".opdownload")]
+    [InlineData(".partial")]
+    public void ADisappearedPartialMatchesItsFinalFileInTheSameFolder(string extension)
+    {
+        const string path = @"C:\Downloads\Report.pdf";
+        string partial = path.ToLowerInvariant() + extension;
+        var final = new DownloadWatcher.BrowserFile(path, 42, DateTime.UnixEpoch);
+        var files = new Dictionary<string, DownloadWatcher.BrowserFile>(StringComparer.OrdinalIgnoreCase);
+        const string otherPath = @"C:\Other\Report.pdf";
+        files[otherPath] = final with { Path = otherPath };
+        Assert.Null(DownloadWatcher.CompletedBrowserPath(partial, null, files));
+        files[path] = final;
+        files[partial] = final with { Path = partial };
+        Assert.Null(DownloadWatcher.CompletedBrowserPath(partial, null, files));
+        files.Remove(partial);
+        Assert.Null(DownloadWatcher.CompletedBrowserPath(partial, final, files));
+        Assert.Equal(path, DownloadWatcher.CompletedBrowserPath(partial, null, files));
+        Assert.Equal(path, DownloadWatcher.CompletedBrowserPath(partial, final with { Bytes = 0 }, files));
+        Assert.Null(DownloadWatcher.CompletedBrowserPath(path, null, files));
+    }
+
+    [Theory]
+    [InlineData(".crdownload")]
+    [InlineData(".part")]
+    public void ACompletedDownloadSurvivesPollsForOneMinuteAndDoesNotSurviveRestart(string extension)
+    {
+        var folder = Directory.CreateTempSubdirectory();
+        try
+        {
+            var now = DateTime.UnixEpoch;
+            var watcher = new DownloadWatcher(() => now);
+            string final = Path.Combine(folder.FullName, "My Report.pdf");
+            string partial = final + extension;
+            if (extension == ".part") File.WriteAllText(final, "");
+            File.WriteAllText(partial, "first");
+            Assert.Empty(watcher.PollBrowsers(folder.FullName));
+
+            now = now.AddSeconds(3);
+            File.AppendAllText(partial, " more");
+            var running = Assert.Single(watcher.PollBrowsers(folder.FullName));
+            Assert.False(running.IsFinished);
+            Assert.Equal(partial, running.FilePath);
+
+            now = now.AddSeconds(3);
+            File.Move(partial, final, overwrite: true);
+            var finished = Assert.Single(watcher.PollBrowsers(folder.FullName));
+            Assert.True(finished.IsFinished);
+            Assert.Equal("My Report.pdf", finished.Name);
+            Assert.Equal(final, finished.FilePath);
+            Assert.Empty(new DownloadWatcher(() => now).PollBrowsers(folder.FullName));
+
+            now = now.AddSeconds(59);
+            Assert.Equal(finished, Assert.Single(watcher.PollBrowsers(folder.FullName)));
+            now = now.AddSeconds(1);
+            Assert.Empty(watcher.PollBrowsers(folder.FullName));
+        }
+        finally { folder.Delete(recursive: true); }
+    }
 
     [Fact]
     public void ADownloadTakesTheOrbButNeverTheNotch()

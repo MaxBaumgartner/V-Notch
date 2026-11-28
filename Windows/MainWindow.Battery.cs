@@ -63,6 +63,10 @@ public partial class MainWindow
         if (!allowed) StopNotificationDrop();
         RefreshMusicMotionVisibility();
         RefreshCountdownCompleteTextFlash();
+        SettleHiddenCountdownShell();
+        RefreshIdleGlanceMotionVisibility();
+        RefreshClipboardPeekMotionVisibility();
+        RefreshClaudePillMotionVisibility();
         _phoneMirror?.RefreshMotionVisibility();
         RefreshAppNotificationMotionVisibility();
     }
@@ -173,11 +177,7 @@ public partial class MainWindow
 
         if (battery.HasPowerRate && Math.Abs(battery.PowerWatts) >= 0.1)
         {
-            double watts = Math.Abs(battery.PowerWatts);
-            string formatted = watts >= 10
-                ? $"{watts:0} W"
-                : $"{watts:0.0} W";
-            ChargingWattText.Text = formatted;
+            ChargingWattText.Text = LocalizedPresentation.FormatWatts(Math.Abs(battery.PowerWatts));
             ChargingWattText.Visibility = Visibility.Visible;
         }
         else

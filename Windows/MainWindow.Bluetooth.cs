@@ -51,8 +51,6 @@ public partial class MainWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
-            _currentBluetoothConnected = connected;
-
             if (connected)
             {
                 BluetoothDeviceName.Text = device.Name;
@@ -91,10 +89,12 @@ public partial class MainWindow
 
         _bluetoothNotificationToken = token;
         _isBluetoothNotificationVisible = true;
+        _currentBluetoothConnected = connected;
 
         SuppressPrivacyDot();
 
         var otherGrid = connected ? BluetoothDisconnectNotification : BluetoothNotification;
+        (connected ? _bluetoothDisconnectAttachment : _bluetoothAttachment)?.Detach(false);
         otherGrid.Visibility = Visibility.Collapsed;
         otherGrid.Opacity = 0;
 
@@ -119,6 +119,7 @@ public partial class MainWindow
 
     private void AnimateBluetoothNotificationOut()
     {
+        if (!_isBluetoothNotificationVisible || IsCompactSlotStale(_bluetoothNotificationToken)) return;
         var activeGrid = ActiveBluetoothGrid;
         int token = _bluetoothNotificationToken;
         _notchShellPresenter?.CancelCurrentAnimation();

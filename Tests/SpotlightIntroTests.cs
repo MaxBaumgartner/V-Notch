@@ -24,8 +24,13 @@ public sealed class SpotlightIntroTests
         try
         {
             AnimationConfig.SetReduceMotion(reduceMotion);
-            var settings = new NotchSettings { NotchStyle = style };
-            using var fixture = new SpotlightWindowFixture(new NotchSettings(), saveChatHistory: true);
+            var settings = new NotchSettings
+            {
+                NotchStyle = style,
+                SpotlightReplacesStart = false,
+                SaveAiChatHistory = false
+            };
+            using var fixture = new SpotlightWindowFixture(new NotchSettings());
             var window = fixture.Window;
             window.ApplySettings(settings);
             if (preloadResults)
@@ -67,6 +72,8 @@ public sealed class SpotlightIntroTests
             Assert.DoesNotContain("HasSeenSpotlightIntro", saved);
             settings = System.Text.Json.JsonSerializer.Deserialize<NotchSettings>(saved)!;
             Assert.Equal("en", settings.Language);
+            settings.SpotlightReplacesStart = false;
+            settings.SaveAiChatHistory = false;
             using var fixture = new SpotlightWindowFixture(settings);
             var window = fixture.Window;
             window.ShowSpotlight();

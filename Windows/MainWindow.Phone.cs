@@ -28,6 +28,8 @@ public partial class MainWindow
     private void InitializePhone()
     {
         if (!PhoneTools.Available) return;
+        NotchBorder.SizeChanged += (_, _) => _phoneMirror?.RefreshNotchAnchor();
+        LocationChanged += (_, _) => _phoneMirror?.RefreshNotchAnchor();
         _phoneWatcher = new PhoneWatcher();
         _phoneWatcher.Changed += info => Dispatcher.BeginInvoke(() => OnPhoneChanged(info));
         _phoneWatcher.Start();
@@ -111,7 +113,7 @@ public partial class MainWindow
 
     private void OpenPhoneMirror()
     {
-        if (_phoneWatcher?.Current is not { State: PhoneState.Device } phone) return;
+        if (!_isNotchVisible || _isHiddenByFullscreen || _phoneWatcher?.Current is not { State: PhoneState.Device } phone) return;
         if (Mirror.IsOpen)
         {
             Mirror.PullIn();
@@ -128,9 +130,14 @@ public partial class MainWindow
         var wait = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
         wait.Tick += (_, _) =>
         {
+            if (_cleanedUp || !_isNotchVisible || _isHiddenByFullscreen || _phoneWatcher?.Current?.Serial != phone.Serial)
+            {
+                wait.Stop();
+                return;
+            }
             if ((_isExpanded || _isMusicExpanded || _isAnimating) && clock.ElapsedMilliseconds < 1500) return;
             wait.Stop();
-            if (!_cleanedUp) Mirror.Open(phone.Serial);
+            Mirror.Open(phone.Serial);
         };
         wait.Start();
     }

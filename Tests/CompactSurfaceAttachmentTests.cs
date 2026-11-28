@@ -124,6 +124,51 @@ public sealed class CompactSurfaceAttachmentTests
         await Task.CompletedTask;
     });
 
+    [Fact]
+    public void ReattachingAfterAHiddenResizeInvalidatesTheLeavingCallbackFirst() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        var shell = new Grid { Width = 380, Height = 56 };
+        var face = new Border();
+        shell.Children.Add(face);
+        var attachment = new CompactSurfaceAttachment(shell, face, () => new Size(300, 40));
+        using var host = new RenderHost(shell);
+        int departures = 0;
+        attachment.MoveTo(300, 40, Motion.PopBack, false, () => departures++);
+        face.Visibility = Visibility.Collapsed;
+        await WpfFrameWaiter.UntilAsync(() => !((FrameworkElement)face.Parent).IsVisible, "face is hidden", ct);
+        Motion.Stop(shell, FrameworkElement.HeightProperty, 72);
+
+        attachment.MoveTo(440, 120, Motion.Shift, true);
+        face.Visibility = Visibility.Visible;
+        var layer = (FrameworkElement)face.Parent;
+        Assert.Equal(440, layer.Width);
+        Assert.Equal(0, departures);
+        await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width), "latest arrival settles", ct);
+        Assert.Equal(1, layer.Opacity);
+    });
+
+    [Fact]
+    public void NarrowingFaceReversesWithoutResettingReveal() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        var shell = new Grid { Width = 300, Height = 40 };
+        var face = new Border();
+        shell.Children.Add(face);
+        var attachment = new CompactSurfaceAttachment(shell, face, () => new Size(300, 40));
+        using var host = new RenderHost(shell);
+        var layer = (FrameworkElement)face.Parent;
+        attachment.MoveTo(150, 40, Motion.Shift, true);
+        await WpfFrameWaiter.UntilAsync(() => layer.Opacity is > .05 and < .9, "idle reveal is in flight", ct);
+        double opacity = layer.Opacity;
+        double width = shell.Width;
+        double speed = Motion.VelocityOf(shell, FrameworkElement.WidthProperty);
+        attachment.MoveTo(300, 40, Motion.Shift, false);
+        Assert.Equal(width, shell.Width, 3);
+        Assert.Equal(opacity, layer.Opacity, 3);
+        Assert.Equal(speed, Motion.VelocityOf(shell, FrameworkElement.WidthProperty), 3);
+        await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width), "the idle face leaves", ct);
+        Assert.Equal(0, layer.Opacity);
+    });
+
     private sealed class RenderHost : IDisposable
     {
         private readonly Window _window;

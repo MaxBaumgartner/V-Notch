@@ -4,16 +4,14 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using VNotch.Controllers;
-using VNotch.Services;
 using VNotch.Models;
+using VNotch.Services;
 using static VNotch.Services.AnimationPrimitives;
 
 namespace VNotch;
 
 public partial class MainWindow
 {
-    #region Gesture Controls
-
     private const string GestureLogTag = "GESTURE";
     private GestureController _gestureController = null!;
 
@@ -113,7 +111,7 @@ public partial class MainWindow
         _gestureController.DoubleTap += OnGestureDoubleTap;
     }
 
-    private async void NotchWrapper_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    private void NotchWrapper_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && _isExpanded &&
             !IsShellDragControl(e.OriginalSource as DependencyObject) && FindShellScrollCandidate(e.OriginalSource as DependencyObject) is { } scroll)
@@ -139,7 +137,7 @@ public partial class MainWindow
         if (_spotlightMorphSessionActive || _spotlightMorphOwnsNotchVisibility) return;
 
         e.Handled = true;
-        await TogglePlayPauseInstantAsync();
+        TogglePlayPauseInstantAsync().SafeFireAndForget(GestureLogTag);
     }
 
     private void NotchWrapper_PreviewMouseUp(object sender, MouseButtonEventArgs e)
@@ -394,7 +392,9 @@ public partial class MainWindow
         }
     }
 
-    private async void OnGestureSwipeLeft()
+    private void OnGestureSwipeLeft() => ExecuteGestureSwipeLeftAsync().SafeFireAndForget(GestureLogTag);
+
+    private async Task ExecuteGestureSwipeLeftAsync()
     {
         if ((DateTime.UtcNow - _lastMediaActionTime).TotalMilliseconds < 500) return;
         _lastMediaActionTime = DateTime.UtcNow;
@@ -416,7 +416,9 @@ public partial class MainWindow
         }
     }
 
-    private async void OnGestureSwipeRight()
+    private void OnGestureSwipeRight() => ExecuteGestureSwipeRightAsync().SafeFireAndForget(GestureLogTag);
+
+    private async Task ExecuteGestureSwipeRightAsync()
     {
         if ((DateTime.UtcNow - _lastMediaActionTime).TotalMilliseconds < 500) return;
         _lastMediaActionTime = DateTime.UtcNow;
@@ -455,7 +457,9 @@ public partial class MainWindow
         });
     }
 
-    private async void OnGestureDoubleTap()
+    private void OnGestureDoubleTap() => ExecuteGestureDoubleTapAsync().SafeFireAndForget(GestureLogTag);
+
+    private async Task ExecuteGestureDoubleTapAsync()
     {
         await Dispatcher.InvokeAsync(() =>
         {
@@ -544,6 +548,4 @@ public partial class MainWindow
             _gestureController.DoubleTap -= OnGestureDoubleTap;
         }
     }
-
-    #endregion
 }

@@ -14,6 +14,7 @@ using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using VNotch.Controllers;
 using VNotch.Controls;
+using VNotch.Interop;
 using VNotch.Models;
 using VNotch.Modules;
 using VNotch.Presenters;
@@ -37,7 +38,7 @@ public partial class SettingsWindow
         public double StartTranslateY;
     }
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static unsafe partial int vn_ui_compute_progressive_blur_cascade(
         int itemCount,
         int baseDelayMs,
@@ -499,7 +500,7 @@ public partial class SettingsWindow
         AnimateEntranceItem(NavPanel, NavPanelTranslate, contentDelay + 40, applyBlur: false);
         AnimateSidebarMenuProgressiveBlur(contentDelay + 55, fps);
 
-        if (SettingsScrollViewer.IsVisible && _revealingPage == null)
+        if (SettingsScrollViewer.IsVisible && _sectionArrivals.Count == 0)
             AnimateActivePanel(_activeNav, baseDelayMs: 200);
 
         AnimateEntranceItem(FooterBar, FooterTranslate, contentDelay + 120, applyBlur: true);

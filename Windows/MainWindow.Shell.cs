@@ -70,16 +70,25 @@ public partial class MainWindow
         _compactSystemBattery.Children.Add(batteryText);
         var batteryFill = new ScaleTransform(1, 1);
         BindingOperations.SetBinding(batteryFill, ScaleTransform.ScaleXProperty, new Binding("ScaleX") { Source = BatteryFillScale });
-        _compactSystemBattery.Children.Add(new Border { Width = 22, Height = 10, CornerRadius = new CornerRadius(2),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(148, 255, 255, 255)), BorderThickness = new Thickness(1),
-            Margin = new Thickness(6, 0, 0, 0), Padding = new Thickness(1), VerticalAlignment = VerticalAlignment.Center,
-            Child = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(1), RenderTransformOrigin = new Point(0, .5), RenderTransform = batteryFill } });
+        // Same calm battery as the header: hairline shell, inset fill with a gap, its own terminal.
+        var shellBrush = new SolidColorBrush(Color.FromArgb(0x5C, 255, 255, 255));
+        shellBrush.Freeze();
+        _compactSystemBattery.Children.Add(new Border { Width = 21, Height = 11, CornerRadius = new CornerRadius(3.4),
+            BorderBrush = shellBrush, BorderThickness = new Thickness(1), Margin = new Thickness(6, 0, 0, 0),
+            Padding = new Thickness(1.4), VerticalAlignment = VerticalAlignment.Center,
+            Child = new Border { Background = new SolidColorBrush(Color.FromArgb(0xEB, 255, 255, 255)), CornerRadius = new CornerRadius(1.9),
+                RenderTransformOrigin = new Point(0, .5), RenderTransform = batteryFill } });
+        _compactSystemBattery.Children.Add(new Border { Width = 1.5, Height = 4, Margin = new Thickness(0.9, 0, 0, 0),
+            Background = shellBrush, CornerRadius = new CornerRadius(0, 1, 1, 0), VerticalAlignment = VerticalAlignment.Center });
         _compactStatusHost.Children.Add(_compactSystemBattery);
         open.Children.Add(_compactStatusHost);
         PiCenter.StatusChanged += UpdateCompactTabStatus;
         ControlCenter.StatusChanged += UpdateCompactTabStatus;
         _shellAttachment = new NotchShellAttachment(NotchBorder, open, () => _collapsedHeight,
             CollapsedContent, MusicCompactContent);
+        // Wrap the music face before it loads, so a copy never unloads the live visualizer.
+        _clipboardCopiedAttachment = new(NotchBorder, MusicCompactContent, () => new Size(_collapsedWidth, _collapsedHeight));
+        _clipboardCopiedAttachment.Detach(true);
         NotchWrapper.PreviewMouseMove += ContinueScrollShellGesture;
         NotchWrapper.LostMouseCapture += (_, e) =>
         {

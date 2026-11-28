@@ -33,16 +33,14 @@ public sealed partial class ClipboardTray
     private void RefreshCardViewportVisibility(FrameworkElement element, bool visible)
     {
         if (element.DataContext is not ClipboardCardViewModel card || !_realizedCardElements.Contains(element)) return;
-        bool inStaggerEntrance = _entranceStaggerVersion == _motionVersion && _entranceStaggerVersion > 0 && !_trayLeaving;
-        if (inStaggerEntrance) visible = true;
         if (!_cardViewportStates.TryGetValue(element, out var state) || !ReferenceEquals(state.Card, card))
         {
             ForgetCardViewport(element);
             if (element is not Border { Child: FrameworkElement presentation }) return;
             state = new CardViewportState(card, presentation);
             _cardViewportStates.Add(element, state);
-            presentation.Opacity = inStaggerEntrance ? 1 : 0;
-            state.Translation.Y = AnimationConfig.ReduceMotion || inStaggerEntrance ? 0 : 6;
+            presentation.Opacity = visible ? 1 : 0;
+            state.Visible = visible;
             presentation.RenderTransform = state.Translation;
         }
 
@@ -54,7 +52,7 @@ public sealed partial class ClipboardTray
         double opacity = visual.Opacity;
         double y = visual.RenderTransform.Value.OffsetY;
         visual.BeginAnimation(OpacityProperty, null);
-        if (AnimationConfig.ReduceMotion || inStaggerEntrance)
+        if (AnimationConfig.ReduceMotion || !IsVisible || _trayLeaving)
         {
             CancelViewportMotion(state);
             visual.Opacity = visible ? 1 : 0;

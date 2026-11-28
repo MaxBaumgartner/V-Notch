@@ -97,6 +97,53 @@ public sealed class OrbPhoneMotionTests
     });
 
     [Fact]
+    public void DockedPhoneTracksAnAnchorThatReversesDuringArrivalAndRetraction() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        var anchor = new NotchAnchor(-19500, -19960, 300, 1,
+            new Int32Rect(-20000, -20000, 1000, 800), new Int32Rect(-20000, -20000, 1000, 800));
+        var phone = new PhoneMirrorWindow(() => anchor);
+        try
+        {
+            var start = new Int32Rect(-19620, -19966, 240, 6);
+            phone.Left = start.X;
+            phone.Top = start.Y;
+            phone.Width = start.Width;
+            phone.Height = start.Height;
+            phone.Show();
+            typeof(PhoneMirrorWindow).GetProperty(nameof(PhoneMirrorWindow.State))!.SetValue(phone, PhoneMirrorWindow.MirrorState.Docked);
+            var dock = typeof(PhoneMirrorWindow).GetMethod("DockedRect", Private)!;
+            Invoke(phone, "Spring", start, (Int32Rect)dock.Invoke(phone, [anchor])!, Motion.Pop, null, new Vector());
+            await WpfFrameWaiter.UntilAsync(() => Get<double>(phone, "_rectangleFrameTime") >= .06,
+                "mirror is growing out of the notch", ct);
+            var previous = Get<SpringDoubleAnimation[]>(phone, "_rectangleSprings");
+            double time = Get<double>(phone, "_rectangleFrameTime");
+            var currentRect = typeof(PhoneMirrorWindow).GetMethod("CurrentRect", Private)!;
+            int before = ((Int32Rect)currentRect.Invoke(phone, null)!).Y - anchor.Bottom;
+            anchor = anchor with { Bottom = -19820, Width = 600 };
+            phone.RefreshNotchAnchor();
+            Assert.Equal(before, ((Int32Rect)currentRect.Invoke(phone, null)!).Y - anchor.Bottom);
+            Assert.Equal((Int32Rect)dock.Invoke(phone, [anchor])!, Get<Int32Rect>(phone, "_springTarget"));
+            var next = Get<SpringDoubleAnimation[]>(phone, "_rectangleSprings");
+            Assert.NotSame(previous, next);
+            for (int i = 0; i < next.Length; i++)
+                Assert.Equal(previous[i].VelocityAt(time), next[i].VelocityAt(0), 5);
+
+            int closed = 0;
+            phone.MirrorClosed += () => closed++;
+            phone.PullIn();
+            await WpfFrameWaiter.UntilAsync(() => Get<double>(phone, "_rectangleFrameTime") >= .06,
+                "mirror is retracting", ct);
+            anchor = anchor with { Bottom = -19960, Width = 300 };
+            phone.RefreshNotchAnchor();
+            Assert.Equal(start, Get<Int32Rect>(phone, "_springTarget"));
+            await WpfFrameWaiter.UntilAsync(() => !phone.IsVisible, "mirror tucks into the latest notch", ct);
+            Assert.Equal(1, closed);
+            Assert.Null(Get<EventHandler?>(phone, "_frame"));
+        }
+        finally { phone.Close(); }
+    });
+
+    [Fact]
     public void PhoneRetargetKeepsAllRectangleVelocitiesAndStopsWhenHidden() => SharedStaTestRunner.RunAsync(async ct =>
     {
         var window = new PhoneMirrorWindow(() => null);
@@ -109,15 +156,16 @@ public sealed class OrbPhoneMotionTests
             window.Show();
             var start = new Int32Rect(-20000, -20000, 80, 20);
             var target = new Int32Rect(-20050, -19980, 180, 360);
-            Invoke(window, "Spring", start, target, Motion.Pop, null);
-            await Task.Delay(100, ct);
+            Invoke(window, "Spring", start, target, Motion.Pop, null, new Vector());
+            await WpfFrameWaiter.UntilAsync(() => Get<double>(window, "_rectangleFrameTime") >= .06,
+                "the native rectangle is moving", ct);
             var previous = Get<SpringDoubleAnimation[]>(window, "_rectangleSprings");
-            double elapsed = Get<System.Diagnostics.Stopwatch>(window, "_springClock").Elapsed.TotalSeconds;
+            double elapsed = Get<double>(window, "_rectangleFrameTime");
             double[] velocities = previous.Select(x => x.VelocityAt(elapsed)).ToArray();
-            Invoke(window, "Spring", start, start, Motion.PopBack, null);
+            Invoke(window, "Spring", start, start, Motion.PopBack, null, new Vector());
             var next = Get<SpringDoubleAnimation[]>(window, "_rectangleSprings");
             for (int i = 0; i < 4; i++)
-                Assert.InRange(Math.Abs(next[i].VelocityAt(0) - velocities[i]), 0, 40);
+                Assert.Equal(velocities[i], next[i].VelocityAt(0), 5);
             window.Hide();
             Assert.Null(Get<EventHandler?>(window, "_frame"));
         }

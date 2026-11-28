@@ -628,12 +628,14 @@
                                          Stroke="#4093BCD2" StrokeThickness="12"/>
                                 <Path x:Name="BubbleDownloadArc" Stroke="#93BCD2" StrokeThickness="12"
                                       StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-                                <Path Data="M50,28 L50,64 M35,50 L50,65 L65,50" Stroke="White" StrokeThickness="9"
+                                <Path x:Name="BubbleDownloadArrow" Data="M50,28 L50,64 M35,50 L50,65 L65,50" Stroke="White" StrokeThickness="9"
                                       StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round">
                                     <Path.RenderTransform>
                                         <TranslateTransform x:Name="BubbleDownloadArrowShift"/>
                                     </Path.RenderTransform>
                                 </Path>
+                                <Path x:Name="BubbleDownloadCheck" Data="M32,50 L45,63 L68,37" Stroke="#F5F5F7" StrokeThickness="9"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
                             </Canvas>
                         </Viewbox>
                         <Viewbox x:Name="BubbleJobFace" Visibility="Collapsed">
@@ -703,7 +705,7 @@
                         </Grid.RenderTransform>
                         <!-- Only attached while it blurs (ActiveBlur): no idle effect surface under the orb's text. -->
                         <ctrl:ActiveBlur.Blur><ctrl:BlurDefinition><BlurEffect x:Name="BubbleDetailBlur" Radius="0" RenderingBias="Performance"/></ctrl:BlurDefinition></ctrl:ActiveBlur.Blur>
-                        <StackPanel VerticalAlignment="Center">
+                        <StackPanel x:Name="BubbleSummaryWords" VerticalAlignment="Center">
                             <TextBlock x:Name="BubbleTitle"
                                        Foreground="{x:Static svc:UiPalette.PrimaryBrush}"
                                        FontSize="12" FontWeight="SemiBold"
@@ -723,6 +725,31 @@
                                    FontFamily="{StaticResource MainSystemFont}"
                                    VerticalAlignment="Center"
                                    Margin="10,0,0,0"/>
+                        <ScrollViewer x:Name="BubbleDownloadList" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Hidden"
+                                      HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed" Focusable="False">
+                            <ScrollViewer.Resources>
+                                <Style x:Key="DownloadRowButton" TargetType="Button">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border x:Name="Row" Background="Transparent" CornerRadius="7" Padding="5,0">
+                                                    <ContentPresenter VerticalAlignment="Center"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Row" Property="Background" Value="#12FFFFFF"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                                        <Setter TargetName="Row" Property="Background" Value="#12FFFFFF"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ScrollViewer.Resources>
+                            <StackPanel x:Name="BubbleDownloadRows"/>
+                        </ScrollViewer>
                     </Grid>
                     <!-- Several Claude sessions: how many, on the closed orb. -->
                     <Border x:Name="BubbleCountBadge"
@@ -1708,9 +1735,6 @@
                               Visibility="Collapsed"
                               Opacity="0"
                               IsHitTestVisible="False">
-                            <Grid.RenderTransform>
-                                <TranslateTransform x:Name="IdleGlanceShift" Y="0"/>
-                            </Grid.RenderTransform>
                             <Viewbox x:Name="MicMutedRestGlyph" Width="12" Height="12" HorizontalAlignment="Left" VerticalAlignment="Center" Visibility="Collapsed" Opacity="0" RenderTransformOrigin="0.5,0.5">
                                 <Viewbox.RenderTransform><ScaleTransform x:Name="MicMutedRestScale"/></Viewbox.RenderTransform>
                                 <Canvas Width="24" Height="24">
@@ -2530,39 +2554,39 @@
                                                Margin="0,1,0,0"
                                                TextOptions.TextHintingMode="Animated"
                                                VerticalAlignment="Center"/>
-                                    <!-- Reserve the battery terminal plus the same 4-DIP inset as adjacent action glyphs. -->
-                                    <Grid Margin="4.51,0,6.71,0">
-
-                                        <Border x:Name="BatteryIcon"
-                                                Width="27.08" Height="14.44"
-                                                BorderBrush="#666666"
-                                                BorderThickness="1.36"
-                                                CornerRadius="4.07"
-                                                Panel.ZIndex="1">
-                                            <Grid>
+                                    <!-- A calm battery: hairline shell, inset fill with a gap, its own terminal beside it
+                                         (the old terminal hung outside the grid and was clipped away), same 4-DIP inset
+                                         as the adjacent action glyphs. -->
+                                    <Grid Margin="5,0,4,0">
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Border x:Name="BatteryIcon"
+                                                    Width="24" Height="12.5"
+                                                    BorderBrush="#5CFFFFFF"
+                                                    BorderThickness="1.1"
+                                                    CornerRadius="3.9"
+                                                    Padding="1.6"
+                                                    Panel.ZIndex="1">
                                                 <Border x:Name="BatteryFill"
-                                                        Background="White"
-                                                        CornerRadius="2.71"
-                                                        Margin="0.78,1.08,0.78,1.08">
+                                                        Background="#EBFFFFFF"
+                                                        CornerRadius="2.2"
+                                                        RenderTransformOrigin="0,0.5">
                                                     <Border.RenderTransform>
                                                         <ScaleTransform x:Name="BatteryFillScale" ScaleX="1" ScaleY="1"/>
                                                     </Border.RenderTransform>
                                                 </Border>
-                                            </Grid>
-                                        </Border>
-
-                                        <Border Width="2.71" Height="7.22"
-                                                Background="#666666"
-                                                CornerRadius="0,2.26,2.26,0"
-                                                HorizontalAlignment="Right"
-                                                Margin="0,0,-2.71,0"
-                                                Panel.ZIndex="1"/>
+                                            </Border>
+                                            <Border Width="1.7" Height="4.6"
+                                                    Margin="1,0,0,0"
+                                                    Background="#5CFFFFFF"
+                                                    CornerRadius="0,1.2,1.2,0"
+                                                    VerticalAlignment="Center"/>
+                                        </StackPanel>
 
                                         <Viewbox x:Name="ChargingBolt"
-                                                 Width="13.3" Height="17.1"
+                                                 Width="12" Height="15.4"
                                                  HorizontalAlignment="Center"
                                                  VerticalAlignment="Center"
-                                                 Margin="1,0,0,0"
+                                                 Margin="0,0,2.7,0"
                                                  Opacity="0"
                                                  RenderTransformOrigin="0.5,0.5"
                                                  Panel.ZIndex="10">

@@ -664,7 +664,10 @@
                  morph height is smaller than the content's natural height. -->
             <Grid x:Name="ShellContent"
                   ClipToBounds="True"
-                  RenderTransformOrigin="0.5,0.5">
+                  RenderTransformOrigin="0.5,0">
+                <Grid.LayoutTransform>
+                    <ScaleTransform x:Name="MorphContentScale"/>
+                </Grid.LayoutTransform>
                 <Grid.RenderTransform>
                     <TranslateTransform x:Name="ContentTranslate" Y="0"/>
                 </Grid.RenderTransform>

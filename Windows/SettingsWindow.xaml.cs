@@ -1141,7 +1141,10 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private async void ClearLog_Click(object sender, RoutedEventArgs e)
+    private void ClearLog_Click(object sender, RoutedEventArgs e)
+        => ClearLogAsync().SafeFireAndForget("PRIVACY-CLEAR");
+
+    private async Task ClearLogAsync()
     {
         try
         {
@@ -1299,7 +1302,7 @@ public partial class SettingsWindow : Window
     private void DownloadUpdate_Click(object sender, RoutedEventArgs e)
         => _updatePresenter.DownloadUpdateAsync().SafeFireAndForget("SETTINGS-UPDATE-DOWNLOAD");
 
-    private async void ViewChangelog_Click(object sender, RoutedEventArgs e)
+    private void ViewChangelog_Click(object sender, RoutedEventArgs e)
     {
         StopSmoothScroll();
         SettingsPageWave.Capture(SettingsPane, Orientation.Horizontal, forward: true);
@@ -1307,7 +1310,7 @@ public partial class SettingsWindow : Window
         SettingsScrollViewer.Visibility = Visibility.Collapsed;
         ChangelogPage.Visibility = Visibility.Visible;
         ChangelogBackButton.Focus();
-        await _updatePresenter.LoadChangelogAsync(Changelog.LoadAsync);
+        _updatePresenter.LoadChangelogAsync(Changelog.LoadAsync).SafeFireAndForget("CHANGELOG-LOAD");
     }
 
     private void ChangelogBack_Click(object sender, RoutedEventArgs e)

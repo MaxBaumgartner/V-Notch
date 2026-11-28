@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using VNotch.Interop;
 using VNotch.Models;
 
 namespace VNotch.Services.Spotlight;
@@ -20,7 +21,7 @@ internal sealed partial class SpotlightUsageStore : IAsyncDisposable, IDisposabl
     /// <summary>A pin beats every use: pinned items stay first.</summary>
     internal const double PinnedBoost = 1500;
 
-    [LibraryImport("VNotch.Native.dll", StringMarshalling = StringMarshalling.Utf16)]
+    [LibraryImport(NativeAbi.LibraryName, StringMarshalling = StringMarshalling.Utf16)]
     private static partial int vn_spotlight_usage_is_allowed_app_history_target(
         ReadOnlySpan<char> targetPtr, int targetLen,
         ReadOnlySpan<char> startMenuPtr, int startMenuLen,
@@ -180,7 +181,7 @@ internal sealed partial class SpotlightUsageStore : IAsyncDisposable, IDisposabl
         { RuntimeLog.Warn(LogTag, $"Could not flush preferences: {ex.Message}"); }
     }
 
-    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+    public void Dispose() => Task.Run(() => DisposeAsync().AsTask()).GetAwaiter().GetResult();
 
     public double GetBoost(string id, string query = "")
     {

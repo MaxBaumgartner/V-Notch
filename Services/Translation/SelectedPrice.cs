@@ -93,7 +93,9 @@ internal static partial class TranslationCurrencies
         if (string.IsNullOrEmpty(text)) return false;
         ReadOnlySpan<char> t = text.AsSpan();
         ReadOnlySpan<char> s = (sourceLanguage ?? string.Empty).AsSpan();
-        string? localDollar = t.Contains('$') ? LocalDollar() : null;
+        // Give the conflict checker a dollar currency even outside dollar regions.
+        // The parser still requires a region, an explicit qualifier, or an override.
+        string? localDollar = t.Contains('$') ? LocalDollar() ?? "USD" : null;
         ReadOnlySpan<char> ld = (localDollar ?? string.Empty).AsSpan();
         return vn_selected_price_has_conflicting_currency(t, t.Length, s, s.Length, ld, ld.Length, out byte conflicting) == 0 &&
                conflicting != 0;

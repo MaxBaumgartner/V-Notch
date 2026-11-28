@@ -322,6 +322,10 @@ public sealed class ClipboardTrayLazyLoadTests
             {
                 tray.Visibility = Visibility.Visible;
                 Invoke(tray, "RefreshCardViewportVisibility", border, true);
+                Assert.False(Field<bool>(tray, "_viewportMotionHooked"));
+                // A subsequent viewport change still uses the shared motion clock.
+                Invoke(tray, "RefreshCardViewportVisibility", border, false);
+                Invoke(tray, "RefreshCardViewportVisibility", border, true);
                 Assert.True(Field<bool>(tray, "_viewportMotionHooked"));
                 await WpfFrameWaiter.UntilAsync(() => !Field<bool>(tray, "_viewportMotionHooked"), "reopened viewport motion settles");
                 Assert.Equal(1, ((Border)border).Child.Opacity);

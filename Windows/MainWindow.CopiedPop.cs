@@ -275,11 +275,7 @@ public partial class MainWindow
         var transform = CopiedPopTransform;
         Motion.To(transform, TranslateTransform.XProperty, transform.X + 36, Motion.Exit);
         if (_isCopiedPillShown) AnimateClaudeNotificationOut();
-        else if (_isClipboardPeekActive)
-        {
-            StopClipboardRevertTimer();
-            RevertClipboardCopiedState();
-        }
+        else if (_isClipboardPeekActive) RevertClipboardCopiedState(followGesture: true);
     }
 
     #endregion

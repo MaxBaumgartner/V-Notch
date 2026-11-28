@@ -20,7 +20,7 @@ internal enum ClaudeAttachmentKind
 /// Something that goes along with a message to a session: how it reads in the prompt (short text inline,
 /// anything else as an @-mention of a file Claude Code can open) and what the notch shows for it.
 /// </summary>
-internal sealed record ClaudeAttachment(ClaudeAttachmentKind Kind, string Mention, int Count);
+internal sealed record ClaudeAttachment(ClaudeAttachmentKind Kind, string Mention, int Count, string? ImagePath = null);
 
 /// <summary>Clipboard text, pictures and copied files, turned into something a prompt can carry.</summary>
 internal static class ClaudeAttachments
@@ -71,7 +71,7 @@ internal static class ClaudeAttachments
             encoder.Frames.Add(BitmapFrame.Create(image));
             encoder.Save(stream);
         }
-        return new ClaudeAttachment(ClaudeAttachmentKind.Image, Mention(path), 1);
+        return new ClaudeAttachment(ClaudeAttachmentKind.Image, Mention(path), 1, path);
     }
 
     private static ClaudeAttachment? FromFiles(StringCollection files)

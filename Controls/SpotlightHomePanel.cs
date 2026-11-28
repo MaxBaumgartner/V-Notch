@@ -17,11 +17,14 @@ namespace VNotch.Controls;
 internal sealed class SpotlightHomePanel : StackPanel
 {
     private const int Columns = 7;
-    private static readonly Brush LabelBrush = Frozen(Color.FromArgb(0x7A, 0xFF, 0xFF, 0xFF));
-    private static readonly Brush NameBrush = Frozen(Color.FromArgb(0xD8, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush LabelBrush = Frozen(Color.FromArgb(0x94, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush NameBrush = UiPalette.PrimaryBrush;
     private static readonly Brush HoverBrush = Frozen(Color.FromArgb(0x16, 0xFF, 0xFF, 0xFF));
     private static readonly Brush ChipBrush = Frozen(Color.FromArgb(0x10, 0xFF, 0xFF, 0xFF));
     private static readonly Brush ChipHoverBrush = Frozen(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF));
+
+    private readonly TranslateTransform _revealOffset = new();
+    private bool _revealPending;
 
     private readonly TextBlock _appsLabel = Label();
     private readonly TextBlock _trayLabel = Label();
@@ -38,6 +41,12 @@ internal sealed class SpotlightHomePanel : StackPanel
     public SpotlightHomePanel()
     {
         Margin = new Thickness(14, 4, 14, 8);
+        RenderTransform = _revealOffset;
+        IsVisibleChanged += (_, _) =>
+        {
+            if (!IsVisible) Motion.Stop(_revealOffset, TranslateTransform.YProperty, 0);
+            else if (_revealPending) PlayReveal();
+        };
         Children.Add(_appsLabel);
         Children.Add(_apps);
         Children.Add(_trayLabel);
@@ -70,24 +79,12 @@ internal sealed class SpotlightHomePanel : StackPanel
         _tray.Visibility = _trayLabel.Visibility = tray.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>Tiles rise in one after another, a little Apple-style cascade.</summary>
     internal void PlayReveal()
     {
-        if (AnimationConfig.ReduceMotion) return;
-        int index = 0;
-        foreach (var element in _apps.Children.OfType<FrameworkElement>().Concat(_tray.Children.OfType<FrameworkElement>()))
-        {
-            var begin = TimeSpan.FromMilliseconds(Math.Min(index++, 16) * 18);
-            var move = element.RenderTransform as TranslateTransform ?? new TranslateTransform();
-            element.RenderTransform = move;
-            var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220)) { BeginTime = begin, EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
-            var rise = new DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(420)) { BeginTime = begin, EasingFunction = new DampedSpringEase(0.78) };
-            Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-            Timeline.SetDesiredFrameRate(rise, AnimationConfig.TargetFps);
-            element.Opacity = 0;
-            element.BeginAnimation(OpacityProperty, fade);
-            move.BeginAnimation(TranslateTransform.YProperty, rise);
-        }
+        _revealPending = !IsVisible;
+        if (_revealPending || AnimationConfig.ReduceMotion || !HasContent) return;
+        Motion.To(_revealOffset, TranslateTransform.YProperty, 0, Motion.Shift,
+            from: Motion.IsRunning(_revealOffset, TranslateTransform.YProperty) ? null : 5);
     }
 
     private FrameworkElement AppTile(SpotlightSearchItem app)

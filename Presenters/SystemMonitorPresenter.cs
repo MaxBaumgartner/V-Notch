@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Animation;
@@ -45,6 +46,7 @@ public sealed class SystemMonitorPresenter : IDisposable
     private SystemMonitorViewRefs? _refs;
     private int _disposed;
     private ulong _cachedRamTotalBytes;
+    private CultureInfo? _cachedRamCulture;
     private string _cachedRamTotalGb = "";
 
     public double LastNetDownBytesPerSec { get; private set; }
@@ -84,20 +86,22 @@ public sealed class SystemMonitorPresenter : IDisposable
         bool primaryVisible = refs.Section?.IsVisible ?? true;
         bool shelfVisible = refs.Shelf?.Section.IsVisible == true;
         if (!primaryVisible && !shelfVisible) return;
-        string cpuText = $"{Math.Round(stats.CpuPercent)}%";
+        var culture = Loc.GetCulture();
+        string cpuText = string.Create(culture, $"{Math.Round(stats.CpuPercent)}%");
 
         string? usedGb = null;
         if (stats.RamTotalBytes > 0)
         {
-            usedGb = FormatGb(stats.RamUsedBytes);
-            if (_cachedRamTotalBytes != stats.RamTotalBytes)
+            usedGb = FormatGb(stats.RamUsedBytes, culture);
+            if (_cachedRamTotalBytes != stats.RamTotalBytes || _cachedRamCulture != culture)
             {
                 _cachedRamTotalBytes = stats.RamTotalBytes;
-                _cachedRamTotalGb = FormatGb(stats.RamTotalBytes);
+                _cachedRamCulture = culture;
+                _cachedRamTotalGb = FormatGb(stats.RamTotalBytes, culture);
             }
         }
-        string downText = FormatRate(stats.NetDownBytesPerSec);
-        string upText = FormatRate(stats.NetUpBytesPerSec);
+        string downText = LocalizedPresentation.FormatTransferRate(Math.Max(0, stats.NetDownBytesPerSec));
+        string upText = LocalizedPresentation.FormatTransferRate(Math.Max(0, stats.NetUpBytesPerSec));
         if (primaryVisible)
         {
             refs.CpuValueText.Text = cpuText;
@@ -173,22 +177,8 @@ public sealed class SystemMonitorPresenter : IDisposable
         bar.BeginAnimation(FrameworkElement.WidthProperty, anim);
     }
 
-    private static string FormatGb(ulong bytes) =>
-        (bytes / 1024.0 / 1024.0 / 1024.0).ToString("0.0");
-
-    private static string FormatRate(double bytesPerSec)
-    {
-        if (bytesPerSec < 0) bytesPerSec = 0;
-
-        const double kb = 1024.0;
-        const double mb = kb * 1024.0;
-
-        if (bytesPerSec >= mb)
-            return $"{bytesPerSec / mb:0.0} MB/s";
-        if (bytesPerSec >= kb)
-            return $"{bytesPerSec / kb:0.0} KB/s";
-        return $"{bytesPerSec:0} B/s";
-    }
+    private static string FormatGb(ulong bytes, CultureInfo culture) =>
+        (bytes / 1024.0 / 1024.0 / 1024.0).ToString("0.0", culture);
 
     public void Dispose()
     {

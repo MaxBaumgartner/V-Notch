@@ -18,10 +18,12 @@ public sealed class SmallExitMotionTests
         window.CollapsedContent.Visibility = Visibility.Collapsed;
         SeedVisible(window, "ShowIdleGlance");
         Invoke(window, "ShowIdleGlance", false);
+        var layer = (FrameworkElement)window.IdleGlance.Parent;
         Assert.Equal(Visibility.Collapsed, window.IdleGlance.Visibility);
-        Assert.Equal(0, window.IdleGlance.Opacity);
+        Assert.Equal(0, layer.Opacity);
+        Assert.True(double.IsNaN(layer.Width));
         Assert.False(window.IdleGlance.HasAnimatedProperties);
-        Assert.Equal(-4, window.IdleGlanceShift.Y, 3);
+        Assert.False(Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty));
         return Task.CompletedTask;
     });
 

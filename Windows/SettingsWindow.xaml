@@ -130,7 +130,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Grid Background="{TemplateBinding Background}" RenderTransformOrigin="0.5,0.5">
+                        <Grid x:Name="PressSurface" Background="{TemplateBinding Background}" RenderTransformOrigin="0.5,0.5">
                             <Grid.RenderTransform>
                                 <ScaleTransform x:Name="RowPressScale" ScaleX="1" ScaleY="1"/>
                             </Grid.RenderTransform>
@@ -160,34 +160,7 @@
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="RowPressFeedback" Property="controls:TrayMotion.Opacity" Value="1"/>
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="RowPressScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="0.988" Duration="0:0:0.08"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="RowPressScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="0.988" Duration="0:0:0.08"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="RowPressScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="1" Duration="0:0:0.18"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="RowPressScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="1" Duration="0:0:0.18"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
+                                <Setter TargetName="PressSurface" Property="controls:ButtonFeedback.PressScale" Value="0.92"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -479,7 +452,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Grid RenderTransformOrigin="0.5,0.5">
+                        <Grid x:Name="PressSurface" RenderTransformOrigin="0.5,0.5">
                             <Grid.RenderTransform>
                                 <ScaleTransform x:Name="ButtonScale" ScaleX="1" ScaleY="1"/>
                             </Grid.RenderTransform>
@@ -522,34 +495,7 @@
                                 </Trigger.ExitActions>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="0.986" Duration="0:0:0.08"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="0.986" Duration="0:0:0.08"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="1" Duration="0:0:0.15"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="1" Duration="0:0:0.15"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
+                                <Setter TargetName="PressSurface" Property="controls:ButtonFeedback.PressScale" Value="0.92"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -564,7 +510,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Grid RenderTransformOrigin="0.5,0.5">
+                        <Grid x:Name="PressSurface" RenderTransformOrigin="0.5,0.5">
                             <Grid.RenderTransform>
                                 <ScaleTransform x:Name="ButtonScale" ScaleX="1" ScaleY="1"/>
                             </Grid.RenderTransform>
@@ -611,34 +557,7 @@
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource AccentHoverBrush}"/>
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="0.986" Duration="0:0:0.08"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="0.986" Duration="0:0:0.08"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="1" Duration="0:0:0.15"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="1" Duration="0:0:0.15"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
+                                <Setter TargetName="PressSurface" Property="controls:ButtonFeedback.PressScale" Value="0.92"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -657,7 +576,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Grid RenderTransformOrigin="0.5,0.5">
+                        <Grid x:Name="PressSurface" RenderTransformOrigin="0.5,0.5">
                             <Grid.RenderTransform>
                                 <ScaleTransform x:Name="ButtonScale" ScaleX="1" ScaleY="1"/>
                             </Grid.RenderTransform>
@@ -701,34 +620,7 @@
                                 </Trigger.ExitActions>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Trigger.EnterActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="0.93" Duration="0:0:0.07"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="0.93" Duration="0:0:0.07"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.EnterActions>
-                                <Trigger.ExitActions>
-                                    <BeginStoryboard>
-                                        <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleX"
-                                                             To="1" Duration="0:0:0.14"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                            <DoubleAnimation Storyboard.TargetName="ButtonScale"
-                                                             Storyboard.TargetProperty="ScaleY"
-                                                             To="1" Duration="0:0:0.14"
-                                                             EasingFunction="{StaticResource InteractiveEaseOut}"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </Trigger.ExitActions>
+                                <Setter TargetName="PressSurface" Property="controls:ButtonFeedback.PressScale" Value="0.92"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>

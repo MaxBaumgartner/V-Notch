@@ -11,14 +11,34 @@ internal static class SchoolStudy
     internal const string NoteName = "notiz.md";
     internal sealed record Session(Guid Id, string Title, DateTime LastWrite);
 
-    internal static string FolderFor(string subject, DateTime date, string title, string? documents = null)
+    /// <summary>
+    /// A test's study folder sits in the user's own school folder, next to the subject's handouts and exercises:
+    /// Desktop\Schule\&lt;class&gt;\&lt;subject&gt;\&lt;yyyy-MM-dd title&gt; ("1POSEOO", 27.11. "OO Programmieren Übung" →
+    /// Schule\3AHIF\POSE\2026-11-27 OO Programmieren Übung). The class is found like for Moodle tasks (newest class folder).
+    /// </summary>
+    internal static string FolderFor(string subject, DateTime date, string title, string? root = null)
     {
-        documents ??= Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        if (string.IsNullOrWhiteSpace(documents)) throw new IOException("Documents folder is unavailable.");
         foreach (char bad in Path.GetInvalidFileNameChars()) title = title.Replace(bad, '_');
-        return Path.Combine(documents, "Lernen", SchoolFiles.SafeName(subject, "Test"),
+        return Path.Combine(SchoolFiles.FolderFor(SubjectFolder(subject), null, root),
             date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " " + SchoolFiles.SafeName(title, "Test"));
     }
+
+    /// <summary>
+    /// The folder an Untis subject already has in Schule\&lt;class&gt;: "1POSEOO"/"0POSETHI" → POSE, "0BWMRW" → REWE,
+    /// "0BWMBO" → BO, "0GGPGW" → GW, Religion → REL; everything else by its chip name (DBI, WMC, E, D …).
+    /// </summary>
+    internal static string SubjectFolder(string untis)
+    {
+        string word = new((untis ?? "").Trim().ToUpperInvariant().SkipWhile(char.IsDigit).TakeWhile(char.IsLetter).ToArray());
+        if (FolderAliases.TryGetValue(word, out var alias)) return alias;
+        string chip = PiDashboardClient.UntisSubject(untis ?? "");
+        return FolderAliases.TryGetValue(chip, out alias) ? alias : chip;
+    }
+
+    private static readonly IReadOnlyDictionary<string, string> FolderAliases = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["BWMRW"] = "REWE", ["BWMBO"] = "BO", ["GGPGW"] = "GW", ["RK"] = "REL"
+    };
 
     internal static IReadOnlyList<string> Files(string folder) =>
         !Directory.Exists(folder) ? [] : Directory.EnumerateFiles(folder)

@@ -19,11 +19,84 @@ public sealed class MainWindowCountdownCompletionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void FullscreenSettlesTheCountdownShellWithoutReplayingIt(bool leaving) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.NotchLiveContent.Visibility = Visibility.Visible;
+        Motion.Stop(window.NotchBorder, FrameworkElement.WidthProperty, 300);
+        Motion.Stop(window.NotchBorder, FrameworkElement.HeightProperty, 40);
+        Get<NotchTransitionCoordinator>(window, "_transitionCoordinator").NotifyCountdownCompleted();
+        await WpfFrameWaiter.UntilAsync(() => window.CountdownCompleteOverlay.IsVisible && Get<bool>(window, "_isAnimating"),
+            "completion begins arriving", ct);
+        if (leaving)
+        {
+            await WpfFrameWaiter.UntilAsync(() => !Get<bool>(window, "_isAnimating"), "completion settles", ct);
+            Invoke(window, "CountdownDismiss_Click", window, Click());
+        }
+
+        window.ShellState.IsHiddenByFullscreen = true;
+        Invoke(window, "RefreshAmbientAnimations");
+        Assert.False(Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty));
+        Assert.False(Motion.IsRunning(window.NotchBorder, FrameworkElement.HeightProperty));
+        await WpfFrameWaiter.UntilAsync(() => !Get<bool>(window, "_isAnimating"), "hidden completion settles", ct);
+
+        Assert.Equal(leaving ? Visibility.Collapsed : Visibility.Visible, window.CountdownCompleteOverlay.Visibility);
+        var layer = (FrameworkElement)window.CountdownCompleteOverlay.Parent;
+        Assert.Equal(leaving ? 0 : 1, layer.Opacity);
+        Assert.True(double.IsNaN(layer.Width));
+    });
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void NavigationRetiresAnInterruptedCompletion(bool leaving, bool closeDirectly) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.NotchLiveContent.Visibility = Visibility.Visible;
+        Motion.Stop(window.NotchBorder, FrameworkElement.WidthProperty, 300);
+        Motion.Stop(window.NotchBorder, FrameworkElement.HeightProperty, 40);
+        var coordinator = Get<NotchTransitionCoordinator>(window, "_transitionCoordinator");
+        coordinator.NotifyCountdownCompleted();
+        await WpfFrameWaiter.UntilAsync(() => window.CountdownCompleteOverlay.IsVisible && Get<bool>(window, "_isAnimating"),
+            "completion enters", ct);
+        if (leaving)
+        {
+            await WpfFrameWaiter.UntilAsync(() => !Get<bool>(window, "_isAnimating"), "completion settles", ct);
+            Invoke(window, "CountdownDismiss_Click", window, Click());
+        }
+        var layer = (FrameworkElement)window.CountdownCompleteOverlay.Parent;
+        Assert.True(double.IsFinite(layer.Width));
+        if (!closeDirectly)
+        {
+            window.NavigateToNotchView(NotchView.Media);
+            await WpfFrameWaiter.UntilAsync(() => window.CountdownCompleteOverlay.Visibility == Visibility.Collapsed,
+                "opening retires the completion", ct);
+        }
+        window.NavigateToNotchView(NotchView.Compact);
+        await WpfFrameWaiter.UntilAsync(() => !Get<bool>(window, "_isAnimating") &&
+            !coordinator.IsTransitionActive && coordinator.CurrentView == NotchView.Compact, "notch settles compact", ct);
+        Assert.Equal(Visibility.Collapsed, window.CountdownCompleteOverlay.Visibility);
+        Assert.False(Get<bool>(window, "_isCountdownCompleteVisible"));
+        Assert.Equal(0, layer.Opacity);
+        Assert.True(double.IsNaN(layer.Width));
+        Assert.True(window.NotchBorder.IsHitTestVisible);
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void CompletionContentTravelsWithTheShellAndReducedMotionCommitsInline(bool reduced) => SharedStaTestRunner.RunAsync(async _ =>
     {
         bool previous = AnimationConfig.ReduceMotion;
         await using var fixture = Create();
         var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.NotchLiveContent.Visibility = Visibility.Visible;
         try
         {
             AnimationConfig.SetReduceMotion(reduced);

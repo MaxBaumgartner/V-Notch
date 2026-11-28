@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
+using VNotch.Interop;
 using VNotch.Models;
 using VNotch.Services;
 using static VNotch.Services.AnimationPrimitives;
@@ -17,8 +18,6 @@ namespace VNotch;
 
 public partial class MainWindow
 {
-    #region Media Controls
-
     private const string MediaCtrlLogTag = "MEDIA-CTRL";
     private bool _isPlaying = true;
 
@@ -101,9 +100,14 @@ public partial class MainWindow
         else Motion.Stop(this, InlinePlaybackMorphProperty, _isPlaying ? 0 : 1);
     }
 
-    private async void InlinePlayPauseButton_Click(object sender, MouseButtonEventArgs e)
+    private void InlinePlayPauseButton_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        ExecuteInlinePlayPauseAsync().SafeFireAndForget(MediaCtrlLogTag);
+    }
+
+    private async Task ExecuteInlinePlayPauseAsync()
+    {
         try
         {
             _lastMediaActionTime = DateTime.UtcNow;
@@ -121,9 +125,14 @@ public partial class MainWindow
         }
     }
 
-    private async void InlineNextButton_Click(object sender, MouseButtonEventArgs e)
+    private void InlineNextButton_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        ExecuteInlineNextAsync().SafeFireAndForget(MediaCtrlLogTag);
+    }
+
+    private async Task ExecuteInlineNextAsync()
+    {
         try
         {
             PlayButtonPressAnimation(InlineNextButton);
@@ -138,9 +147,14 @@ public partial class MainWindow
         }
     }
 
-    private async void InlinePrevButton_Click(object sender, MouseButtonEventArgs e)
+    private void InlinePrevButton_Click(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        ExecuteInlinePrevAsync().SafeFireAndForget(MediaCtrlLogTag);
+    }
+
+    private async Task ExecuteInlinePrevAsync()
+    {
         try
         {
             PlayButtonPressAnimation(InlinePrevButton);
@@ -222,10 +236,6 @@ public partial class MainWindow
         }
     }
 
-    #endregion
-
-    #region Volume Control
-
     private float _currentVolume = 0.5f;
     private const float VolumeScrollStep = 0.05f;
     private const double CompactVolumeClickSuppressMs = 600.0;
@@ -265,7 +275,7 @@ public partial class MainWindow
         public byte Reserved2;
     }
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static partial int vn_mainwindow_step_volume_wheel(
         ref VnVolumeWheelState ioState,
         int rawDelta,
@@ -370,7 +380,7 @@ public partial class MainWindow
         public int FadeDurationMs;
     }
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static unsafe partial int vn_animation_compute_volume_hud_state(
         double volume,
         byte muted,
@@ -382,7 +392,7 @@ public partial class MainWindow
         byte* outTickStates,
         int tickCap);
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static unsafe partial int vn_animation_compute_volume_hud_palette(
         int tickCount,
         int activeTicks,
@@ -395,13 +405,13 @@ public partial class MainWindow
         double* outScaleY,
         int tickCap);
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static partial int vn_animation_compute_volume_overscroll_spring(
         double currentVolume,
         double stepDelta,
         out VnVolumeHudOverscrollOut outOverscroll);
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static partial int vn_animation_compute_volume_hud_transition(
         byte entering,
         byte islandMode,
@@ -1215,7 +1225,6 @@ public partial class MainWindow
         ReleaseIdleUnderHud();
         if (restoreMedia) RestoreCompactMediaPresentation();
     }
-    #region Volume Indicator Drag
 
     private bool _isDraggingVolumeIndicator = false;
 
@@ -1295,8 +1304,6 @@ public partial class MainWindow
             UpdateVolumeIcon(newVolume, false);
         }
     }
-
-    #endregion
 
     private void VolumeIcon_MouseDown(object sender, MouseButtonEventArgs e)
     {
@@ -1430,6 +1437,4 @@ public partial class MainWindow
     {
         _viewModel.AudioMixer.UpdateState(volume, isMuted);
     }
-
-    #endregion
 }

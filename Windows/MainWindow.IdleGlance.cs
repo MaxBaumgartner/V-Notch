@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using VNotch.Controls;
 using VNotch.Controllers;
+using VNotch.Presenters;
 using VNotch.Services;
 
 namespace VNotch;
@@ -29,8 +30,8 @@ public partial class MainWindow
     private DispatcherTimer? _idleClockTimer;
     private DispatcherTimer? _idleSettleTimer;
     private bool _idleGlanceShown;
-    private int _idleGlanceToken;
     private bool _idleGlanceHooked;
+    private CompactSurfaceAttachment? _idleGlanceAttachment;
     private readonly TranslateTransform _idleClockShift = new();
     private readonly ScaleTransform _idleWeatherScale = new();
     private int _idleClockToken;
@@ -40,6 +41,8 @@ public partial class MainWindow
     /// <summary>Nothing live in the closed notch: no music, no Claude Code, no countdown.</summary>
     private bool IsIdleShape =>
         _settings?.SlimIdleNotch == true && !_isMusicCompactMode && _mainActivity == LiveActivity.None && !IsCountdownLive;
+
+    private double FullCompactWidth => _settings.EnableDynamicIslandMode ? _settings.DynamicIslandWidth : _settings.Width;
 
     /// <summary>Slims the closed notch when nothing is live and widens it again when something is.</summary>
     private void UpdateIdleShape()
@@ -54,20 +57,27 @@ public partial class MainWindow
     private void SettleIdleWidth()
     {
         _idleSettleTimer?.Stop();
-        if (!AmbientAnimationsAllowed || !IdleGlance.IsVisible) return;
+        if (_idleGlanceAttachment == null || !NotchBorder.IsVisible || !_isNotchVisible || _isHiddenByFullscreen ||
+            (!IdleGlance.IsVisible && !AnimationConfig.ReduceMotion)) return;
         // Opening, closing, pills and the volume HUD all end on the resting width themselves.
-        if (_isExpanded || _isMusicExpanded) return;
-        if (_isAnimating || _isGreetingActive || IsCountdownCompletionVisualActive ||
+        if (_isAnimating || _isExpanded || _isMusicExpanded) return;
+        if (_isGreetingActive || IsCountdownCompletionVisualActive ||
             _compactPillArbiter.ActiveSlot != CompactPillSlot.None)
         {
             _idleSettleTimer ??= CreateIdleSettleTimer();
             _idleSettleTimer.Start();
             return;
         }
-        double current = NotchBorder.ActualWidth;
-        if (current <= 0 || Math.Abs(current - _collapsedWidth) < 0.5) return;
-        Motion.To(NotchBorder, WidthProperty, _collapsedWidth, Motion.Glide);
-        if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: true);
+        if (!double.IsFinite(NotchBorder.Width) || !double.IsFinite(NotchBorder.Height)) return;
+        if (Math.Abs(NotchBorder.Width - _collapsedWidth) < .5 && !Motion.IsRunning(NotchBorder, WidthProperty))
+        {
+            FinishIdleGlanceTransition();
+            return;
+        }
+        _notchShellPresenter?.CancelCurrentAnimation();
+        _idleGlanceAttachment.MoveTo(_collapsedWidth, _collapsedHeight, Motion.Shift, _idleGlanceShown,
+            FinishIdleGlanceTransition);
+        if (_privacyIndicatorsVisible) UpdatePrivacyDotPosition(animate: AmbientAnimationsAllowed);
     }
 
     private DispatcherTimer CreateIdleSettleTimer()
@@ -81,43 +91,40 @@ public partial class MainWindow
         return timer;
     }
 
-    /// <summary>The idle clock slides away before live content takes its place.</summary>
+    /// <summary>The idle face keeps its layout as the compact notch slims or widens.</summary>
     private void ShowIdleGlance(bool show)
     {
         if (show == _idleGlanceShown) return;
         _idleGlanceShown = show;
-        int token = ++_idleGlanceToken;
+        _idleGlanceAttachment ??= new(NotchBorder, IdleGlance, () => new Size(FullCompactWidth, _collapsedHeight));
+        Motion.Stop(IdleGlance, OpacityProperty, 1);
         if (show)
         {
-            bool entering = IdleGlance.Visibility != Visibility.Visible;
             RefreshIdleClock(animate: false);
             UpdateIdleWeather();
-            IdleGlance.Visibility = Visibility.Visible;
-            if (!IdleGlance.IsVisible || !AmbientAnimationsAllowed)
+            if (IdleGlance.Visibility != Visibility.Visible)
             {
-                Motion.Stop(IdleGlance, OpacityProperty, 1);
-                Motion.Stop(IdleGlanceShift, TranslateTransform.YProperty, 0);
-                return;
+                _idleGlanceAttachment.Attach(_collapsedWidth, _collapsedHeight);
+                IdleGlance.Visibility = Visibility.Visible;
             }
-            Motion.To(IdleGlance, OpacityProperty, 1, Motion.Tile, from: entering ? 0 : null);
-            Motion.To(IdleGlanceShift, TranslateTransform.YProperty, 0, Motion.Pop, from: entering ? 5 : null);
         }
-        else
-        {
-            if (!IdleGlance.IsVisible || !AmbientAnimationsAllowed)
-            {
-                Motion.Stop(IdleGlance, OpacityProperty, 0);
-                Motion.Stop(IdleGlanceShift, TranslateTransform.YProperty, -4);
-                IdleGlance.Visibility = Visibility.Collapsed;
-                return;
-            }
-            Motion.To(IdleGlanceShift, TranslateTransform.YProperty, -4, Motion.Exit);
-            Motion.To(IdleGlance, OpacityProperty, 0, Motion.Exit, done: () =>
-            {
-                if (token == _idleGlanceToken && !_idleGlanceShown)
-                    IdleGlance.Visibility = Visibility.Collapsed;
-            });
-        }
+        else if (IdleGlance.IsVisible && AmbientAnimationsAllowed && !_isExpanded && !_isMusicExpanded)
+            _idleGlanceAttachment.Attach(Math.Min(FullCompactWidth, IdleCompactWidth), _collapsedHeight);
+        else FinishIdleGlanceTransition();
+    }
+
+    private void RefreshIdleGlanceMotionVisibility()
+    {
+        if (_idleGlanceAttachment == null || AmbientAnimationsAllowed) return;
+        StopIdleGlanceDetails();
+        if (!_isAnimating && _compactPillArbiter.ActiveSlot == CompactPillSlot.None) _idleGlanceAttachment.Settle();
+        FinishIdleGlanceTransition();
+    }
+
+    private void FinishIdleGlanceTransition()
+    {
+        _idleGlanceAttachment?.Detach(_idleGlanceShown);
+        if (!_idleGlanceShown) IdleGlance.Visibility = Visibility.Collapsed;
     }
 
     private void HookIdleGlance()
@@ -137,21 +144,25 @@ public partial class MainWindow
                 UpdateIdleWeather();
                 ScheduleIdleClock();
                 RefreshIdleWeatherIfStale();
-                SettleIdleWidth();
             }
+            else if (!AmbientAnimationsAllowed) RefreshIdleGlanceMotionVisibility();
             else
             {
-                _idleClockTimer?.Stop();
-                _idleSettleTimer?.Stop();
-                Motion.Stop(IdleGlance, OpacityProperty, _idleGlanceShown ? 1 : 0);
-                Motion.Stop(IdleGlanceShift, TranslateTransform.YProperty, _idleGlanceShown ? 0 : -4);
-                Motion.Stop(IdleClock, OpacityProperty, 1);
-                Motion.Stop(_idleClockShift, TranslateTransform.XProperty, 0);
-                Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleXProperty, 1);
-                Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleYProperty, 1);
-                Motion.Stop(IdleWeather, OpacityProperty, IdleWeather.Visibility == Visibility.Visible ? 1 : 0);
+                StopIdleGlanceDetails();
+                if (!_idleGlanceShown) FinishIdleGlanceTransition();
             }
         };
+    }
+
+    private void StopIdleGlanceDetails()
+    {
+        _idleClockTimer?.Stop();
+        _idleSettleTimer?.Stop();
+        Motion.Stop(IdleClock, OpacityProperty, 1);
+        Motion.Stop(_idleClockShift, TranslateTransform.XProperty, 0);
+        Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(_idleWeatherScale, ScaleTransform.ScaleYProperty, 1);
+        Motion.Stop(IdleWeather, OpacityProperty, IdleWeather.Visibility == Visibility.Visible ? 1 : 0);
     }
 
     private void ScheduleIdleClock()
@@ -261,7 +272,7 @@ public partial class MainWindow
     private void PositionIdleClock(HorizontalAlignment alignment)
     {
         if (IdleClock.HorizontalAlignment == alignment) return;
-        bool animate = IdleClock.IsVisible && !AnimationConfig.ReduceMotion;
+        bool animate = IdleClock.IsVisible && AmbientAnimationsAllowed;
         double before = animate ? IdleClock.TranslatePoint(new Point(), IdleGlance).X : 0;
         IdleClock.HorizontalAlignment = alignment;
         if (!animate) return;

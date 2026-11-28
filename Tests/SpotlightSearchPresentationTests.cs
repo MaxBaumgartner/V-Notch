@@ -396,6 +396,45 @@ public sealed class SpotlightSearchPresentationTests
         Assert.Null(Field<UiScheduledTimer?>(window, "_failureTimer"));
     });
 
+    [Fact]
+    public void SelectionGlideCarriesVelocityAcrossArrowRetargets() => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        bool previous = AnimationConfig.ReduceMotion;
+        AnimationConfig.SetReduceMotion(false);
+        try
+        {
+            using var fixture = new SpotlightWindowFixture(Settings(), searchProvider: new ResultsProvider(), chatStore: new EmptyChatRepository());
+            var window = fixture.Window;
+            window.ShowSpotlight();
+            await WpfFrameWaiter.UntilAsync(() => !Field<bool>(window, "_entranceActive"), "search entrance", ct);
+            window.SearchBox.Text = "fixture";
+            await WpfFrameWaiter.UntilAsync(() => Field<bool>(window, "_glideVisible") &&
+                window.ResultsList.ItemContainerGenerator.ContainerFromIndex(2) is ListBoxItem { ActualHeight: > 0 },
+                "three measured result rows", ct);
+            var offset = Field<TranslateTransform>(window, "_glideTransform");
+            var axis = TranslateTransform.YProperty;
+            double first = offset.Y;
+
+            Invoke(window, "MoveSelection", 1);
+            Invoke(window, "UpdateSelectionGlide");
+            await WpfFrameWaiter.UntilAsync(() => offset.Y > first && Motion.VelocityOf(offset, axis) > 1,
+                "selection travelling toward the second row", ct);
+            double speed = Motion.VelocityOf(offset, axis);
+            Invoke(window, "UpdateSelectionGlide");
+            Assert.Equal(speed, Motion.VelocityOf(offset, axis), precision: 6);
+
+            double second = Field<double>(window, "_glideTargetY");
+            Invoke(window, "MoveSelection", 1);
+            Invoke(window, "UpdateSelectionGlide");
+            double third = Field<double>(window, "_glideTargetY");
+            Assert.True(third > second);
+            Assert.Equal(speed, Motion.VelocityOf(offset, axis), precision: 6);
+            await WpfFrameWaiter.UntilAsync(() => !Motion.IsRunning(offset, axis) && offset.Y == third,
+                "selection reaches the third row", ct);
+        }
+        finally { AnimationConfig.SetReduceMotion(previous); }
+    });
+
     private static NotchSettings Settings() => new() { EnableLocalOnlyMode = true, NotchStyle = "default" };
     private static T Field<T>(SpotlightWindow window, string name) => (T)typeof(SpotlightWindow).GetField(name, Private)!.GetValue(window)!;
     private static void Invoke(SpotlightWindow window, string name, params object?[] args) => typeof(SpotlightWindow).GetMethod(name, Private)!.Invoke(window, args);
@@ -425,6 +464,19 @@ public sealed class SpotlightSearchPresentationTests
             Assert.True(positions[i] > positions[i - 1], $"Expected caret X at index {i} ({positions[i]}) > index {i - 1} ({positions[i - 1]})");
         }
     });
+
+    private sealed class EmptyChatRepository : IChatRepository
+    {
+        public Task<ChatPage> ListAsync(int offset, int pageSize, CancellationToken cancellation = default) =>
+            Task.FromResult(new ChatPage([], 0));
+        public Task<ChatSummary?> LatestAsync(string provider, string model, CancellationToken cancellation = default) =>
+            Task.FromResult<ChatSummary?>(null);
+        public Task<SpotlightSavedChat?> LoadAsync(string id, int before = int.MaxValue, int pageSize = 32, CancellationToken cancellation = default) =>
+            Task.FromResult<SpotlightSavedChat?>(null);
+        public Task SaveChatAsync(SpotlightSavedChat chat, CancellationToken cancellation = default) => Task.CompletedTask;
+        public Task DeleteAsync(string id, CancellationToken cancellation = default) => Task.CompletedTask;
+        public Task FlushAsync() => Task.CompletedTask;
+    }
 
     private sealed class ResultsProvider : ISpotlightProvider
     {

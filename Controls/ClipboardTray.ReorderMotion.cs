@@ -134,7 +134,7 @@ public sealed partial class ClipboardTray
         CategoryReorderGhostScale.ScaleX = CategoryReorderGhostScale.ScaleY = 1;
     }
 
-    private void BeginCategoryReorderLanding(string id, Point origin)
+    private void BeginCategoryReorderLanding(string id, Point origin, double velocity)
     {
         if (AnimationConfig.ReduceMotion || _disposed || !IsVisible || _trayLeaving ||
             _categoryItems.FirstOrDefault(category => category.Name == id) is not { } category ||
@@ -154,8 +154,8 @@ public sealed partial class ClipboardTray
         var target = button.TranslatePoint(new Point(), CategoryScroll);
         Canvas.SetLeft(CategoryReorderGhost, target.X);
         Canvas.SetTop(CategoryReorderGhost, target.Y);
-        Motion.To(CategoryReorderGhost, Canvas.LeftProperty, target.X, Motion.Glide, from: origin.X);
-        Motion.To(CategoryReorderGhost, Canvas.TopProperty, target.Y, Motion.Glide, from: origin.Y);
+        Motion.To(CategoryReorderGhost, Canvas.LeftProperty, target.X, Motion.Shift, from: origin.X, velocity: velocity);
+        Motion.To(CategoryReorderGhost, Canvas.TopProperty, target.Y, Motion.Shift, from: origin.Y);
         Motion.To(CategoryReorderGhostScale, ScaleTransform.ScaleXProperty, 1, Motion.Glide);
         Motion.To(CategoryReorderGhostScale, ScaleTransform.ScaleYProperty, 1, Motion.Glide,
             done: () => { if (version == _categoryLandingVersion) StopCategoryReorderLanding(); });
@@ -166,16 +166,20 @@ public sealed partial class ClipboardTray
         ++_categoryLandingVersion;
         if (_categoryLandingButton != null) _categoryLandingButton.Opacity = 1;
         _categoryLandingButton = null;
-        CategoryReorderGhost.BeginAnimation(Canvas.LeftProperty, null);
-        CategoryReorderGhost.BeginAnimation(Canvas.TopProperty, null);
+        Motion.Stop(CategoryReorderGhost, Canvas.LeftProperty, 0);
+        Motion.Stop(CategoryReorderGhost, Canvas.TopProperty, 0);
         CategoryReorderGhost.BeginAnimation(OpacityProperty, null);
         CategoryReorderOverlay.Visibility = Visibility.Collapsed;
         CategoryReorderGhost.DataContext = null;
     }
 
-    private static void AnimateCategoryReorderValue(DependencyObject target, DependencyProperty property, double value, int duration)
+    private static void AnimateCategoryReorderValue(Animatable target, DependencyProperty property, double value, int duration)
     {
         if (duration <= 0 || AnimationConfig.ReduceMotion) Motion.Stop(target, property, value);
-        else Motion.To(target, property, value, Motion.Glide);
+        else if ((double)target.GetAnimationBaseValue(property) != value)
+        {
+            Motion.To(target, property, value, Motion.Shift);
+            target.SetValue(property, value);
+        }
     }
 }

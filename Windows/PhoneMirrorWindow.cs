@@ -49,7 +49,9 @@ internal sealed class PhoneMirrorWindow : Window
     private readonly Func<bool> _motionAllowed;
     private SpringDoubleAnimation[]? _rectangleSprings;
     private readonly Stopwatch _springClock = new();
+    private double _rectangleFrameTime;
     private Int32Rect _springTarget;
+    private SpringMotion _rectangleMotion = Motion.Pop;
     private Action? _springDone;
     private IntPtr _hwnd;
 
@@ -203,7 +205,7 @@ internal sealed class PhoneMirrorWindow : Window
     private void SetFullscreenGlyph()
     {
         string glyph = _fullscreen ? "\uE73F" : "\uE740";
-        if (!IsVisible || AnimationConfig.ReduceMotion)
+        if (!IsVisible || !_motionAllowed() || AnimationConfig.ReduceMotion)
         {
             Motion.Stop(_fullGlyph, OpacityProperty, 1);
             _fullGlyph.Text = glyph;
@@ -336,9 +338,11 @@ internal sealed class PhoneMirrorWindow : Window
 
     private void FadeButtons(double to)
     {
-        var fade = new System.Windows.Media.Animation.DoubleAnimation(to, TimeSpan.FromMilliseconds(140));
-        _close.BeginAnimation(OpacityProperty, fade);
-        _full.BeginAnimation(OpacityProperty, fade);
+        foreach (var button in new[] { _close, _full })
+        {
+            if (button.IsVisible && _motionAllowed()) Motion.To(button, OpacityProperty, to, Motion.Exit);
+            else Motion.Stop(button, OpacityProperty, to);
+        }
     }
 
     private void Grip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -417,22 +421,24 @@ internal sealed class PhoneMirrorWindow : Window
     /// <summary>
     /// Moves the native rectangle with the same spring as the notch, retaining speed on a reversal.
     /// </summary>
-    private void Spring(Int32Rect from, Int32Rect to, SpringMotion spring, Action? done)
+    private void Spring(Int32Rect from, Int32Rect to, SpringMotion spring, Action? done, Vector anchorShift = default)
     {
         double[] value = [from.X + from.Width / 2.0, from.Y, from.Width, from.Height];
         double[] goal = [to.X + to.Width / 2.0, to.Y, to.Width, to.Height];
         double[] velocity = new double[4];
         if (_rectangleSprings is { } previous && _frame != null)
         {
-            double elapsed = _springClock.Elapsed.TotalSeconds;
             for (int i = 0; i < 4; i++)
             {
-                value[i] = previous[i].ValueAt(elapsed);
-                velocity[i] = previous[i].VelocityAt(elapsed);
+                value[i] = RectangleValue(previous[i], _rectangleFrameTime);
+                velocity[i] = previous[i].VelocityAt(_rectangleFrameTime);
             }
+            value[0] += anchorShift.X;
+            value[1] += anchorShift.Y;
         }
         StopFrame();
         _springTarget = to;
+        _rectangleMotion = spring;
         _springDone = done;
         if (AnimationConfig.ReduceMotion || !IsVisible || !_motionAllowed())
         {
@@ -443,6 +449,7 @@ internal sealed class PhoneMirrorWindow : Window
         // The same closed-form springs as the notch preserve speed when a resize reverses.
         _rectangleSprings = new SpringDoubleAnimation[4];
         for (int i = 0; i < 4; i++) _rectangleSprings[i] = spring.Animate(value[i], goal[i], velocity[i]);
+        _rectangleFrameTime = 0;
         _springClock.Restart();
         double last = -1;
         _frame = (_, _) =>
@@ -451,10 +458,11 @@ internal sealed class PhoneMirrorWindow : Window
             double now = _springClock.Elapsed.TotalSeconds;
             if (now - last < 1.0 / AnimationConfig.TargetFps) return;
             last = now;
+            _rectangleFrameTime = now;
             bool settled = true;
             for (int i = 0; i < 4; i++)
             {
-                value[i] = _rectangleSprings[i].ValueAt(now);
+                value[i] = RectangleValue(_rectangleSprings[i], now);
                 if (now < _rectangleSprings[i].Duration.TimeSpan.TotalSeconds) settled = false;
             }
             if (settled)
@@ -470,14 +478,43 @@ internal sealed class PhoneMirrorWindow : Window
         CompositionTarget.Rendering += _frame;
     }
 
+    private static double RectangleValue(SpringDoubleAnimation spring, double time) =>
+        time >= spring.Duration.TimeSpan.TotalSeconds ? spring.To : spring.ValueAt(time);
+
+    internal void RefreshNotchAnchor()
+    {
+        if (!IsVisible || State == MirrorState.Free || _anchor() is not { } anchor) return;
+        // A tuck still owns the window until it reaches the notch and hides it.
+        if (State == MirrorState.Hidden && _frame == null) return;
+        var target = State == MirrorState.Hidden ? TuckedRect(anchor) : DockedRect(anchor);
+        if (target == _springTarget) return;
+        if (_frame == null)
+        {
+            PlaceNow(_springTarget = target);
+            return;
+        }
+
+        // The attachment moves with the notch edge. The rectangle keeps its velocity relative to that edge.
+        var shift = new Vector(target.X + target.Width / 2.0 - (_springTarget.X + _springTarget.Width / 2.0),
+            target.Y - _springTarget.Y);
+        var current = CurrentRect();
+        var shifted = new Int32Rect(current.X + (int)Math.Round(shift.X), current.Y + (int)shift.Y,
+            current.Width, current.Height);
+        if (shifted != current) PlaceNow(shifted);
+        Spring(shifted, target, _rectangleMotion, _springDone, shift);
+    }
+
     public void RefreshMotionVisibility()
     {
-        if (!IsVisible)
+        bool animate = IsVisible && _motionAllowed() && !AnimationConfig.ReduceMotion;
+        if (!animate)
         {
             Motion.Stop(_fullGlyph, OpacityProperty, 1);
             _fullGlyph.Text = _fullscreen ? "\uE73F" : "\uE740";
+            Motion.Stop(_close, OpacityProperty, _close.IsMouseOver ? 1 : 0);
+            Motion.Stop(_full, OpacityProperty, _full.IsMouseOver ? 1 : 0);
         }
-        if (_frame == null || (IsVisible && _motionAllowed() && !AnimationConfig.ReduceMotion)) return;
+        if (_frame == null || animate) return;
         StopFrame();
         PlaceNow(_springTarget);
         CompleteSpring();

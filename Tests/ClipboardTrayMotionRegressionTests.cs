@@ -135,10 +135,17 @@ public sealed class ClipboardTrayMotionRegressionTests
         Assert.Equal(size, item.RenderSize);
 
         animate.Invoke(null, new object[] { item, false, false });
-        await Task.Delay(60);
-        await NextRenderFrame();
-        Assert.InRange(item.Opacity, 0, 0.99);
-        if (reducedMotion) Assert.Equal(Matrix.Identity, item.RenderTransform.Value);
+        if (reducedMotion)
+        {
+            Assert.False(item.HasAnimatedProperties);
+            Assert.Equal(Matrix.Identity, item.RenderTransform.Value);
+        }
+        else
+        {
+            await Task.Delay(60);
+            await NextRenderFrame();
+            Assert.InRange(item.Opacity, 0, 0.99);
+        }
         animate.Invoke(null, new object[] { item, true, false });
         await WpfFrameWaiter.UntilAsync(() => item.Opacity == 1 && item.RenderTransform.Value == Matrix.Identity, "reversed card spring settles");
         Assert.Equal(1, item.Opacity);
@@ -273,6 +280,29 @@ public sealed class ClipboardTrayMotionRegressionTests
             "cancelled removal reversal settles");
         Assert.Equal(Matrix.Identity, removed.RenderTransform.Value);
         Assert.Equal(1, removed.Opacity);
+    });
+
+    [Fact]
+    public void CardQueuedBeforeCloseDoesNotReplayOnReopen() => RunWithCards(1, async (tray, list, cards) =>
+    {
+        var incoming = new ClipboardEntry { Id = Guid.NewGuid(), Title = "New file", Kind = ClipboardKind.File };
+        Invoke(tray, "RecordArrivingCards", (object)new[] { cards[0].Entry, incoming });
+        Assert.Contains(incoming.Id, Field<HashSet<Guid>>(tray, "_arrivingCards"));
+
+        tray.BeginExit(animate: false);
+        tray.Visibility = Visibility.Collapsed;
+        var card = new ClipboardCardViewModel(incoming);
+        cards.Add(card);
+        tray.Visibility = Visibility.Visible;
+        tray.BeginEntrance();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        list.UpdateLayout();
+
+        var container = Assert.IsType<ListBoxItem>(list.ItemContainerGenerator.ContainerFromItem(card));
+        Assert.Empty(Field<HashSet<Guid>>(tray, "_arrivingCards"));
+        Assert.Equal(Matrix.Identity, container.RenderTransform.Value);
+        Assert.Equal(1, container.Opacity);
+        Assert.False(container.HasAnimatedProperties);
     });
 
     private static TranslateTransform StartSlide(ListBoxItem container)

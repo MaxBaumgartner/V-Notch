@@ -404,6 +404,7 @@ public partial class MainWindow
         _notchShellPresenter?.CancelCurrentAnimation();
         _claudePillAttachment ??= new(NotchBorder, ClaudeNotification, () => new Size(_collapsedWidth, _collapsedHeight));
         _claudePillAttachment.MoveTo(target, _collapsedHeight + extraHeight, Motion.Pop, shown: true);
+        if (!AmbientAnimationsAllowed || !ClaudeNotification.IsVisible) _claudePillAttachment.Settle();
     }
 
     private DispatcherTimer CreateClaudeNotificationTimer()
@@ -430,11 +431,12 @@ public partial class MainWindow
         if (MusicCompactContent.Visibility == Visibility.Visible)
             HideCompactSurface(MusicCompactContent);
 
+        bool entering = ClaudeNotification.Visibility != Visibility.Visible;
         ClaudeNotification.Visibility = Visibility.Visible;
         Motion.Stop(ClaudeNotification, OpacityProperty, 1);
         Motion.Stop(ClaudeNotificationTranslate, TranslateTransform.YProperty, 0);
 
-        if (!IsJobPillShown)
+        if (entering && !IsJobPillShown && ClaudeNotification.IsVisible && AmbientAnimationsAllowed)
         {
             Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
             Motion.To(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: Motion.TileFromScale);
@@ -443,7 +445,7 @@ public partial class MainWindow
 
     private void AnimateClaudeNotificationOut()
     {
-        if (!_isClaudeNotificationVisible) return;
+        if (!_isClaudeNotificationVisible || IsCompactSlotStale(_claudeNotificationToken)) return;
         ResetAskSheet();
         _askSettledTimer?.Stop();
         ClearCodexPill();
@@ -464,16 +466,29 @@ public partial class MainWindow
             _isClaudeNotificationVisible = false;
             if (_allowancePill) SetAllowancePill(null);
             _compactPillArbiter.Release(token);
-            RestoreCompactMediaPresentation();
             _claudeNotificationToken = 0;
             RestorePrivacyDotVisibility();
 
             FrameworkElement content = _isMusicCompactMode && _currentMediaInfo != null ? MusicCompactContent : CollapsedContent;
             content.Visibility = Visibility.Visible;
-            Motion.To(content, OpacityProperty, 1, Motion.Tile);
+            if (AmbientAnimationsAllowed && content.IsVisible)
+            {
+                RestoreCompactMediaPresentation();
+                Motion.To(content, OpacityProperty, 1, Motion.Tile);
+            }
+            else Motion.Stop(content, OpacityProperty, 1);
             // A limit warning that waited for this pill can come next, without waiting for the 15 s sweep.
             Dispatcher.BeginInvoke(DispatcherPriority.Background, CheckAllowanceAlerts);
         });
+        if (!AmbientAnimationsAllowed || !ClaudeNotification.IsVisible) _claudePillAttachment.Settle();
+    }
+
+    private void RefreshClaudePillMotionVisibility()
+    {
+        if (!_isClaudeNotificationVisible || (AmbientAnimationsAllowed && ClaudeNotification.IsVisible)) return;
+        if (!_isAnimating && !IsCompactSlotStale(_claudeNotificationToken)) _claudePillAttachment?.Settle();
+        Motion.Stop(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, 1);
     }
 
     /// <summary>The notch opens or another alert takes the pill: drop it without an exit animation.</summary>
@@ -493,6 +508,7 @@ public partial class MainWindow
         _claudeNotificationToken = 0;
         _claudePillAttachment?.Detach(false);
         Motion.Stop(ClaudeNotification, OpacityProperty, 0);
+        Motion.Stop(ClaudeNotificationTranslate, TranslateTransform.XProperty, 0);
         Motion.Stop(ClaudeNotificationTranslate, TranslateTransform.YProperty, 0);
         Motion.Stop(ClaudeNotificationIconScale, ScaleTransform.ScaleXProperty, 1);
         Motion.Stop(ClaudeNotificationIconScale, ScaleTransform.ScaleYProperty, 1);

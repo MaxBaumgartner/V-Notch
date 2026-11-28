@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
+using VNotch.Interop;
 using VNotch.Services;
 
 namespace VNotch;
@@ -18,6 +19,7 @@ public partial class SpotifyLoginWindow : Window
     private static readonly string SpotifyLoginUrl = string.Concat("https://", "accounts.spotify.com/login?continue=https%3A%2F%2Fopen.spotify.com%2F");
     private static readonly string SpotifyCookieUrl = string.Concat("https://", "open.spotify.com/");
 #pragma warning restore S1075
+    private static readonly SolidColorBrush ErrorTextBrush = CreateFrozenErrorBrush();
 
     private const double ShellMarginDip = 18;
     private const double ShellCornerRadiusDip = 24;
@@ -26,11 +28,20 @@ public partial class SpotifyLoginWindow : Window
     private bool _cookieCheckInProgress;
     private string? _userDataFolder;
     private IDisposable? _profileCleanupLease;
+    private DispatcherTimer? _closeFallbackTimer;
+    private EventHandler? _closeFallbackTickHandler;
 
     public string SpotifySpDc { get; private set; } = "";
 
     /// <summary>The privacy switch that must allow the login (Canvas from settings, Jam from the notch).</summary>
     internal NetworkFeature PrivacyFeature { get; init; } = NetworkFeature.Canvas;
+
+    private static SolidColorBrush CreateFrozenErrorBrush()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(248, 113, 113));
+        brush.Freeze();
+        return brush;
+    }
 
     public SpotifyLoginWindow()
     {
@@ -92,7 +103,7 @@ public partial class SpotifyLoginWindow : Window
         public int CornerDiameter;
     }
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static partial int vn_window_calc_rounded_region(
         double widthDip,
         double heightDip,
@@ -121,7 +132,7 @@ public partial class SpotifyLoginWindow : Window
     private CancellationTokenRegistration _privacyCancellation;
     private bool _webViewDisposed;
 
-    private async void SpotifyLoginWindow_Loaded(object sender, RoutedEventArgs e)
+    private void SpotifyLoginWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= SpotifyLoginWindow_Loaded;
         if (!NetworkPrivacy.Current.IsAllowed(PrivacyFeature)) { _isClosing = true; Close(); return; }
@@ -134,6 +145,11 @@ public partial class SpotifyLoginWindow : Window
                 Close();
             }));
         PlayEntranceAnimation();
+        InitializeWebViewLoginAsync().SafeFireAndForget(LogCategory);
+    }
+
+    private async Task InitializeWebViewLoginAsync()
+    {
         try
         {
             _userDataFolder = Path.Combine(
@@ -164,7 +180,7 @@ public partial class SpotifyLoginWindow : Window
             SpotifyWebView.CoreWebView2.Settings.IsWebMessageEnabled = false;
             SpotifyWebView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
             SpotifyWebView.CoreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
-            SpotifyWebView.CoreWebView2.DownloadStarting += (_, args) => args.Cancel = true;
+            SpotifyWebView.CoreWebView2.DownloadStarting += CoreWebView2_DownloadStarting;
             SpotifyWebView.CoreWebView2.NavigationCompleted += CoreWebView2_NavigationCompleted;
             SpotifyWebView.CoreWebView2.Navigate(SpotifyLoginUrl);
             _cookieTimer.Start();
@@ -174,7 +190,7 @@ public partial class SpotifyLoginWindow : Window
         {
             RuntimeLog.Warn(LogCategory, $"Unable to initialize Spotify login: {ex.Message}");
             StatusText.Text = Loc.Get("spotifyLogin.failed");
-            StatusText.Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113));
+            StatusText.Foreground = ErrorTextBrush;
         }
     }
 
@@ -200,22 +216,24 @@ public partial class SpotifyLoginWindow : Window
         else ShowBlockedSignInMessage();
     }
 
+    private static void CoreWebView2_DownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs args) => args.Cancel = true;
+
     private void ShowBlockedSignInMessage()
     {
         StatusText.Text = Loc.Get("spotifyLogin.blockedMethod");
-        StatusText.Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113));
+        StatusText.Foreground = ErrorTextBrush;
     }
 
-    private async void CoreWebView2_NavigationCompleted(
+    private void CoreWebView2_NavigationCompleted(
         object? sender,
         CoreWebView2NavigationCompletedEventArgs e)
     {
-        await CheckForSpotifySessionAsync();
+        CheckForSpotifySessionAsync().SafeFireAndForget(LogCategory);
     }
 
-    private async void CookieTimer_Tick(object? sender, EventArgs e)
+    private void CookieTimer_Tick(object? sender, EventArgs e)
     {
-        await CheckForSpotifySessionAsync();
+        CheckForSpotifySessionAsync().SafeFireAndForget(LogCategory);
     }
 
     private async Task CheckForSpotifySessionAsync()
@@ -265,6 +283,7 @@ public partial class SpotifyLoginWindow : Window
                 SpotifyWebView.CoreWebView2.NavigationCompleted -= CoreWebView2_NavigationCompleted;
                 SpotifyWebView.CoreWebView2.NavigationStarting -= CoreWebView2_NavigationStarting;
                 SpotifyWebView.CoreWebView2.NewWindowRequested -= CoreWebView2_NewWindowRequested;
+                SpotifyWebView.CoreWebView2.DownloadStarting -= CoreWebView2_DownloadStarting;
                 try
                 {
                     SpotifyWebView.CoreWebView2.CookieManager.DeleteAllCookies();
@@ -285,6 +304,7 @@ public partial class SpotifyLoginWindow : Window
     private void Window_Closed(object? sender, EventArgs e)
     {
         _isClosing = true;
+        StopCloseFallbackTimer();
         _privacyCancellation.Dispose();
         _cookieTimer.Stop();
         _cookieTimer.Tick -= CookieTimer_Tick;
@@ -393,19 +413,29 @@ public partial class SpotifyLoginWindow : Window
         ShellTranslate.BeginAnimation(TranslateTransform.YProperty, translateY);
     }
 
+    private void StopCloseFallbackTimer()
+    {
+        var timer = Interlocked.Exchange(ref _closeFallbackTimer, null);
+        var handler = Interlocked.Exchange(ref _closeFallbackTickHandler, null);
+        if (timer == null) return;
+        if (handler != null) timer.Tick -= handler;
+        timer.Stop();
+    }
+
     private void CloseWithAnimation(bool? result)
     {
         if (_isClosing) return;
         _isClosing = true;
         _dialogResultToSet = result;
 
+        StopCloseFallbackTimer();
         var fallback = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
         bool completed = false;
         void Finish(object? sender, EventArgs args)
         {
             if (completed) return;
             completed = true;
-            fallback.Stop();
+            StopCloseFallbackTimer();
             if (_dialogResultToSet.HasValue)
             {
                 try { DialogResult = _dialogResultToSet; return; }
@@ -418,6 +448,8 @@ public partial class SpotifyLoginWindow : Window
             Dispatcher.BeginInvoke(() => Finish(null, EventArgs.Empty));
             return;
         }
+        _closeFallbackTimer = fallback;
+        _closeFallbackTickHandler = Finish;
         fallback.Tick += Finish;
         fallback.Start();
 

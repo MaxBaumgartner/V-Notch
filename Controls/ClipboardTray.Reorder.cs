@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using VNotch.Services;
 using VNotch.ViewModels;
 
 namespace VNotch.Controls;
@@ -43,6 +44,8 @@ public sealed partial class ClipboardTray
     private int _pendingCategoryWrites;
     private string[]? _optimisticCategoryOrder;
     private long _categoryReorderFrameTime;
+    private long _categoryGhostTime;
+    private double _categoryGhostX, _categoryGhostVelocity;
 
     private void CategoryReorder_Press(Button button, Point viewportPoint)
     {
@@ -68,6 +71,8 @@ public sealed partial class ClipboardTray
         BeginCategoryReorderVisuals();
         CategoryScroll.ForceCursor = true;
         _categoryReorderFrameTime = Stopwatch.GetTimestamp();
+        _categoryGhostTime = 0;
+        _categoryGhostVelocity = 0;
         CompositionTarget.Rendering += CategoryReorder_Frame;
         UpdateCategoryReorder(point);
         return true;
@@ -95,6 +100,11 @@ public sealed partial class ClipboardTray
             out double ghostOpacity,
             out byte reorderValid);
         _categoryReorderValid = reorderValid != 0;
+        // Follow the grip inside the track and resist pulls beyond either edge.
+        double edge = Math.Clamp(viewportPoint.X, 0, CategoryScroll.ActualWidth);
+        double over = viewportPoint.X - edge;
+        ghostLeft += Math.CopySign(MainWindow.ShellRubber(Math.Abs(over), 28), over) - over;
+        SampleCategoryGhost(ghostLeft);
         Canvas.SetLeft(CategoryReorderGhost, ghostLeft);
         Canvas.SetTop(CategoryReorderGhost, ghostTop);
         CategoryReorderGhost.Opacity = ghostOpacity;
@@ -116,6 +126,19 @@ public sealed partial class ClipboardTray
         }
         UpdateCategoryReorderPreview(source);
     }
+
+    private void SampleCategoryGhost(double x)
+    {
+        long now = Stopwatch.GetTimestamp();
+        double elapsed = (now - _categoryGhostTime) / (double)Stopwatch.Frequency;
+        if (_categoryGhostTime != 0 && (elapsed < 0.016 || x == _categoryGhostX)) return;
+        _categoryGhostVelocity = elapsed <= 0.09 ? Math.Clamp((x - _categoryGhostX) / elapsed, -1800, 1800) : 0;
+        _categoryGhostTime = now;
+        _categoryGhostX = x;
+    }
+
+    private double CategoryGhostReleaseVelocity =>
+        Stopwatch.GetElapsedTime(_categoryGhostTime).TotalMilliseconds < 60 ? _categoryGhostVelocity : 0;
 
     private void CategoryReorder_Frame(object? sender, EventArgs e)
     {
@@ -142,12 +165,13 @@ public sealed partial class ClipboardTray
         bool commit = _categoryReordering && _categoryReorderValid && id != null;
         var ghostOrigin = new Point(Canvas.GetLeft(CategoryReorderGhost), Canvas.GetTop(CategoryReorderGhost));
         bool land = commit && _categoryReorderVisualsReady;
+        double velocity = CategoryGhostReleaseVelocity;
         if (commit) CancelCategoryReorder();
         else CancelCategoryReorderAnimated();
         if (commit)
         {
             Task save = CommitCategoryReorderAsync(id!, beforeId);
-            if (land) BeginCategoryReorderLanding(id!, ghostOrigin);
+            if (land) BeginCategoryReorderLanding(id!, ghostOrigin, velocity);
             await save;
         }
     }
@@ -182,8 +206,9 @@ public sealed partial class ClipboardTray
         string? id = (_categoryReorderSource?.DataContext as ClipboardCategoryViewModel)?.Name;
         bool returnToSource = _categoryReordering && _categoryReorderVisualsReady && id != null;
         var origin = new Point(Canvas.GetLeft(CategoryReorderGhost), Canvas.GetTop(CategoryReorderGhost));
+        double velocity = CategoryGhostReleaseVelocity;
         CancelCategoryReorder();
-        if (returnToSource) BeginCategoryReorderLanding(id!, origin);
+        if (returnToSource) BeginCategoryReorderLanding(id!, origin, velocity);
     }
 
     private async Task CommitCategoryReorderAsync(string id, string? beforeId)
@@ -231,7 +256,7 @@ public sealed partial class ClipboardTray
         return true;
     }
 
-    private async void CategoryReorder_KeyDown(object sender, KeyEventArgs e)
+    private void CategoryReorder_KeyDown(object sender, KeyEventArgs e)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         if (Keyboard.Modifiers != ModifierKeys.Alt || key is not (Key.Left or Key.Right) ||
@@ -245,6 +270,6 @@ public sealed partial class ClipboardTray
         string? beforeId = key == Key.Left ? _categoryItems[destination].Name : rightTargetId;
 
         CancelCategoryReorder();
-        await SafeAsync(() => CommitCategoryReorderAsync(category.Name, beforeId));
+        SafeAsync(() => CommitCategoryReorderAsync(category.Name, beforeId)).SafeFireAndForget("CLIPBOARD-UI");
     }
 }

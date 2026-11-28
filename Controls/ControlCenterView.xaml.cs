@@ -1070,16 +1070,12 @@ public partial class ControlCenterView : UserControl, IDisposable
 
     internal static string FormatBytes(long bytes) => bytes switch
     {
-        >= 1L << 30 => $"{bytes / (double)(1L << 30):0.0} GB",
-        _ => $"{bytes / (double)(1L << 20):0} MB"
+        >= 1L << 30 => string.Create(Loc.GetCulture(), $"{bytes / (double)(1L << 30):0.0} GB"),
+        _ => string.Create(Loc.GetCulture(), $"{bytes / (double)(1L << 20):0} MB")
     };
 
-    internal static string FormatRate(double bytesPerSecond) => bytesPerSecond switch
-    {
-        >= 1024 * 1024 => $"{bytesPerSecond / (1024 * 1024):0.0} MB/s",
-        >= 1024 => $"{bytesPerSecond / 1024:0} KB/s",
-        _ => $"{bytesPerSecond:0} B/s"
-    };
+    internal static string FormatRate(double bytesPerSecond) =>
+        LocalizedPresentation.FormatTransferRate(bytesPerSecond, roundKilobytes: true);
 
     /// <summary>The GPU sampler is shared and counts its users: one start per open tab, one stop when it closes.</summary>
     private void SetGpuSampling(bool on)
@@ -1483,7 +1479,11 @@ public partial class ControlCenterView : UserControl, IDisposable
             _composeDraft = "";
             _composeAttachment = null;
         }
-        if (attachment != null) _composeAttachment = attachment;
+        if (attachment != null)
+        {
+            _composeAttachment = attachment;
+            _composerBox = null;
+        }
         _composingSessionId = sessionId;
         KeyboardInputRequested?.Invoke(true);
         _claudeKey = "";
@@ -1634,7 +1634,8 @@ public partial class ControlCenterView : UserControl, IDisposable
             ClaudeAttachmentKind.Lines => ("\uE77F", Loc.Get("control.claude.attachedLines", attachment.Count)),
             _ => ("\uE77F", attachment.Mention)
         };
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 3) };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 3),
+            HorizontalAlignment = HorizontalAlignment.Left, Background = Brushes.Transparent };
         row.Children.Add(new TextBlock
         {
             Text = glyph,
@@ -1646,7 +1647,25 @@ public partial class ControlCenterView : UserControl, IDisposable
         });
         var text = MakeLabel(label, 11.5, VNotch.Services.UiPalette.PrimaryBrush, maxWidth: 420);
         text.ToolTip = attachment.Mention;
+        text.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(text);
+        if (attachment.ImagePath is { } path)
+        {
+            var eye = new QuickLookEye { Host = row, PreviewOwner = attachment, PreviewKey = path, Focusable = false,
+                Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            eye.Click += (_, e) =>
+            {
+                e.Handled = true;
+                QuickLookBridge.Shared.ToggleAsync(attachment, path, () =>
+                    Task.FromResult<QuickLookBridge.PreviewFile?>(new(path, CanOpen: () => eye.IsVisible && ReferenceEquals(_composeAttachment, attachment))))
+                    .SafeFireAndForget("QUICKLOOK");
+            };
+            eye.IsVisibleChanged += (_, _) =>
+            {
+                if (!eye.IsVisible) _ = QuickLookBridge.Shared.CloseAsync(attachment);
+            };
+            row.Children.Add(eye);
+        }
         var remove = new TextBlock
         {
             Text = "\uE711",

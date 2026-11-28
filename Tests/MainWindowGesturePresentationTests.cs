@@ -85,6 +85,16 @@ public sealed class MainWindowGesturePresentationTests
         await WpfFrameWaiter.UntilAsync(() => window.NotchGestureTranslate.X == 0, "release velocity settles", ct);
     });
 
+    [Fact]
+    public void GestureHandlersAvoidAsyncVoid()
+    {
+        foreach (string name in new[] { "NotchWrapper_PreviewMouseDown", "OnGestureSwipeLeft", "OnGestureSwipeRight", "OnGestureDoubleTap" })
+        {
+            var method = typeof(MainWindow).GetMethod(name, Private)!;
+            Assert.Null(method.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>());
+        }
+    }
+
     private static GreetingAcceptanceTests.MainWindowFixture CreateFixture(FakeMediaDetectionService media) => new("en", greeting: false,
         configureSettings: settings => settings.EnableLocalOnlyMode = true,
         configureServices: services => services.AddSingleton<IMediaDetectionService>(media));

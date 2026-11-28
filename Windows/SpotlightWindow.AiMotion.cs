@@ -51,7 +51,7 @@ public partial class SpotlightWindow
             System.Windows.Automation.AutomationProperties.SetName(textBlock, Loc.Get("spotlight.ai.you") + ": " + message.Content);
             userContainer.Child = textBlock;
             AiTranscript.Children.Add(userContainer);
-            if (animate) AnimateAiArrival(userContainer, 8, 260);
+            if (animate) AnimateAiArrival(userContainer);
             return null;
         }
 
@@ -147,7 +147,7 @@ public partial class SpotlightWindow
         card.Child = stack;
 
         AiTranscript.Children.Add(card);
-        if (animate) AnimateAiArrival(card, 8, 300);
+        if (animate) AnimateAiArrival(card);
         return view;
     }
 
@@ -183,7 +183,7 @@ public partial class SpotlightWindow
             Child = row
         };
         AiTranscript.Children.Add(_aiThinkingCard);
-        AnimateAiArrival(_aiThinkingCard, 6, 220);
+        AnimateAiArrival(_aiThinkingCard);
         AiTranscriptScroll.ScrollToEnd();
     }
 
@@ -240,8 +240,7 @@ public partial class SpotlightWindow
             }
             if (!wasAiMode)
             {
-                if (AiWelcome.Visibility == Visibility.Visible) AnimateAiFade(AiWelcome);
-                else AnimateAiPageReveal(AiTranscriptScroll);
+                AnimateAiArrival(AiWelcome.Visibility == Visibility.Visible ? AiWelcome : AiTranscriptScroll);
             }
         }
         ScheduleContentResize();
@@ -292,54 +291,31 @@ public partial class SpotlightWindow
         if (ReferenceEquals(SearchBox.OpacityMask, mask)) SearchBox.OpacityMask = null;
     }
 
-    private static void AnimateAiFade(FrameworkElement element)
+    private static void AnimateAiArrival(FrameworkElement element)
     {
-        element.RenderTransform = Transform.Identity;
-        // A fade still on its way continues from where it is; a finished one starts again from dark.
-        bool interrupted = Motion.IsRunning(element, OpacityProperty);
-        Motion.To(element, OpacityProperty, 1, Motion.Tile, from: interrupted ? null : 0);
-    }
+        if (!element.IsVisible || AnimationConfig.ReduceMotion ||
+            Motion.IsRunning(element, OpacityProperty)) return;
 
-    private static void AnimateAiPageReveal(FrameworkElement element)
-    {
-        // Only a reveal still on its way continues (with its speed); a finished one starts anew. A clock that
-        // was left attached after it ended does not count as moving.
-        bool interrupted = Motion.IsRunning(element, OpacityProperty);
-        var group = element.RenderTransform as TransformGroup;
-        var scale = group?.Children.OfType<ScaleTransform>().FirstOrDefault();
-        var translate = group?.Children.OfType<TranslateTransform>().FirstOrDefault();
-        if (group == null || group.IsFrozen || scale == null || translate == null)
+        // The header or the prompt-side edge is the origin of the new card.
+        var scale = new ScaleTransform(1, 0.9);
+        var offset = new TranslateTransform(0, -4);
+        element.RenderTransformOrigin = new Point(element.HorizontalAlignment == HorizontalAlignment.Right ? 1 : 0, 0);
+        element.RenderTransform = new TransformGroup { Children = { scale, offset } };
+        void Settle()
         {
-            interrupted = false;
-            scale = new ScaleTransform(1, 1);
-            translate = new TranslateTransform();
-            group = new TransformGroup();
-            group.Children.Add(scale);
-            group.Children.Add(translate);
-            element.RenderTransform = group;
+            element.IsVisibleChanged -= OnVisibleChanged;
+            Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
+            Motion.Stop(offset, TranslateTransform.YProperty, 0);
+            Motion.Stop(element, OpacityProperty, 1);
         }
-        element.RenderTransformOrigin = new Point(0.5, 0);
-
-        Motion.To(element, OpacityProperty, 1, Motion.Tile, from: interrupted ? null : 0);
-        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.TileScale, from: interrupted ? null : 0.985);
-        Motion.To(translate, TranslateTransform.YProperty, 0, Motion.Tile, from: interrupted ? null : 4);
-    }
-
-    /// <summary>A card or panel arriving: it drifts up by at most <paramref name="distance"/> and brightens, on Tile.</summary>
-    /// <param name="milliseconds">Kept for the callers' sense of scale; the spring sets the actual timing.</param>
-    private static void AnimateAiArrival(FrameworkElement element, double distance, int milliseconds)
-    {
-        _ = milliseconds;
-        bool interrupted = Motion.IsRunning(element, OpacityProperty);
-        if (element.RenderTransform is not TranslateTransform translate || translate.IsFrozen)
+        void OnVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
-            interrupted = false;
-            translate = new TranslateTransform();
-            element.RenderTransform = translate;
+            if (!element.IsVisible) Settle();
         }
-
-        Motion.To(element, OpacityProperty, 1, Motion.Tile, from: interrupted ? null : 0.65);
-        Motion.To(translate, TranslateTransform.YProperty, 0, Motion.Tile, from: interrupted ? null : Math.Min(distance, 6));
+        element.IsVisibleChanged += OnVisibleChanged;
+        Motion.To(scale, ScaleTransform.ScaleYProperty, 1, Motion.Shift);
+        Motion.To(element, OpacityProperty, 1, Motion.Exit, from: 0.72);
+        Motion.To(offset, TranslateTransform.YProperty, 0, Motion.Shift, done: Settle);
     }
 
     private void UpdateAiActivity()
@@ -370,10 +346,10 @@ public partial class SpotlightWindow
     {
         if (AiGlowBorder == null) return;
         int version = ++_aiGlowVersion;
-        if (AnimationConfig.ReduceMotion)
+        if (!IsVisible || AnimationConfig.ReduceMotion)
         {
-            AiGlowBorder.BeginAnimation(OpacityProperty, null);
-            AiGlowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+            Motion.Stop(AiGlowBorder, OpacityProperty, active ? 0.5 : 0);
+            Motion.Stop(AiGlowEffect, DropShadowEffect.BlurRadiusProperty, 16);
             AiGlowBorder.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
             AiGlowBorder.Opacity = active ? 0.5 : 0;
             return;
@@ -384,15 +360,8 @@ public partial class SpotlightWindow
             AiGlowBorder.Visibility = Visibility.Visible;
             Motion.To(AiGlowBorder, OpacityProperty, 0.5, Motion.Tile);
 
-            // Gentle breathing glow on shadow effect
-            var breathe = new DoubleAnimation(12, 22, TimeSpan.FromMilliseconds(1800))
-            {
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever,
-                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
-            };
-            Timeline.SetDesiredFrameRate(breathe, AnimationConfig.TargetFps);
-            AiGlowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, breathe);
+            // The glow settles when the mode changes.
+            Motion.To(AiGlowEffect, DropShadowEffect.BlurRadiusProperty, 16, Motion.Shift);
         }
         else
         {
@@ -401,7 +370,7 @@ public partial class SpotlightWindow
                 if (version != _aiGlowVersion || _aiMode) return;
                 Motion.Stop(AiGlowBorder, OpacityProperty, 0);
                 AiGlowBorder.Visibility = Visibility.Collapsed;
-                AiGlowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+                Motion.Stop(AiGlowEffect, DropShadowEffect.BlurRadiusProperty, 16);
             });
         }
     }

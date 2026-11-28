@@ -11,8 +11,9 @@ using Microsoft.Win32;
 
 namespace VNotch.Services.ControlCenter;
 
-/// <summary>A download in progress; <paramref name="Percent"/> is null where the source does not say how far it is.</summary>
-internal sealed record DownloadInfo(string Key, string Source, string Name, double? Percent, double BytesPerSecond);
+/// <summary>A running or recently finished download. <paramref name="Percent"/> is null when progress is unknown.</summary>
+internal sealed record DownloadInfo(string Key, string Source, string Name, double? Percent, double BytesPerSecond,
+    string? FilePath = null, bool IsFinished = false);
 
 /// <summary>
 /// Finds downloads on this PC without asking any app: Steam's app manifests (bytes done of bytes to do), the Riot
@@ -21,7 +22,7 @@ internal sealed record DownloadInfo(string Key, string Source, string Name, doub
 /// themselves (Epic, EA, Ubisoft, Battle.net, GOG), how fast they write to disk. Each poll is a handful of
 /// directory listings and small file reads; nothing runs between polls.
 /// </summary>
-internal sealed class DownloadWatcher
+internal sealed partial class DownloadWatcher
 {
     private const double LauncherMinBytesPerSecond = 1.5 * 1024 * 1024;
     private static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(12);
@@ -42,7 +43,7 @@ internal sealed class DownloadWatcher
             var names = new HashSet<string>(processes.Select(p => p.ProcessName), StringComparer.OrdinalIgnoreCase);
             Try(() => Steam(found));
             if (names.Contains("RiotClientServices")) Try(() => Riot(found));
-            Try(() => Browsers(found));
+            Try(() => found.AddRange(PollBrowsers(DownloadsFolder())));
             Try(() => Launchers(found, processes));
         }
         finally
@@ -51,7 +52,8 @@ internal sealed class DownloadWatcher
         }
         // Forget what is gone, so a new download of the same file starts from zero.
         var keys = new HashSet<string>(found.Select(d => d.Key), StringComparer.Ordinal);
-        foreach (var key in _last.Keys.Where(k => !keys.Contains(k) && !k.StartsWith("io:", StringComparison.Ordinal)).ToList())
+        foreach (var key in _last.Keys.Where(k => !keys.Contains(k) && !k.StartsWith("io:", StringComparison.Ordinal) &&
+                     !k.StartsWith("file:", StringComparison.Ordinal)).ToList())
         {
             _last.Remove(key);
             _lastGrowthUtc.Remove(key);
@@ -198,38 +200,6 @@ internal sealed class DownloadWatcher
     #endregion
 
     #region Browsers
-
-    // Chrome, Edge and Brave write ".crdownload", Opera ".opdownload", Firefox ".part"; Firefox also keeps an empty placeholder under the final name.
-    private static readonly string[] PartialExtensions = [".crdownload", ".opdownload", ".part", ".partial"];
-
-    private void Browsers(List<DownloadInfo> found)
-    {
-        string? folder = DownloadsFolder();
-        if (folder == null || !Directory.Exists(folder)) return;
-        foreach (var file in new DirectoryInfo(folder).EnumerateFiles())
-        {
-            string ext = file.Extension.ToLowerInvariant();
-            if (Array.IndexOf(PartialExtensions, ext) < 0) continue;
-            string key = "file:" + file.FullName.ToLowerInvariant();
-            var (rate, growing) = Track(key, file.Length);
-            if (!growing) continue; // an old leftover of a cancelled download
-            found.Add(new DownloadInfo(key, BrowserFor(ext), DisplayName(file.Name), null, rate));
-        }
-    }
-
-    private static string BrowserFor(string extension) => extension switch
-    {
-        ".opdownload" => "Opera",
-        ".part" => "Firefox",
-        _ => "Browser"
-    };
-
-    /// <summary>"setup.exe.crdownload" → "setup.exe"; Chrome's "Unconfirmed 123456.crdownload" stays as it is.</summary>
-    internal static string DisplayName(string partial)
-    {
-        string name = Path.GetFileNameWithoutExtension(partial);
-        return name.Length > 0 ? name : partial;
-    }
 
     /// <summary>The user's Downloads folder, wherever it was moved to.</summary>
     private static string? DownloadsFolder()

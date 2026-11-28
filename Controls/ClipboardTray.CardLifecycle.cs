@@ -68,8 +68,8 @@ public sealed partial class ClipboardTray
         if ((ItemsControl.ContainerFromElement(Cards, element) as ListBoxItem ?? FindParentListBoxItem(element)) is ListBoxItem container)
         {
             ResetCardMotion(container);
-            if (element.IsLoaded && e.NewValue is ClipboardCardViewModel current && _arrivingCards.Remove(current.Entry.Id))
-                AnimateCardLifecycle(container, entering: true, fresh: true);
+            if (element.IsLoaded && e.NewValue is ClipboardCardViewModel current)
+                ConsumeCardArrival(container, current.Entry.Id);
         }
         if (e.OldValue is ClipboardCardViewModel previous)
         {

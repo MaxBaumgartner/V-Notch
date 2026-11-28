@@ -31,7 +31,7 @@ public partial class MainWindow
         bool claudeWorking = _claudeLiveSessions.Any(s => s.Status == ClaudeSessionStatus.Working);
         var battery = _chargeBattery;
         bool onBattery = battery is { HasBattery: true } && !battery.IsPowerConnected;
-        var reason = KeepAwakePolicy.Decide(_settings.KeepAwake, claudeWorking, _downloads.Count > 0, IsCountdownLive,
+        var reason = KeepAwakePolicy.Decide(_settings.KeepAwake, claudeWorking, HasRunningDownloads, IsCountdownLive,
             onBattery, battery?.Percentage ?? 100);
         _keepAwake.Set(reason != KeepAwakeReason.None);
         if (reason == _keepAwakeReason) return;

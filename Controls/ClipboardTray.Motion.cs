@@ -26,21 +26,6 @@ public sealed partial class ClipboardTray
     }
 
     [LibraryImport("VNotch.Native")]
-    private static partial int vn_clipboard_motion_compute_stagger(
-        ReadOnlySpan<int> candidateIndices,
-        int count,
-        int baseDelayMs,
-        Span<int> outSortedPositions,
-        Span<int> outDelaysMs);
-
-    [LibraryImport("VNotch.Native")]
-    private static partial int vn_clipboard_motion_card_delay(
-        int itemIndex,
-        int animatedCount,
-        int baseDelayMs,
-        out int outDelayMs);
-
-    [LibraryImport("VNotch.Native")]
     private static partial int vn_clipboard_motion_compute_reflow_offset(
         double originX,
         double renderedOffsetX,
@@ -55,14 +40,9 @@ public sealed partial class ClipboardTray
 
     internal bool AnimateResults { get => _animateResults; set => _animateResults = value; }
     private bool _animateResults = true;
-    private int _motionVersion;
     internal bool IsLeaving => _trayLeaving;
-    internal int EntranceStaggerVersion => _entranceStaggerVersion;
     private bool _trayLeaving;
     private bool _entranceWasHidden = true;
-    private int _entranceStaggerVersion;
-    private int _entranceBaseDelay = 60;
-    private readonly HashSet<ListBoxItem> _entranceAnimatedContainers = [];
     private readonly Dictionary<FrameworkElement, object> _dismissingLayers = [];
     private bool _trayDropBorderVisible = true;
     private int _trayDropBorderMotionVersion;
@@ -128,78 +108,22 @@ public sealed partial class ClipboardTray
         bool reversing = _trayLeaving && !_entranceWasHidden && IsVisible && Opacity > 0.01;
         _entranceWasHidden = false;
         _trayLeaving = false;
-        ++_motionVersion;
         DeferEntranceWork();
         // The view entrance already owns the row fade; do not restart it when
         // the initial asynchronous search finishes.
         _animateResults = false;
 
-        if (!animate)
+        if (!animate || !IsVisible || AnimationConfig.ReduceMotion)
         {
-            _entranceStaggerVersion = 0;
-            _entranceAnimatedContainers.Clear();
-            foreach (var layer in new FrameworkElement[] { SearchSurface, ToolbarSurface, CategoryScroll, Cards,
-                LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette, StatusPanel,
-                DeleteConfirmationPanel, LabelEditorPanel })
-            {
-                Motion.Forget(layer, OpacityProperty);
-                layer.BeginAnimation(OpacityProperty, null);
-                if (layer.ReadLocalValue(OpacityProperty) is double) layer.Opacity = 1;
-                layer.RenderTransform = Transform.Identity;
-            }
+            ResetShelfMotion();
             searchEntranceCompleted?.Invoke();
             return;
         }
 
-        // Fluid, organic Apple waterfall fade:
-        // Header components land first with subtle upward drift.
-        AnimateLayer(SearchSurface, true, 0, !reversing, 300, 6, searchEntranceCompleted);
-        if (ToolbarSurface.Visibility == Visibility.Visible) AnimateLayer(ToolbarSurface, true, 20, !reversing, 300, 6);
-        // Category pill track slides in right after the header.
-        AnimateLayer(CategoryScroll, true, 40, !reversing, 320, 8);
-
-        // Stagger individual cards for a premium cascading entrance instead of
-        // fading the entire ListBox as a single block. Each realized card will
-        // pick up a progressive delay in CardContainer_Loaded / StaggerEntranceCards.
-        if (!reversing && !AnimationConfig.ReduceMotion)
-        {
-            _entranceStaggerVersion = _motionVersion;
-            _entranceAnimatedContainers.Clear();
-            // Make the container itself visible immediately so individual items
-            // can control their own opacity independently.
-            Cards.BeginAnimation(OpacityProperty, null);
-            Cards.Opacity = 1;
-            Cards.RenderTransform = Transform.Identity;
-            StaggerEntranceCards();
-
-            int version = _motionVersion;
-            if (_entranceAnimatedContainers.Count == 0 && _cards.Count > 0)
-            {
-                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
-                {
-                    if (!_disposed && !_trayLeaving && _entranceStaggerVersion == version)
-                        StaggerEntranceCards();
-                }));
-            }
-            _ = SafeAsync(async () =>
-            {
-                await Task.Delay(800, _contentLifetime.Token);
-                if (_entranceStaggerVersion == version)
-                {
-                    _entranceStaggerVersion = 0;
-                    _entranceAnimatedContainers.Clear();
-                }
-            });
-        }
-        else
-        {
-            _entranceStaggerVersion = 0;
-            _entranceAnimatedContainers.Clear();
-            AnimateLayer(Cards, true, 60, !reversing, 360, 10);
-        }
-
-        foreach (var panel in new FrameworkElement[] { LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette, StatusPanel, DeleteConfirmationPanel, LabelEditorPanel })
-            if (panel.IsVisible) AnimateLayer(panel, true, 60, !reversing, 360, 10);
+        AnimateShelfLayer(SearchSurface, entering: true, fresh: !reversing, completed: searchEntranceCompleted);
+        foreach (var layer in new FrameworkElement[] { ToolbarSurface, CategoryScroll, Cards, LockPanel,
+            ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette, StatusPanel, DeleteConfirmationPanel, LabelEditorPanel })
+            if (layer.IsVisible) AnimateShelfLayer(layer, entering: true, fresh: !reversing);
         if (LockPanel.IsVisible) QueuePasscodeFocus();
         if (_trayDropBorderVisible) AnimateTrayDropBorder(true, !reversing);
     }
@@ -214,17 +138,12 @@ public sealed partial class ClipboardTray
         UpdatePinCaret();
         StopEntranceWork();
         CancelThumbnailLoads();
-        _entranceStaggerVersion = 0;
-        _entranceAnimatedContainers.Clear();
-        ++_motionVersion;
-        if (!animate) return;
+        CancelCardArrivals();
+        if (!animate || !IsVisible || AnimationConfig.ReduceMotion) { ResetCardMotion(Cards); return; }
         AnimateTrayDropBorder(false);
-        AnimateLayer(Cards, false, 0);
-        AnimateLayer(CategoryScroll, false, 20);
-        AnimateLayer(SearchSurface, false, 40);
-        if (ToolbarSurface.Visibility == Visibility.Visible) AnimateLayer(ToolbarSurface, false, 40);
-        foreach (var panel in new FrameworkElement[] { LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette })
-            if (panel.IsVisible) AnimateLayer(panel, false, 0);
+        foreach (var layer in new FrameworkElement[] { Cards, CategoryScroll, SearchSurface, ToolbarSurface,
+            LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette })
+            if (layer.IsVisible) AnimateShelfLayer(layer, entering: false);
     }
 
     private void ShowTransientLayer(FrameworkElement element)
@@ -528,11 +447,7 @@ public sealed partial class ClipboardTray
 
     private async Task AnimateCollectionChangesAsync(IReadOnlyList<VNotch.Models.ClipboardEntry> entries, CancellationToken cancellation)
     {
-        if (_animateResults || _trayLeaving || AnimationConfig.ReduceMotion) return;
-        // Large replacements and later viewport arrivals already have a content
-        // entrance. Keep the extra insertion animation for small live updates.
-        RecordArrivingCards(entries);
-
+        if (_animateResults || _trayLeaving || !IsVisible || AnimationConfig.ReduceMotion) return;
         List<(ListBoxItem Item, Guid EntryId)>? removing = null;
         foreach (var item in _selectionContainers)
         {
@@ -554,7 +469,7 @@ public sealed partial class ClipboardTray
             catch (OperationCanceledException)
             {
                 foreach (var (item, entryId) in removing)
-                    if (item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card && card.Entry.Id == entryId)
+                    if (!_trayLeaving && item.IsVisible && item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card && card.Entry.Id == entryId)
                     {
                         // Reverse from the rendered state instead of flashing back to opaque.
                         AnimateCardLifecycle(item, entering: true);
@@ -566,153 +481,92 @@ public sealed partial class ClipboardTray
         }
     }
 
-    private static void AnimateCardLifecycle(FrameworkElement element, bool entering, bool fresh = false)
+    private static void AnimateCardLifecycle(FrameworkElement element, bool entering, bool fresh = false) =>
+        AnimateShelfLayer(element, entering, fresh);
+
+    private static void AnimateShelfLayer(FrameworkElement element, bool entering, bool fresh = false, Action? completed = null)
     {
-        AnimateLayer(element, entering, 0, fresh, driftY: entering ? 8 : 6);
+        if (!element.IsVisible || AnimationConfig.ReduceMotion)
+        {
+            ResetCardMotion(element);
+            completed?.Invoke();
+            return;
+        }
+        var (_, translate) = LayerTransforms(element);
+        Motion.To(translate, TranslateTransform.YProperty,
+            entering ? 0 : -6, entering ? Motion.Shift : Motion.Exit,
+            from: fresh ? -6 : null);
+        // Keep the template's resting opacity available when a container is recycled.
+        double restingOpacity = (double)element.GetAnimationBaseValue(OpacityProperty);
+        if (entering || element.Opacity > 0)
+            Motion.To(element, OpacityProperty, entering ? restingOpacity : 0, entering ? Motion.Exit : Motion.PressDown,
+                from: fresh ? restingOpacity * 0.72 : null, done: completed, restoreBaseValue: entering);
+        else
+            completed?.Invoke();
     }
 
-    private static void AnimateCardJumpEntrance(FrameworkElement element, int delay)
+    private void ResetShelfMotion()
     {
-        AnimateLayer(element, true, delay, true, driftY: 18);
+        foreach (var layer in new FrameworkElement[] { SearchSurface, ToolbarSurface, CategoryScroll, Cards,
+            LockPanel, ApprovalPanel, DetailPanel, EmptyText, EmptyDropSilhouette, StatusPanel,
+            DeleteConfirmationPanel, LabelEditorPanel })
+            ResetCardMotion(layer);
     }
 
-    private void StaggerEntranceCards(int baseDelay = 60)
+    private void CancelCardArrivals()
     {
-        _entranceBaseDelay = baseDelay;
-        // Animate cards that are already realized in the virtualizing panel from left to right.
-        // Cards loaded later during this entrance will be caught by CardContainer_Loaded.
-        var candidateSet = new HashSet<ListBoxItem>();
-        var candidateList = new List<ListBoxItem>(16);
-        foreach (var item in _selectionContainers)
-        {
-            if ((item.IsLoaded || item.IsVisible) && candidateSet.Add(item))
-                candidateList.Add(item);
-        }
-        int count = Math.Min(_cards.Count, 16);
-        for (int i = 0; i < count; i++)
-        {
-            if (Cards.ItemContainerGenerator.ContainerFromIndex(i) is ListBoxItem generated && candidateSet.Add(generated))
-                candidateList.Add(generated);
-        }
+        _arrivingCards.Clear();
+        foreach (var item in _selectionContainers) ResetCardMotion(item);
+    }
 
-        foreach (var element in _realizedCardElements)
-            RefreshCardViewportVisibility(element, true);
-
-        int candidateCount = candidateList.Count;
-        if (candidateCount == 0) return;
-
-        Span<int> candidateIndices = candidateCount <= 64 ? stackalloc int[candidateCount] : new int[candidateCount];
-        Span<int> sortedPositions = candidateCount <= 64 ? stackalloc int[candidateCount] : new int[candidateCount];
-        Span<int> delaysMs = candidateCount <= 64 ? stackalloc int[candidateCount] : new int[candidateCount];
-
-        for (int i = 0; i < candidateCount; i++)
-        {
-            var item = candidateList[i];
-            int idx = Cards.ItemContainerGenerator.IndexFromContainer(item);
-            if (idx < 0)
-                idx = item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card ? _cards.IndexOf(card) : int.MaxValue;
-            candidateIndices[i] = idx;
-        }
-
-        vn_clipboard_motion_compute_stagger(candidateIndices, candidateCount, baseDelay, sortedPositions, delaysMs);
-
-        for (int i = 0; i < candidateCount; i++)
-        {
-            var item = candidateList[sortedPositions[i]];
-            if (_entranceAnimatedContainers.Add(item))
-            {
-                ResetCardMotion(item);
-                AnimateCardJumpEntrance(item, baseDelay + (int)Motion.Stagger(i).TotalMilliseconds);
-            }
-        }
+    private void ConsumeCardArrival(ListBoxItem item, Guid entryId)
+    {
+        if (_arrivingCards.Remove(entryId) && item.IsVisible && !_trayLeaving && !_disposed &&
+            !AnimationConfig.ReduceMotion)
+            AnimateCardLifecycle(item, entering: true, fresh: true);
     }
 
     private void CardContainer_Loaded(object sender, RoutedEventArgs e)
     {
         if (sender is not ListBoxItem item) return;
         RegisterSelectionContainer(item);
-        if (_entranceStaggerVersion == _motionVersion && _entranceStaggerVersion > 0)
-        {
-            // Realization can prepare the entrance before WPF raises Loaded.
-            // Keep that clock rather than resetting an already animated card.
-            if (_entranceAnimatedContainers.Add(item))
-            {
-                ResetCardMotion(item);
-                int itemIndex = Cards.ItemContainerGenerator.IndexFromContainer(item);
-                if (itemIndex < 0 && item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card)
-                    itemIndex = _cards.IndexOf(card);
-                vn_clipboard_motion_card_delay(itemIndex, _entranceAnimatedContainers.Count, _entranceBaseDelay, out int delay);
-                AnimateCardJumpEntrance(item, delay);
-            }
-        }
-        else
-        {
-            ResetCardMotion(item);
-            if (item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card && _arrivingCards.Remove(card.Entry.Id))
-                AnimateCardLifecycle(item, entering: true, fresh: true);
-        }
+        ResetCardMotion(item);
+        if (item.DataContext is VNotch.ViewModels.ClipboardCardViewModel card)
+            ConsumeCardArrival(item, card.Entry.Id);
     }
 
     private void CardContainer_Unloaded(object sender, RoutedEventArgs e)
     {
-        if (sender is ListBoxItem item)
-        {
-            UnregisterSelectionContainer(item);
-            _entranceAnimatedContainers.Remove(item);
-        }
-        if (sender is FrameworkElement element) ResetCardMotion(element);
-    }
-
-    private async Task PrepareResultsAsync(CancellationToken cancellation)
-    {
-        if (!_animateResults || _trayLeaving || !Cards.IsVisible || AnimationConfig.ReduceMotion) return;
-        double current = Cards.Opacity;
-        Cards.BeginAnimation(OpacityProperty, null);
-        Cards.Opacity = 0;
-        var fade = new DoubleAnimation(current, 0, TimeSpan.FromMilliseconds(MotionFast))
-        { FillBehavior = FillBehavior.Stop, EasingFunction = TrayEase };
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        Cards.BeginAnimation(OpacityProperty, fade, HandoffBehavior.SnapshotAndReplace);
-        await Task.Delay(MotionFast, cancellation);
+        if (sender is not ListBoxItem item) return;
+        UnregisterSelectionContainer(item);
+        ResetCardMotion(item);
     }
 
     private void RevealResults()
     {
         if (!_animateResults || _trayLeaving) return;
         _animateResults = false;
-        if (!IsVisible) return;
-        // Swap while hidden, then reveal cards sequentially from left to right with a springy jump.
-        Cards.BeginAnimation(OpacityProperty, null);
-        Cards.Opacity = 1;
-        Cards.RenderTransform = Transform.Identity;
-        if (AnimationConfig.ReduceMotion) return;
-
-        int version = ++_motionVersion;
-        _entranceStaggerVersion = version;
-        _entranceAnimatedContainers.Clear();
-        StaggerEntranceCards(baseDelay: 0);
-        if (_entranceAnimatedContainers.Count == 0 && _cards.Count > 0)
-        {
-            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
-            {
-                if (!_disposed && !_trayLeaving && _entranceStaggerVersion == version)
-                    StaggerEntranceCards(baseDelay: 0);
-            }));
-        }
-        _ = SafeAsync(async () =>
-        {
-            await Task.Delay(750, _contentLifetime.Token);
-            if (_entranceStaggerVersion == version)
-            {
-                _entranceStaggerVersion = 0;
-                _entranceAnimatedContainers.Clear();
-            }
-        });
+        if (Cards.IsVisible && !AnimationConfig.ReduceMotion)
+            AnimateCardLifecycle(Cards, entering: true, fresh: !Motion.IsRunning(Cards, OpacityProperty));
     }
 
     private static void ResetCardMotion(FrameworkElement element)
     {
+        if (element.RenderTransform is TransformGroup group && !group.IsFrozen)
+        {
+            if (FindTransform<ScaleTransform>(group.Children) is { } scale)
+            {
+                Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
+                Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
+            }
+            if (FindTransform<TranslateTransform>(group.Children) is { } translate)
+            {
+                Motion.Stop(translate, TranslateTransform.XProperty, 0);
+                Motion.Stop(translate, TranslateTransform.YProperty, 0);
+            }
+        }
         element.RenderTransform = Transform.Identity;
+        Motion.Forget(element, OpacityProperty);
         element.BeginAnimation(OpacityProperty, null);
         if (element.ReadLocalValue(OpacityProperty) is double) element.Opacity = 1;
     }

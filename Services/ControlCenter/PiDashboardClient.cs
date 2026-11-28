@@ -236,7 +236,17 @@ internal sealed partial class PiDashboardClient : IDisposable
             {
                 if (node is not JsonObject x) continue;
                 if (!DateTime.TryParseExact(Str(x, "date"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)) continue;
-                exams.Add(new PiExam(date, Str(x, "startTime"), Str(x, "kind"), Str(x, "title"), Str(x, "subjectShort"), ParseUntisColor(Str(x, "color"))));
+                string start = Str(x, "startTime"), title = Str(x, "title"), subject = Str(x, "subjectShort");
+                Color? color = ParseUntisColor(Str(x, "color"));
+                // Untis files some tests as an event without a subject ("Externe Veranst."): the lesson it replaces names it.
+                if (subject.Length == 0 && days.TryGetValue(Str(x, "date"), out var day)
+                    && day.FirstOrDefault(lesson => lesson.Start == start && lesson.SubjectKey.Length > 0) is { } replaced)
+                {
+                    subject = replaced.SubjectKey;
+                    color ??= replaced.Color;
+                    if (title.Length == 0 || title.StartsWith("Externe Veranst", StringComparison.OrdinalIgnoreCase)) title = replaced.Subject;
+                }
+                exams.Add(new PiExam(date, start, Str(x, "kind"), title, subject, color));
             }
         }
         var subjectColors = new Dictionary<string, Color>(StringComparer.Ordinal);

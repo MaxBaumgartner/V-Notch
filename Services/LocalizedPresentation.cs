@@ -40,4 +40,19 @@ internal static partial class LocalizedPresentation
         NativeResolveFlowDirection(culture.TextInfo.IsRightToLeft ? (byte)1 : (byte)0, out int flowDir);
         element.SetCurrentValue(FrameworkElement.FlowDirectionProperty, (FlowDirection)flowDir);
     }
+
+    internal static string FormatTransferRate(double bytesPerSecond, bool roundKilobytes = false)
+    {
+        var culture = Loc.GetCulture();
+        return bytesPerSecond switch
+        {
+            >= 1024 * 1024 => string.Create(culture, $"{bytesPerSecond / (1024 * 1024):0.0} MB/s"),
+            >= 1024 when roundKilobytes => string.Create(culture, $"{bytesPerSecond / 1024:0} KB/s"),
+            >= 1024 => string.Create(culture, $"{bytesPerSecond / 1024:0.0} KB/s"),
+            _ => string.Create(culture, $"{bytesPerSecond:0} B/s")
+        };
+    }
+
+    internal static string FormatWatts(double watts) =>
+        watts.ToString(watts >= 10 ? "0" : "0.0", Loc.GetCulture()) + " W";
 }

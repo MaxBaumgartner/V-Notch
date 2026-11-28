@@ -3,7 +3,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using VNotch.Services;
 
 namespace VNotch;
@@ -34,22 +33,17 @@ public partial class SettingsWindow
         if (title.RenderTransform is not TranslateTransform translate || translate.IsFrozen)
             title.RenderTransform = translate = new TranslateTransform();
 
-        title.BeginAnimation(OpacityProperty, null);
-        translate.BeginAnimation(TranslateTransform.YProperty, null);
-        title.Opacity = 1;
-        translate.Y = 0;
-        if (!IsLoaded || AnimationConfig.ReduceMotion) return;
-
-        var duration = System.TimeSpan.FromMilliseconds(280);
-        var fade = new DoubleAnimation(0, 1, duration);
-        var slide = new DoubleAnimation(7 * (_lastNavDirection >= 0 ? 1 : -1), 0, duration)
+        if (!IsLoaded || !title.IsVisible || AnimationConfig.ReduceMotion)
         {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-        Timeline.SetDesiredFrameRate(fade, AnimationConfig.TargetFps);
-        Timeline.SetDesiredFrameRate(slide, AnimationConfig.TargetFps);
-        title.BeginAnimation(OpacityProperty, fade);
-        translate.BeginAnimation(TranslateTransform.YProperty, slide);
+            Motion.Stop(title, OpacityProperty, 1);
+            Motion.Stop(translate, TranslateTransform.YProperty, 0);
+            return;
+        }
+
+        bool moving = Motion.IsRunning(translate, TranslateTransform.YProperty);
+        Motion.To(title, OpacityProperty, 1, Motion.Exit, from: moving ? null : 0.7);
+        Motion.To(translate, TranslateTransform.YProperty, 0, Motion.Shift,
+            from: moving ? null : 6 * _lastNavDirection);
     }
 
     private static void CollectHeaderIcon(UIElement element, GeometryGroup geometry)

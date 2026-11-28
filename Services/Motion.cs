@@ -97,10 +97,11 @@ internal static partial class Motion
     /// it with a speed of its own, e.g. the pointer's when a drag lets go. <paramref name="done"/> is dropped when
     /// another spring takes the property over, unless <paramref name="keep"/> is set: then it runs once the
     /// property finally comes to rest, whoever moved it last (a session that must end, e.g. the shell's).
+    /// Use <paramref name="restoreBaseValue"/> when a style or binding owns the resting value.
     /// </summary>
     public static void To(DependencyObject target, DependencyProperty property, double to, SpringMotion spring,
         double? from = null, TimeSpan? delay = null, int? fps = null, Action? done = null, double? velocity = null,
-        bool keep = false, double acceleration = 0)
+        bool keep = false, double acceleration = 0, bool restoreBaseValue = false)
     {
         if (target is not IAnimatable animatable) throw new ArgumentException("Target cannot be animated.", nameof(target));
         var live = Live.GetOrCreateValue(target);
@@ -111,7 +112,7 @@ internal static partial class Motion
         {
             live.Remove(property);
             animatable.BeginAnimation(property, null);
-            target.SetValue(property, to);
+            if (!restoreBaseValue) target.SetValue(property, to);
             done?.Invoke();
             kept?.Invoke();
             return;
@@ -133,7 +134,7 @@ internal static partial class Motion
         {
             live.Remove(property);
             animatable.BeginAnimation(property, null);
-            target.SetValue(property, to);
+            if (!restoreBaseValue) target.SetValue(property, to);
             done?.Invoke();
             kept?.Invoke();
             return;
@@ -149,11 +150,13 @@ internal static partial class Motion
         {
             if (live.TryGetValue(property, out var current) && ReferenceEquals(current, running)) live.Remove(property);
             else return; // replaced on the way: the newer spring owns the ending
+            if (restoreBaseValue) animatable.BeginAnimation(property, null);
             done?.Invoke();
             kept?.Invoke();
         };
-        // An entrance that waits must already sit at its start, or it shows its resting look until its turn.
-        if (from is { } placed && delay is { } d && d > TimeSpan.Zero) target.SetValue(property, placed);
+        // A delayed entrance can publish its start early when it owns the base value.
+        if (!restoreBaseValue && from is { } placed && delay is { } d && d > TimeSpan.Zero)
+            target.SetValue(property, placed);
         animatable.ApplyAnimationClock(property, clock, HandoffBehavior.SnapshotAndReplace);
     }
 

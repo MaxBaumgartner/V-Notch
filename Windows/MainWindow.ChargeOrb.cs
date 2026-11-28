@@ -531,7 +531,7 @@ public partial class MainWindow
             var (minutes, watts) = ChargeReport();
             if (minutes > 0) parts.Add(Loc.Get("battery.fullIn", FormatChargeTime(minutes)));
             double shown = watts > 0 ? watts : battery.HasPowerRate ? Math.Abs(battery.PowerWatts) : 0;
-            if (shown >= 0.5) parts.Add(shown >= 10 ? $"{shown:0} W" : $"{shown:0.0} W");
+            if (shown >= 0.5) parts.Add(LocalizedPresentation.FormatWatts(shown));
         }
         return (title, string.Join(" · ", parts), battery.GetPercentageText());
     }

@@ -24,6 +24,7 @@ internal sealed class CompactSurfaceAttachment
     // A leaving face whose shell another owner grows again (the notch opening) never arrives; it ends hidden then.
     private double _leaveFromHeight = double.NaN;
     private Action? _finish;
+    private Size _target;
 
     internal CompactSurfaceAttachment(FrameworkElement shell, FrameworkElement face, Func<Size> rest)
     {
@@ -71,12 +72,15 @@ internal sealed class CompactSurfaceAttachment
 
     internal void MoveTo(double width, double height, SpringMotion spring, bool shown, Action? done = null)
     {
+        int generation = ++_generation;
+        _finish = null;
+        _leaveFromHeight = double.NaN;
         // Expanding an already readable message must not dim it back to the closed-notch reveal threshold.
         _opacityFloor = shown ? _layer.Opacity : 0;
         if (shown) Attach(width, height);
         else if (!_attached) Attach(_shell.Width, _shell.Height);
-        int generation = ++_generation;
         int remaining = 2;
+        _target = new Size(width, height);
         _leaveFromHeight = shown ? double.NaN : _shell.Height;
         _finish = () =>
         {
@@ -91,6 +95,15 @@ internal sealed class CompactSurfaceAttachment
         }
         Motion.To(_shell, FrameworkElement.WidthProperty, width, spring, done: Arrived);
         Motion.To(_shell, FrameworkElement.HeightProperty, height, spring, done: Arrived);
+    }
+
+    internal void Settle()
+    {
+        if (_finish is not { } finish) return;
+        _leaveFromHeight = double.NaN;
+        Motion.Stop(_shell, FrameworkElement.WidthProperty, _target.Width);
+        Motion.Stop(_shell, FrameworkElement.HeightProperty, _target.Height);
+        finish();
     }
 
     private void Watch()
@@ -113,16 +126,18 @@ internal sealed class CompactSurfaceAttachment
 
     private void Render(object? sender, EventArgs args)
     {
+        if (!double.IsFinite(_shell.Width) || !double.IsFinite(_shell.Height)) return;
         if (_shell.Height > _leaveFromHeight + 8)
         {
             _finish?.Invoke();
             return;
         }
         Size rest = _rest();
-        // Some compact alerts only widen the notch, so width carries their reveal progress.
+        // Width carries the reveal for faces that only widen or narrow the notch.
+        double widthSpan = _open.Width - rest.Width;
         double progress = Math.Abs(_open.Height - rest.Height) > .5
             ? (_shell.Height - rest.Height) / (_open.Height - rest.Height)
-            : (_shell.Width - rest.Width) / Math.Max(1, _open.Width - rest.Width);
+            : Math.Abs(widthSpan) > .5 ? (_shell.Width - rest.Width) / widthSpan : 1;
         _scale.ScaleX = Math.Clamp(_shell.Width / _open.Width, .04, 1.3);
         _scale.ScaleY = Math.Clamp(_shell.Height / _open.Height, .04, 1.3);
         _layer.Opacity = AnimationConfig.ReduceMotion ? 1 : Math.Max(_opacityFloor, Math.Clamp((progress - .08) * 2.2, 0, 1));

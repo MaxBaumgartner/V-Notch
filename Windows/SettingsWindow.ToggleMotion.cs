@@ -39,7 +39,15 @@ public partial class SettingsWindow
 
     private void SettingsSwitch_Loaded(object sender, RoutedEventArgs e)
     {
-        if (sender is CheckBox check) UpdateSettingsSwitch(check, animate: false, isPressed: false);
+        if (sender is not CheckBox check) return;
+        check.IsVisibleChanged -= SettingsSwitch_VisibilityChanged;
+        check.IsVisibleChanged += SettingsSwitch_VisibilityChanged;
+        UpdateSettingsSwitch(check, animate: false);
+    }
+
+    private static void SettingsSwitch_VisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is CheckBox { IsVisible: false } check) UpdateSettingsSwitch(check, animate: false);
     }
 
     private void SettingsSwitch_StateChanged(object sender, RoutedEventArgs e)
@@ -145,17 +153,17 @@ public partial class SettingsWindow
             template.FindName("SwitchThumb", check) is not Border { RenderTransform: TranslateTransform thumb } thumbBorder) return;
 
         EnsureMutableThumbTransforms(check, thumbBorder, ref thumb, out var capScale);
-        bool animate = check.IsVisible && !AnimationConfig.ReduceMotion && SystemParameters.ClientAreaAnimation;
+        bool animate = check.IsVisible && !AnimationConfig.ReduceMotion && AnimationConfig.ClientAreaAnimation;
         bool on = check.IsChecked == true;
         double trackWidth = track.ActualWidth > 0 ? track.ActualWidth : track.Width;
         double thumbWidth = thumbBorder.ActualWidth > 0 ? thumbBorder.ActualWidth : thumbBorder.Width;
         var motion = ComputeSwitchMotion(trackWidth, thumbWidth, thumbBorder.Margin.Left, on, isPressed, animate);
 
-        AnimateSettingsSwitchValue(thumb, TranslateTransform.XProperty, motion.TargetX + motion.PressShiftX, animate, 130);
+        AnimateSettingsSwitchValue(thumb, TranslateTransform.XProperty, motion.TargetX + motion.PressShiftX, animate, isPressed ? Motion.PressDown : Motion.Press);
         if (capScale != null)
         {
-            AnimateSettingsSwitchValue(capScale, ScaleTransform.ScaleXProperty, motion.PressScaleX, animate, 130);
-            AnimateSettingsSwitchValue(capScale, ScaleTransform.ScaleYProperty, motion.PressScaleY, animate, 130);
+            AnimateSettingsSwitchValue(capScale, ScaleTransform.ScaleXProperty, motion.PressScaleX, animate, isPressed ? Motion.PressDown : Motion.Press);
+            AnimateSettingsSwitchValue(capScale, ScaleTransform.ScaleYProperty, motion.PressScaleY, animate, isPressed ? Motion.PressDown : Motion.Press);
         }
     }
 
@@ -176,8 +184,8 @@ public partial class SettingsWindow
         double thumbWidth = thumbBorder.ActualWidth > 0 ? thumbBorder.ActualWidth : thumbBorder.Width;
         var motion = ComputeSwitchMotion(trackWidth, thumbWidth, thumbBorder.Margin.Left, on, isPressed, animate);
 
-        AnimateSettingsSwitchValue(thumb, TranslateTransform.XProperty, motion.TargetX, animate, Math.Max(180, motion.DurationMs));
-        AnimateSettingsSwitchValue(onTrack, OpacityProperty, on ? 1 : 0, animate);
+        AnimateSettingsSwitchValue(thumb, TranslateTransform.XProperty, motion.TargetX, animate, Motion.Shift);
+        AnimateSettingsSwitchValue(onTrack, OpacityProperty, on ? 1 : 0, animate, Motion.Exit);
 
         if (capScale != null)
         {
@@ -202,23 +210,14 @@ public partial class SettingsWindow
     }
 
     // A pressed switch dips quickly; a released or flipped one springs, keeping its speed when flipped back mid-way.
-    private static void AnimateSettingsSwitchValue(Animatable target, DependencyProperty property, double value, bool animate, int durationMs = 190)
+    private static void AnimateSettingsSwitchValue(DependencyObject target, DependencyProperty property, double value, bool animate, SpringMotion spring)
     {
         if (!animate)
         {
             Motion.Stop(target, property, value);
             return;
         }
-        Motion.To(target, property, value, durationMs <= 140 ? Motion.PressDown : Motion.Press);
+        Motion.To(target, property, value, spring);
     }
 
-    private static void AnimateSettingsSwitchValue(UIElement target, DependencyProperty property, double value, bool animate)
-    {
-        if (!animate)
-        {
-            Motion.Stop(target, property, value);
-            return;
-        }
-        Motion.To(target, property, value, Motion.Glide);
-    }
 }

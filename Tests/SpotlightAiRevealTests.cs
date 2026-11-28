@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using VNotch.Services;
 using Xunit;
@@ -17,19 +18,11 @@ public sealed class SpotlightAiRevealTests
         {
             bool previous = AnimationConfig.ReduceMotion;
             var element = new Border();
-            using var source = new System.Windows.Interop.HwndSource(
-                new System.Windows.Interop.HwndSourceParameters("ai-reveal-test")
-                {
-                    Width = 100,
-                    Height = 100,
-                    PositionX = -32000,
-                    PositionY = -32000,
-                    WindowStyle = unchecked((int)0x80000000)
-                });
-            source.RootVisual = element;
+            var window = new BackgroundWindow { Content = element, Width = 100, Height = 100 };
             try
             {
                 AnimationConfig.SetReduceMotion(false);
+                window.Show();
                 var method = typeof(SpotlightWindow).GetMethod("AnimateAiArrival", BindingFlags.Static | BindingFlags.NonPublic);
                 Assert.NotNull(method);
                 for (int attempt = 0; attempt < 3; attempt++)
@@ -51,7 +44,9 @@ public sealed class SpotlightAiRevealTests
                     descriptor.AddValueChanged(element, observe);
                     try
                     {
-                        method.Invoke(null, new object[] { element, 6d, 240 });
+                        method.Invoke(null, new object[] { element });
+                        var scale = Assert.IsType<TransformGroup>(element.RenderTransform).Children.OfType<ScaleTransform>().Single();
+                        Assert.True(scale.ScaleY < 1 || Motion.IsRunning(scale, ScaleTransform.ScaleYProperty));
                         observe(null, EventArgs.Empty);
                         element.UpdateLayout();
                         await WpfFrameWaiter.UntilAsync(
@@ -65,6 +60,7 @@ public sealed class SpotlightAiRevealTests
             }
             finally
             {
+                window.Close();
                 element.BeginAnimation(UIElement.OpacityProperty, null);
                 AnimationConfig.SetReduceMotion(previous);
             }

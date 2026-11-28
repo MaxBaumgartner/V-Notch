@@ -34,7 +34,15 @@ public partial class ControlCenterView
     }
 
     private readonly Func<PiExam, string> _studyFolder =
-        static exam => SchoolStudy.FolderFor(ExamSubject(exam), exam.Date, ExamTitle(exam));
+        static exam => SchoolStudy.FolderFor(exam.Subject.Length > 0 ? exam.Subject : exam.Title, exam.Date, ExamTitle(exam));
+
+    /// <summary>Where the study folder lives, as the panel names it: "Schule / 3AHIF / POSE".</summary>
+    private string StudyPlace(PiExam exam)
+    {
+        string? subjectFolder = Path.GetDirectoryName(_studyFolder(exam));
+        return subjectFolder == null ? "Schule"
+            : "Schule / " + Path.GetRelativePath(SchoolFiles.SchoolRoot, subjectFolder).Replace(Path.DirectorySeparatorChar, '/').Replace("/", " / ");
+    }
 
     private void OpenStudyFolder(PiExam exam)
     {
@@ -113,7 +121,7 @@ public partial class ControlCenterView
         heading.ToolTip = heading.Text;
         body.Children.Add(heading);
         string when = ExamWhen(exam);
-        body.Children.Add(SchoolText($@"{when}　·　Lernen / {subject}", 13));
+        body.Children.Add(SchoolText($@"{when}　·　{StudyPlace(exam)}", 13));
 
         var rows = new StackPanel { Background = Brushes.Transparent, Margin = new Thickness(0, 4, 0, 0) };
         body.Children.Add(rows);

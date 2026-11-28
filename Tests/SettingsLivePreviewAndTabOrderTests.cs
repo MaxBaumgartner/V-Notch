@@ -45,7 +45,8 @@ public sealed class SettingsLivePreviewAndTabOrderTests
     public void ResolveFullNavTabOrder_DeduplicatesCaseInsensitivelyAndHandlesNull()
     {
         List<string> fromNull = SettingsWindow.ResolveFullNavTabOrder(null);
-        Assert.Equal(new[] { "Media", "Secondary", "Timer", "AudioMixer", "Camera", "AiUsage", "Claude", "Pi", "School" }, fromNull);
+        // The fork's default order puts its own tabs right after the system tab.
+        Assert.Equal(new[] { "Media", "Secondary", "Timer", "Claude", "Pi", "School", "AudioMixer", "Camera", "AiUsage" }, fromNull);
 
         List<string> deduplicated = SettingsWindow.ResolveFullNavTabOrder("Media,camera,Timer,CAMERA,Secondary,aiusage,AIUSAGE");
         Assert.Equal(new[] { "Media", "camera", "Timer", "Secondary", "aiusage", "AudioMixer", "Claude", "Pi", "School" }, deduplicated);

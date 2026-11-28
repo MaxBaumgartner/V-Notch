@@ -63,12 +63,14 @@ public sealed class TrayMotionTests
             search.IsEnabled = false;
             await WaitForSearchEntranceAsync(tray, animate);
             Assert.Equal(.45, search.Opacity);
+            Assert.Equal(DependencyProperty.UnsetValue, search.ReadLocalValue(UIElement.OpacityProperty));
             search.IsEnabled = true;
             Assert.Equal(1, search.Opacity);
             tray.BeginExit();
             search.IsEnabled = false;
             await WaitForSearchEntranceAsync(tray, animate);
             Assert.Equal(.45, search.Opacity);
+            Assert.Equal(DependencyProperty.UnsetValue, search.ReadLocalValue(UIElement.OpacityProperty));
             search.IsEnabled = true;
             Assert.Equal(1, search.Opacity);
         }
@@ -153,7 +155,7 @@ public sealed class TrayMotionTests
     });
 
     [Fact]
-    public void BeginEntranceAndExitManageEntranceLifecycleAndStagger() => SharedStaTestRunner.RunAsync(async () =>
+    public void BeginEntranceAndExitManageShelfMotion() => SharedStaTestRunner.RunAsync(async () =>
     {
         using var tray = new ClipboardTray();
         var window = new BackgroundWindow { Content = tray, Width = 800, Height = 400 };
@@ -172,13 +174,8 @@ public sealed class TrayMotionTests
             Assert.NotNull(toolbar);
             Assert.NotNull(category);
             Assert.NotNull(cards);
-            Assert.Equal(1.0, cards.Opacity);
-
             tray.BeginExit();
-            var isLeaving = tray.IsLeaving;
-            var staggerVer = tray.EntranceStaggerVersion;
-            Assert.True(isLeaving);
-            Assert.Equal(0, staggerVer);
+            Assert.True(tray.IsLeaving);
         }
         finally
         {
@@ -187,7 +184,7 @@ public sealed class TrayMotionTests
     });
 
     [Fact]
-    public void CardsStaggerLeftToRightWithSpringyBottomJumpAndLockContentShakesOnWrongPin() => SharedStaTestRunner.RunAsync(async () =>
+    public void CardsArriveTogetherAndLockContentShakesOnWrongPin() => SharedStaTestRunner.RunAsync(async () =>
     {
         bool prev = VNotch.Services.AnimationConfig.ReduceMotion;
         VNotch.Services.AnimationConfig.SetReduceMotion(false);
@@ -207,10 +204,10 @@ public sealed class TrayMotionTests
             var second = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(1);
 
             tray.BeginEntrance();
-            Assert.IsType<TransformGroup>(first.RenderTransform);
-            Assert.IsType<TransformGroup>(second.RenderTransform);
-            Assert.True(((TransformGroup)first.RenderTransform).Children.OfType<TranslateTransform>().Single().HasAnimatedProperties);
-            Assert.True(((TransformGroup)second.RenderTransform).Children.OfType<TranslateTransform>().Single().HasAnimatedProperties);
+            Assert.Equal(Matrix.Identity, first.RenderTransform.Value);
+            Assert.Equal(Matrix.Identity, second.RenderTransform.Value);
+            var shelf = Assert.IsType<TransformGroup>(list.RenderTransform);
+            Assert.True(shelf.Children.OfType<TranslateTransform>().Single().HasAnimatedProperties);
 
             var lockContent = (FrameworkElement)tray.FindName("LockContent");
             Assert.NotNull(lockContent);
@@ -226,7 +223,7 @@ public sealed class TrayMotionTests
     });
 
     [Fact]
-    public void LoadedContainerKeepsTheEntranceThatWasPreparedBeforeItsLoadedEvent() => SharedStaTestRunner.RunAsync(async () =>
+    public void AContainerLoadedDuringEntranceJoinsTheSameShelf() => SharedStaTestRunner.RunAsync(async () =>
     {
         bool previous = VNotch.Services.AnimationConfig.ReduceMotion;
         VNotch.Services.AnimationConfig.SetReduceMotion(false);
@@ -241,22 +238,19 @@ public sealed class TrayMotionTests
             var list = (ListBox)tray.FindName("Cards");
             var item = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0);
             tray.BeginEntrance();
-            var entrance = Assert.IsType<TransformGroup>(item.RenderTransform);
-            Assert.True(entrance.Children.OfType<TranslateTransform>().Single().HasAnimatedProperties);
-
-            // WPF can realize a container during layout and raise Loaded after
-            // BeginEntrance has already prepared that container's stagger.
+            var entrance = Assert.IsType<TransformGroup>(list.RenderTransform);
             item.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
 
-            Assert.Same(entrance, item.RenderTransform);
+            Assert.Same(entrance, list.RenderTransform);
             Assert.True(entrance.Children.OfType<TranslateTransform>().Single().HasAnimatedProperties);
-            Assert.True(item.HasAnimatedProperties);
+            Assert.Equal(Matrix.Identity, item.RenderTransform.Value);
+            Assert.False(item.HasAnimatedProperties);
         }
         finally { window.Close(); VNotch.Services.AnimationConfig.SetReduceMotion(previous); }
     });
 
     [Fact]
-    public void ReopeningAHiddenTrayRevealsItsCachedCardsIndividually() => SharedStaTestRunner.RunAsync(async () =>
+    public void ReopeningAHiddenTrayRevealsCachedCardsTogether() => SharedStaTestRunner.RunAsync(async () =>
     {
         bool previous = VNotch.Services.AnimationConfig.ReduceMotion;
         VNotch.Services.AnimationConfig.SetReduceMotion(false);
@@ -280,11 +274,13 @@ public sealed class TrayMotionTests
             var list = (ListBox)tray.FindName("Cards");
             var first = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(0);
             var last = (ListBoxItem)list.ItemContainerGenerator.ContainerFromIndex(2);
-            Assert.True(last.Opacity < .99, "Reopening must reveal each card, not just fade the entire row.");
-            Assert.True(first.Opacity >= last.Opacity, "The leftmost card must reveal before the rightmost card.");
-            await WpfFrameWaiter.UntilAsync(() => Math.Abs(last.Opacity - 1) < 1e-6 &&
-                Math.Abs(last.RenderTransform.Value.OffsetY) < 1e-6, "cached card reveal settled");
-            Assert.Equal(0, last.RenderTransform.Value.OffsetY);
+            Assert.Equal(1, first.Opacity);
+            Assert.Equal(1, last.Opacity);
+            Assert.Equal(Matrix.Identity, last.RenderTransform.Value);
+            var shelf = Assert.IsType<TransformGroup>(list.RenderTransform);
+            var offset = shelf.Children.OfType<TranslateTransform>().Single();
+            await WpfFrameWaiter.UntilAsync(() => offset.Y < 0, "cached shelf starts moving");
+            await WpfFrameWaiter.UntilAsync(() => list.Opacity == 1 && offset.Y == 0, "cached shelf settles");
             SaveTrayArtifact(tray);
         }
         finally { window.Close(); VNotch.Services.AnimationConfig.SetReduceMotion(previous); }

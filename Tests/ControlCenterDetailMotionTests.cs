@@ -91,7 +91,13 @@ public sealed class ControlCenterDetailMotionTests
     });
 
     internal static void Change(TextBlock text, string value) => Invoke("SetDetailText", text, value);
-    internal static void Invoke(string name, params object[] args) => typeof(ControlCenterView).GetMethod(name, Static)!.Invoke(null, args);
+    internal static void Invoke(string name, params object[] args)
+    {
+        // Optional parameters keep their defaults, so the helpers can grow without breaking these calls.
+        var method = typeof(ControlCenterView).GetMethod(name, Static)!;
+        var all = method.GetParameters().Select((p, i) => i < args.Length ? args[i] : p.DefaultValue).ToArray();
+        method.Invoke(null, all);
+    }
     private static IEnumerable<Transform> Transforms(FrameworkElement element) => element.RenderTransform is TransformGroup group
         ? group.Children : [element.RenderTransform];
 

@@ -409,6 +409,7 @@ public partial class MainWindow
         {
             DismissCountdownCompletion();
         }
+        if (!_idleGlanceShown) FinishIdleGlanceTransition();
 
         if (_isVolumeIndicatorActive || _isVolumeIndicatorExiting)
         {
@@ -778,6 +779,7 @@ public partial class MainWindow
     {
         if (generation != _viewTransitionGeneration || generation != _transitionCoordinator.ActiveTransitionId) return;
         _isAnimating = false;
+        FinishIdleGlanceTransition();
         NotchBorder.IsHitTestVisible = true;
 
         _isCameraView = effectiveTarget == VNotch.Models.NotchView.Camera;
@@ -1477,17 +1479,8 @@ public partial class MainWindow
     private void DismissTransientCompactNotifications()
     {
         CancelChargingGlanceImmediate();
-        if (_isBluetoothNotificationVisible)
-        {
-            _bluetoothController.MarkDismissed();
-            BluetoothNotification.BeginAnimation(OpacityProperty, null);
-            BluetoothNotification.Opacity = 0;
-            BluetoothNotification.Visibility = Visibility.Collapsed;
-            BluetoothDisconnectNotification.BeginAnimation(OpacityProperty, null);
-            BluetoothDisconnectNotification.Opacity = 0;
-            BluetoothDisconnectNotification.Visibility = Visibility.Collapsed;
-            _isBluetoothNotificationVisible = false;
-        }
+        CancelClipboardPeekImmediate();
+        CancelBluetoothNotificationImmediate();
         CancelClaudeNotificationImmediate();
         CancelAppPillImmediate();
         _compactPillArbiter.ForceClear();
@@ -1597,6 +1590,12 @@ public partial class MainWindow
         if (generation != _viewTransitionGeneration || generation != _transitionCoordinator.ActiveTransitionId) return;
         _isAnimating = false;
         NotchBorder.IsHitTestVisible = true;
+        if (IsCountdownCompletionVisualActive)
+        {
+            DismissCountdownCompletion();
+            suppressCompactThumbnailMotion = false;
+        }
+        FinishIdleGlanceTransition();
         _transitionCoordinator.CompleteTransition(generation);
         UpdateSpotifyCanvasPresentationContext();
         Motion.Stop(NotchBorder, WidthProperty, _collapsedWidth);
@@ -1693,6 +1692,7 @@ public partial class MainWindow
         if (IsCountdownCompletionVisualActive)
         {
             SuppressCompactMediaChromeForCountdownCompletion();
+            AnimateCountdownCompleteOverlayOut();
         }
         CancelThumbnailSwitchAnimations();
 
@@ -1796,8 +1796,8 @@ public partial class MainWindow
 
     private (double Width, double Height) FreezeShellGeometry()
     {
-        // Read effective animated values before detaching clocks. ActualWidth may
-        // still describe the previous layout pass when an animation reverses.
+        // The presenter inherits running compact springs. Only freeze geometry that
+        // has no live motion to hand over, using the rendered size as a fallback.
         double currentWidth = _collapsedWidth;
         if (double.IsFinite(NotchBorder.Width) && NotchBorder.Width > 0)
         {
@@ -1818,12 +1818,9 @@ public partial class MainWindow
             currentHeight = NotchBorder.ActualHeight;
         }
         double currentCornerRadius = CurrentCornerRadius;
-        NotchBorder.BeginAnimation(WidthProperty, null);
-        NotchBorder.BeginAnimation(HeightProperty, null);
-        this.BeginAnimation(CurrentCornerRadiusProperty, null);
-        NotchBorder.Width = currentWidth;
-        NotchBorder.Height = currentHeight;
-        CurrentCornerRadius = currentCornerRadius;
+        if (!Motion.IsRunning(NotchBorder, WidthProperty)) Motion.Stop(NotchBorder, WidthProperty, currentWidth);
+        if (!Motion.IsRunning(NotchBorder, HeightProperty)) Motion.Stop(NotchBorder, HeightProperty, currentHeight);
+        if (!Motion.IsRunning(this, CurrentCornerRadiusProperty)) Motion.Stop(this, CurrentCornerRadiusProperty, currentCornerRadius);
         return (currentWidth, currentHeight);
     }
 

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
@@ -25,9 +26,13 @@ public sealed class SystemMonitorPresenterLifetimeTests
             new TextBlock(), new Border(), new TextBlock(), new TextBlock());
         var refs = CreateRefs() with { Shelf = shelf };
         var window = new Window { Content = shelf.Section, ShowActivated = false, Width = 200, Height = 100 };
-        window.Show();
+        CultureInfo previousCulture = CultureInfo.CurrentCulture;
+        string previousLanguage = Loc.CurrentLanguage;
         try
         {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-AT");
+            Loc.SetLanguage("en");
+            window.Show();
             using var presenter = new SystemMonitorPresenter(module, dispatcher, refs);
             Publish(module, new SystemMonitorInfo
             {
@@ -45,7 +50,12 @@ public sealed class SystemMonitorPresenterLifetimeTests
             Assert.Equal(2048, presenter.LastNetDownBytesPerSec);
             Assert.Equal(16, presenter.LastNetUpBytesPerSec);
         }
-        finally { window.Close(); }
+        finally
+        {
+            window.Close();
+            Loc.SetLanguage(previousLanguage);
+            CultureInfo.CurrentCulture = previousCulture;
+        }
     });
 
     [Fact]

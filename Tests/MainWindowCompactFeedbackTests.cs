@@ -58,7 +58,7 @@ public sealed class MainWindowCompactFeedbackTests
         Assert.True(Field<bool>(window, "_isChargingNotificationVisible"));
         Assert.Equal($"{percent}%", window.ChargingPercentText.Text);
         Assert.Equal(Loc.Get(statusKey), window.ChargingStatusText.Text);
-        Assert.Equal(formattedWatts.Replace(".", System.Globalization.CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator), window.ChargingWattText.Text);
+        Assert.Equal(formattedWatts, window.ChargingWattText.Text);
         Assert.Equal(watts == 0 ? Visibility.Collapsed : Visibility.Visible, window.ChargingWattText.Visibility);
         Assert.Equal(percent / 100d, window.ChargingBatteryFillScale.ScaleX);
         await WpfFrameWaiter.UntilAsync(() => window.CollapsedContent.Visibility == Visibility.Collapsed,
@@ -172,8 +172,10 @@ public sealed class MainWindowCompactFeedbackTests
     {
         await using var fixture = CreateFixture();
         var window = fixture.Window;
+        using var host = new ChargeOrbCalmMotionTests.RenderHost(window);
         Set(window, "_isMusicCompactMode", true);
         Set(window, "_currentMediaInfo", new MediaInfo { CurrentTrack = "Fixture song", MediaSource = "Spotify", IsPlaying = true });
+        window.MusicCompactContent.Visibility = Visibility.Visible;
         Invoke(window, "PlayClipboardPeek");
         Assert.True(Field<bool>(window, "_isClipboardPeekActive"));
         Assert.Equal(Loc.Get("clipboard.copied").TrimStart('✓', ' '), window.ClipboardCopiedText.Text);
@@ -202,6 +204,7 @@ public sealed class MainWindowCompactFeedbackTests
     public void CopyFeedbackOutsideMusicModeOnlyBouncesTheCollapsedNotch() => SharedStaTestRunner.RunAsync(async ct =>
     {
         await using var fixture = CreateFixture();
+        using var host = new ChargeOrbCalmMotionTests.RenderHost(fixture.Window);
         Invoke(fixture.Window, "PlayClipboardPeek");
         Assert.False(Field<bool>(fixture.Window, "_isClipboardPeekActive"));
         await WpfFrameWaiter.UntilAsync(() => fixture.Window.NotchScale.ScaleX > 1, "copy bounce peak", ct);

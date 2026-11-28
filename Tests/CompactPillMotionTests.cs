@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using Microsoft.Extensions.DependencyInjection;
 using VNotch.Controllers;
+using VNotch.Models;
 using VNotch.Services;
 using VNotch.Tests.Fakes;
 using Xunit;
@@ -13,6 +14,168 @@ namespace VNotch.Tests;
 public sealed class CompactPillMotionTests
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void IdleGlanceSettlesOnShellInterruption(bool leaving, bool fullscreen) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        var settings = MusicMotionTests.Field<NotchSettings>(window, "_settings");
+        settings.SlimIdleNotch = false;
+        Invoke(window, "UpdateIdleShape");
+        double fullWidth = MusicMotionTests.Field<double>(window, "_collapsedWidth");
+        Motion.Stop(window.NotchBorder, FrameworkElement.WidthProperty, fullWidth);
+        Invoke(window, "UpdateIdleShape");
+        settings.SlimIdleNotch = true;
+        Invoke(window, "UpdateIdleShape");
+        var layer = (FrameworkElement)window.IdleGlance.Parent;
+        if (leaving)
+        {
+            await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width), "idle face settles", ct);
+            settings.SlimIdleNotch = false;
+            Invoke(window, "UpdateIdleShape");
+        }
+        await WpfFrameWaiter.UntilAsync(() => double.IsFinite(layer.Width) &&
+            Math.Abs(Motion.VelocityOf(window.NotchBorder, FrameworkElement.WidthProperty)) > 10,
+            "idle face moves with the shell", ct);
+
+        if (fullscreen)
+        {
+            window.ShellState.IsHiddenByFullscreen = true;
+            window.NotchLiveContent.Visibility = Visibility.Collapsed;
+            Invoke(window, "RefreshAmbientAnimations");
+            Assert.False(Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty));
+        }
+        else await OpenAndReverse(window, ct);
+
+        Assert.Equal(leaving ? Visibility.Collapsed : Visibility.Visible, window.IdleGlance.Visibility);
+        Assert.Equal(leaving ? 0 : 1, layer.Opacity);
+        Assert.Equal(leaving ? fullWidth : Math.Min(fullWidth, 150), window.NotchBorder.Width, 3);
+        Assert.True(double.IsNaN(layer.Width));
+    });
+
+    [Theory]
+    [InlineData(CompactPillSlot.Clipboard, false)]
+    [InlineData(CompactPillSlot.Clipboard, true)]
+    [InlineData(CompactPillSlot.Claude, false)]
+    [InlineData(CompactPillSlot.Claude, true)]
+    [InlineData(CompactPillSlot.Bluetooth, false)]
+    [InlineData(CompactPillSlot.Bluetooth, true)]
+    public void OpenCloseReversalRetiresAnInterruptedPill(CompactPillSlot slot, bool leaving) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        var arbiter = MusicMotionTests.Field<CompactPillArbiter>(window, "_compactPillArbiter");
+        FrameworkElement face;
+        FrameworkElement layer;
+        Action beginExit;
+        if (slot == CompactPillSlot.Clipboard)
+        {
+            window.SetDebugViewState("CompactMusicPill");
+            window.MusicCompactContent.Visibility = Visibility.Visible;
+            window.MusicCompactContent.Opacity = 1;
+            Invoke(window, "ShowClipboardCopiedState");
+            face = window.ClipboardCopiedText;
+            layer = (FrameworkElement)window.MusicCompactContent.Parent;
+            beginExit = () => Invoke(window, "RevertClipboardCopiedState", false);
+        }
+        else if (slot == CompactPillSlot.Claude)
+        {
+            Assert.True((bool)typeof(MainWindow).GetMethod("ShowNotchPill", Private)!.Invoke(window,
+                ["Build complete", "Ready for review", null, true, null, null, null, TimeSpan.FromSeconds(10), null])!);
+            face = window.ClaudeNotification;
+            layer = (FrameworkElement)face.Parent;
+            beginExit = () => Invoke(window, "AnimateClaudeNotificationOut");
+        }
+        else
+        {
+            Invoke(window, "AnimateBluetoothNotificationIn", true);
+            face = window.BluetoothNotification;
+            layer = (FrameworkElement)face.Parent;
+            beginExit = () => Invoke(window, "AnimateBluetoothNotificationOut");
+        }
+        Assert.Equal(slot, arbiter.ActiveSlot);
+        Assert.Equal(Visibility.Visible, face.Visibility);
+        if (slot == CompactPillSlot.Clipboard)
+        {
+            await WpfFrameWaiter.NextAsync(ct);
+            Assert.True(window.MusicViz.IsCopiedFeedbackActive);
+        }
+        if (leaving)
+        {
+            await WpfFrameWaiter.UntilAsync(() => double.IsNaN(layer.Width), "pill arrives", ct);
+            beginExit();
+        }
+        await WpfFrameWaiter.UntilAsync(() => double.IsFinite(layer.Width) &&
+            Math.Abs(Motion.VelocityOf(window.NotchBorder, FrameworkElement.WidthProperty)) > 10,
+            "pill shell is moving", ct);
+
+        await OpenAndReverse(window, ct);
+
+        Assert.Equal(CompactPillSlot.None, arbiter.ActiveSlot);
+        Assert.Equal(Visibility.Collapsed, face.Visibility);
+        Assert.Equal(slot == CompactPillSlot.Clipboard ? 1 : 0, layer.Opacity);
+        Assert.True(double.IsNaN(layer.Width));
+        Assert.False(window.MusicViz.IsCopiedFeedbackActive);
+        Assert.Null(typeof(MainWindow).GetField("_clipboardRevertTimer", Private)!.GetValue(window));
+    });
+
+    private static async Task OpenAndReverse(MainWindow window, CancellationToken ct)
+    {
+        var shell = window.NotchBorder;
+        double width = shell.Width;
+        double height = shell.Height;
+        double widthSpeed = Motion.VelocityOf(shell, FrameworkElement.WidthProperty);
+        double heightSpeed = Motion.VelocityOf(shell, FrameworkElement.HeightProperty);
+        window.NavigateToNotchView(NotchView.Timer);
+        Assert.Equal(width, shell.Width, 3);
+        Assert.Equal(height, shell.Height, 3);
+        Assert.Equal(widthSpeed, Motion.VelocityOf(shell, FrameworkElement.WidthProperty), 3);
+        Assert.Equal(heightSpeed, Motion.VelocityOf(shell, FrameworkElement.HeightProperty), 3);
+        await WpfFrameWaiter.UntilAsync(() => shell.Height > height + 8, "opening takes over the shell", ct);
+        window.NavigateToNotchView(NotchView.Compact);
+        var coordinator = MusicMotionTests.Field<NotchTransitionCoordinator>(window, "_transitionCoordinator");
+        await WpfFrameWaiter.UntilAsync(() => coordinator.CurrentView == NotchView.Compact &&
+            !coordinator.IsTransitionActive && !MusicMotionTests.Field<bool>(window, "_isAnimating"), "reversed shell settles compact", ct);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CopiedFeedbackRestoresTheMusicThumbnail(bool fullscreen) => SharedStaTestRunner.RunAsync(async ct =>
+    {
+        await using var fixture = Create();
+        var window = fixture.Window;
+        using var host = new RenderHost(window);
+        window.SetDebugViewState("CompactMusicPill");
+        window.MusicCompactContent.Visibility = Visibility.Visible;
+        window.CompactThumbnailBorder.Visibility = Visibility.Visible;
+        double width = MusicMotionTests.Field<double>(window, "_collapsedWidth");
+        Invoke(window, "ShowClipboardCopiedState");
+        await WpfFrameWaiter.UntilAsync(() => window.CompactThumbnailBorder.Visibility == Visibility.Collapsed,
+            "copied feedback replaces the thumbnail", ct);
+        Invoke(window, "RevertClipboardCopiedState", false);
+
+        if (fullscreen)
+        {
+            window.ShellState.IsHiddenByFullscreen = true;
+            Invoke(window, "RefreshAmbientAnimations");
+            Assert.False(Motion.IsRunning(window.NotchBorder, FrameworkElement.WidthProperty));
+        }
+        await WpfFrameWaiter.UntilAsync(() => window.ClipboardCopiedText.Visibility == Visibility.Collapsed,
+            "copied feedback exits", ct);
+
+        Assert.Equal(Visibility.Visible, window.CompactThumbnailBorder.Visibility);
+        Assert.Equal(1, window.CompactThumbnailBorder.Opacity);
+        Assert.Equal(width, window.NotchBorder.Width, 3);
+        Assert.False(window.MusicViz.IsCopiedFeedbackActive);
+    });
 
     [Theory]
     [InlineData(false)]

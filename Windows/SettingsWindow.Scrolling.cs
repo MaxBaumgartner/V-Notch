@@ -15,6 +15,7 @@ using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using VNotch.Controllers;
 using VNotch.Controls;
+using VNotch.Interop;
 using VNotch.Models;
 using VNotch.Modules;
 using VNotch.Presenters;
@@ -26,7 +27,7 @@ public partial class SettingsWindow
 {
     #region Smooth Scroll
 
-    [LibraryImport("VNotch.Native.dll")]
+    [LibraryImport(NativeAbi.LibraryName)]
     private static partial int vn_ui_smooth_scroll_step(
         double currentOffset,
         double targetOffset,
@@ -72,10 +73,6 @@ public partial class SettingsWindow
     private void SettingsScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         UpdateAiUsageStickyPreview();
-        if (e.OriginalSource == SettingsScrollViewer &&
-            (e.ViewportHeightChange != 0 || e.ViewportWidthChange != 0 || e.ExtentHeightChange != 0 ||
-             e.VerticalOffset >= _nextRevealBelow || e.VerticalOffset <= _nextRevealAbove))
-            RevealVisibleComponents();
     }
 
     internal void SettingsScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)

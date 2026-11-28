@@ -1278,11 +1278,12 @@ public sealed class SettingsWindowControlTests
             Assert.True(Assert.IsAssignableFrom<System.Windows.Media.Imaging.BitmapSource>(qr.Source).PixelWidth > 0);
             if (!reducedMotion)
             {
-                await WpfFrameWaiter.UntilAsync(() => frame.Opacity is > 0 and < 1 || qr.Opacity is > 0 and < 1,
-                    "donation QR mid-reveal", ct);
-                Assert.Equal(frame.Opacity, frame.Opacity * qr.Opacity, 6);
-                await WpfFrameWaiter.UntilAsync(() => !frame.HasAnimatedProperties && !qr.HasAnimatedProperties,
-                    "donation QR reveal to settle", ct);
+                await WpfFrameWaiter.UntilAsync(() => window.PanelDonating.Opacity is > 0 and < 1,
+                    "donation section mid-reveal", ct);
+                Assert.False(frame.HasAnimatedProperties);
+                Assert.False(qr.HasAnimatedProperties);
+                await WpfFrameWaiter.UntilAsync(() => !window.PanelDonating.HasAnimatedProperties,
+                    "donation section settles", ct);
             }
             Assert.True(qr.IsVisible);
             Assert.Equal(1, frame.Opacity);
@@ -1296,7 +1297,7 @@ public sealed class SettingsWindowControlTests
     });
 
     [Fact]
-    public void SettingsContentRevealsAcrossPagesAndExpandedGroups() => SharedStaTestRunner.RunAsync(async ct =>
+    public void SettingsSectionsAndExpandedGroupsSettleTogether() => SharedStaTestRunner.RunAsync(async ct =>
     {
         bool previous = AnimationConfig.ReduceMotion;
         var systemMotion = AnimationConfig.ClientAreaAnimationOverride;
@@ -1311,10 +1312,7 @@ public sealed class SettingsWindowControlTests
             window.NavigateToSection("FileTray");
             Assert.True(window.SettingsPageWave.IsVisible);
             window.UpdateLayout();
-            await WpfFrameWaiter.UntilAsync(() => window.TrayAdvancedTitle.Opacity is > .05 and < 1 &&
-                window.TrayAdvancedHint.Opacity < window.TrayAdvancedTitle.Opacity &&
-                window.TrayTextCheck.Opacity < window.TrayAdvancedTitle.Opacity, "individual components in one settings tree", ct);
-            Assert.True(window.TrayTextCheck.HasAnimatedProperties);
+            Assert.False(window.TrayTextCheck.HasAnimatedProperties);
             Assert.False(window.TrayTextRow.HasAnimatedProperties);
 
             window.NavigateToSection("Advanced");
@@ -1327,7 +1325,7 @@ public sealed class SettingsWindowControlTests
                 { RoutedEvent = Mouse.PreviewMouseWheelEvent };
             window.SettingsScrollViewer.RaiseEvent(wheel);
             Assert.True(wheel.Handled);
-            await WpfFrameWaiter.UntilAsync(() => bottom.Opacity is > 0 and < 1, "a newly scrolled-in control to reveal", ct);
+            Assert.False(bottom.HasAnimatedProperties);
             await WpfFrameWaiter.UntilAsync(() => !window.IsScrollAnimating,
                 "wheel scroll during reveal to settle", ct);
             await WpfFrameWaiter.UntilAsync(() => !bottom.HasAnimatedProperties && bottom.Opacity == 1, "the control to settle", ct);
@@ -1341,8 +1339,8 @@ public sealed class SettingsWindowControlTests
             window.TranslationAdvancedExpander.IsExpanded = true;
             window.UpdateLayout();
             window.TranslationCustomPromptLabel.BringIntoView();
-            await WpfFrameWaiter.UntilAsync(() => window.TranslationCustomPromptLabel.Opacity is > 0 and < 1,
-                "expanded options to reveal", ct);
+            var group = Assert.IsAssignableFrom<Panel>(window.TranslationAdvancedExpander.Content);
+            await WpfFrameWaiter.UntilAsync(() => group.RenderTransform.Value.OffsetY < 0, "expanded options reveal together", ct);
             AnimationConfig.SetReduceMotion(true);
             Assert.Equal(1, window.TranslationCustomPromptLabel.Opacity);
             Assert.False(window.TranslationCustomPromptLabel.HasAnimatedProperties);
@@ -1865,7 +1863,7 @@ public sealed class SettingsWindowControlTests
             view.VersionList.SelectedIndex = 1;
             double second = ((ListBoxItem)view.VersionList.SelectedItem).TranslatePoint(new Point(0, 1), view.VersionList).Y;
             Assert.True(second > first);
-            Assert.True(view.ReleaseHeader.HasAnimatedProperties);
+            Assert.True(view.ReleaseOffset.HasAnimatedProperties);
             await WpfFrameWaiter.UntilAsync(() => view.ReleaseWave.IsVisible && view.ReleaseWave.Progress is > 0 and < 1 &&
                 view.MarkScale.ScaleY > 1.02 && view.MarkScale.ScaleX < 1,
                 "the version pill to stretch during the blur wave", ct);

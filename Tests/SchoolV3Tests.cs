@@ -63,12 +63,45 @@ public sealed class SchoolV3Tests
         Assert.Equal(Color.FromRgb(221, 254, 175), ControlCenterView.SubjectColor("Religion"));
     }
 
+    [Theory]
+    [InlineData("1POSEOO", "POSE")]
+    [InlineData("0POSETHI", "POSE")]
+    [InlineData("0BWMRW", "REWE")]
+    [InlineData("0BWMBO", "BO")]
+    [InlineData("0GGPGW", "GW")]
+    [InlineData("0RK", "REL")]
+    [InlineData("RELIGION ROEM.KATH", "REL")]
+    [InlineData("0E", "E")]
+    [InlineData("DBI TEST", "DBI")]
+    public void StudySubjectsUseTheSchoolFoldersAlreadyThere(string untis, string folder) =>
+        Assert.Equal(folder, SchoolStudy.SubjectFolder(untis));
+
+    [Fact]
+    public void ExternalEventTestTakesTheSubjectOfTheLessonItReplaces()
+    {
+        var data = (JsonObject)JsonNode.Parse("""
+            {"days":{"2026-11-27":[{"startTime":"10:00","subjectShort":"1WMC","subject":"Webprogrammierung"},
+                                   {"startTime":"10:55","subjectShort":"1POSEOO","subject":"OO Programmieren Übung","color":"#ff8080"}]},
+             "exams":[{"date":"2026-11-27","startTime":"10:55","kind":"Test","title":"Externe Veranst.","subjectShort":""},
+                      {"date":"2027-01-19","startTime":"10:00","kind":"Test","title":"DBI TEST","subjectShort":""}]}
+            """)!;
+        var exams = PiDashboardClient.ParseSchool(data).Exams;
+        Assert.Equal(("1POSEOO", "OO Programmieren Übung"), (exams[0].Subject, exams[0].Title));
+        Assert.Equal("POSE", ControlCenterView.ExamSubject(exams[0]));
+        Assert.Equal(Color.FromRgb(255, 128, 128), exams[0].Color);
+        // Outside the known days the title still names the subject.
+        Assert.Equal(("", "DBI TEST"), (exams[1].Subject, exams[1].Title));
+        Assert.Equal("DBI", ControlCenterView.ExamSubject(exams[1]));
+    }
+
     [Fact]
     public void StudyFilesAndSessionsStayInTheTestFolder()
     {
         using var temporary = new TestTempDirectory();
-        string folder = SchoolStudy.FolderFor("DBI", MockNow.Date, "SQL Joins & Subqueries", temporary.Path);
-        Assert.EndsWith(@"Lernen\DBI\2026-11-24 SQL Joins & Subqueries", folder);
+        Directory.CreateDirectory(Path.Combine(temporary.Path, "2AHIF"));
+        Directory.CreateDirectory(Path.Combine(temporary.Path, "3AHIF"));
+        string folder = SchoolStudy.FolderFor("0DBI", MockNow.Date, "SQL Joins & Subqueries", temporary.Path);
+        Assert.Equal(Path.Combine(temporary.Path, "3AHIF", "DBI", "2026-11-24 SQL Joins & Subqueries"), folder);
         string file = Path.Combine(temporary.Path, "example.sql");
         File.WriteAllText(file, "select 1");
         SchoolStudy.CopyFiles(folder, [file, file]);

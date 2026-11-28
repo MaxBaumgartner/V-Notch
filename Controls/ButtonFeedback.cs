@@ -7,8 +7,46 @@ using Path = System.Windows.Shapes.Path;
 
 namespace VNotch.Controls;
 
-internal static class ButtonFeedback
+public static class ButtonFeedback
 {
+    public static readonly DependencyProperty PressScaleProperty = DependencyProperty.RegisterAttached(
+        "PressScale", typeof(double), typeof(ButtonFeedback), new PropertyMetadata(1d, OnPressScaleChanged));
+
+    public static double GetPressScale(DependencyObject element) => (double)element.GetValue(PressScaleProperty);
+    public static void SetPressScale(DependencyObject element, double value) => element.SetValue(PressScaleProperty, value);
+
+    private static void OnPressScaleChanged(DependencyObject target, DependencyPropertyChangedEventArgs e)
+    {
+        if (target is not FrameworkElement element) return;
+        if (element.RenderTransform is not ScaleTransform scale || scale.IsFrozen)
+        {
+            scale = new ScaleTransform(1, 1);
+            element.RenderTransform = scale;
+            element.RenderTransformOrigin = new Point(0.5, 0.5);
+        }
+
+        double value = (double)e.NewValue;
+        if (!element.IsVisible || AnimationConfig.ReduceMotion || !AnimationConfig.ClientAreaAnimation)
+        {
+            Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
+            Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
+            return;
+        }
+        element.IsVisibleChanged -= OnPressSurfaceVisibilityChanged;
+        element.IsVisibleChanged += OnPressSurfaceVisibilityChanged;
+        var spring = value < 1 ? Motion.PressDown : Motion.Press;
+        Motion.To(scale, ScaleTransform.ScaleXProperty, value, spring);
+        Motion.To(scale, ScaleTransform.ScaleYProperty, value, spring);
+    }
+
+    private static void OnPressSurfaceVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is not FrameworkElement { IsVisible: false, RenderTransform: ScaleTransform scale } element) return;
+        element.IsVisibleChanged -= OnPressSurfaceVisibilityChanged;
+        Motion.Stop(scale, ScaleTransform.ScaleXProperty, 1);
+        Motion.Stop(scale, ScaleTransform.ScaleYProperty, 1);
+    }
+
     private static readonly DependencyProperty TransitionVersionProperty = DependencyProperty.RegisterAttached(
         "TransitionVersion", typeof(int), typeof(ButtonFeedback), new PropertyMetadata(0));
 

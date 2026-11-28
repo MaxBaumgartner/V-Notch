@@ -871,18 +871,8 @@ public partial class DebugWindow : Window
     private static string FormatGb(ulong bytes) =>
         (bytes / (1024.0 * 1024.0 * 1024.0)).ToString("0.0", Loc.GetCulture());
 
-    private static string FormatRate(double bytesPerSec)
-    {
-        if (bytesPerSec < 0) bytesPerSec = 0;
-        const double kb = 1024.0;
-        const double mb = kb * 1024.0;
-
-        if (bytesPerSec >= mb)
-            return $"{bytesPerSec / mb:0.0} MB/s";
-        if (bytesPerSec >= kb)
-            return $"{bytesPerSec / kb:0.0} KB/s";
-        return $"{bytesPerSec:0} B/s";
-    }
+    private static string FormatRate(double bytesPerSec) =>
+        LocalizedPresentation.FormatTransferRate(Math.Max(0, bytesPerSec));
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
